@@ -1,0 +1,49 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "connic-composer-sdk"
+version = "0.1.0"
+description = "The Connic Composer SDK for building agents and enterprise-level tools."
+authors = [
+  { name = "Connic Team", email = "hello@connic.co" },
+]
+readme = "README.md"
+requires-python = ">=3.10"
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+]
+dependencies = [
+    "click>=8.0.0",
+    "pyyaml>=6.0",
+    "pydantic>=2.0.0",
+    "watchdog>=3.0.0",  # For hot reloading in dev
+    "nats-py>=2.7.0",
+    "httpx>=0.25.0",  # For API calls in test mode
+    "websockets>=12.0",  # For log streaming in test mode
+]
+
+[project.scripts]
+connic = "connic.cli:main"
+
+[project.optional-dependencies]
+dev = [
+    "pytest",
+    "ruff",
+]
+
+[tool.ruff]
+line-length = 140
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "I"]  # E/F = pyflakes/pycodestyle, I = isort
