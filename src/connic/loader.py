@@ -296,6 +296,10 @@ class ProjectLoader:
         required = []
 
         for name, param in sig.parameters.items():
+            # Skip hidden parameters that are auto-injected at runtime
+            if name == 'context':
+                continue
+            
             # Get type from hints or annotation
             annotation = hints.get(name, param.annotation)
             

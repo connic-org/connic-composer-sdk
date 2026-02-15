@@ -38,19 +38,28 @@ class Middleware(BaseModel):
     Middleware files are Python modules in the middleware/ directory,
     named after the agent they apply to (e.g., middleware/assistant.py).
     
-    The 'before' middleware receives a dict representing the user message,
-    allowing you to inspect/modify the content and attach documents or images.
+    The 'before' middleware receives a dict representing the user message
+    and a shared context dict. You can inspect/modify the content and attach
+    documents or images. The context dict is pre-populated with system metadata
+    (run_id, agent_name, connector_id, timestamp) and you can add your own
+    values. Values set on context are available in prompts via {var} syntax
+    and in tools that declare a ``context`` parameter.
     
     Example middleware file:
         async def before(content: dict, context: dict) -> dict:
             # content = {"role": "user", "parts": [...]}
             # Each part is either {"text": "..."} or {"data": bytes, "mime_type": "..."}
-            pdf_bytes = open("context.pdf", "rb").read()
-            content["parts"].append({"data": pdf_bytes, "mime_type": "application/pdf"})
+            #
+            # context is a shared mutable dict for this run:
+            #   - Pre-populated: run_id, agent_name, connector_id, timestamp
+            #   - Add your own values to pass data to prompts and tools
+            context["user_name"] = "Peter"
+            context["user_id"] = 123
             return content
         
         async def after(response: str, context: dict) -> str:
-            # Process response after agent completes
+            # context contains everything: system fields, your values from before(),
+            # any values set by tools, plus token_usage and duration_ms
             return response
     """
     before: Optional[Callable[..., Any]] = None
@@ -176,6 +185,16 @@ class AgentConfig(BaseModel):
     output_schema_dict: Optional[Dict[str, Any]] = Field(
         default=None,
         description="The loaded JSON Schema dict (populated at runtime by loader)"
+    )
+    
+    # Reasoning configuration (LLM agents only)
+    reasoning: Optional[bool] = Field(
+        default=True,
+        description="Include the model's reasoning/thinking in the response. When enabled, reasoning content is captured in run traces. Defaults to true."
+    )
+    reasoning_budget: Optional[int] = Field(
+        default=None, ge=0,
+        description="Maximum number of tokens the model may use for reasoning. 0 disables reasoning, -1 lets the model decide automatically."
     )
     
     # Common optional fields

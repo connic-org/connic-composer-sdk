@@ -949,13 +949,14 @@ def test(name: str, api_url: str, api_key: str, project_id: str):
         
         session_data = resp.json()
         session_id = session_data["id"]
+        env_id = session_data["environment_id"]
         env_name = session_data["environment_name"]
         
         click.echo(f"  Session ID: {session_id}")
         click.echo(f"  Environment: {env_name}")
         
         # Poll for container to be ready
-        click.echo("\n  Waiting for container to start", nl=False)
+        click.echo("\n  Waiting for container to start (this can take a few seconds)", nl=False)
         max_wait = 300  # 5 minutes max
         poll_interval = 3
         waited = 0
@@ -1075,6 +1076,14 @@ def test(name: str, api_url: str, api_key: str, project_id: str):
         # Set up file watcher
         click.echo("\nWatching for file changes...")
         click.echo("  Press Ctrl+C to stop\n")
+        
+        # Display link to test environment
+        dashboard_url = f"{DEFAULT_BASE_URL}/projects/{project_id}/agents?env={env_id}"
+        click.echo("─" * 60)
+        click.secho("  View and trigger your agents: ", fg="cyan", nl=False)
+        click.echo(dashboard_url)
+        click.echo("─" * 60)
+        click.echo()
         
         last_upload_time = time.time()
         pending_upload = False
