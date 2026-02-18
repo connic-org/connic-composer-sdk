@@ -1,6 +1,6 @@
 import asyncio
 from enum import Enum
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Literal, Optional
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
@@ -73,6 +73,25 @@ class RetryOptions(BaseModel):
     """Configuration for automatic retries on failures."""
     attempts: int = Field(default=3, ge=1, le=10, description="Maximum retry attempts (max: 10)")
     max_delay: int = Field(default=30, ge=1, le=300, description="Maximum seconds between retries (max: 300s)")
+
+
+class ConcurrencyConfig(BaseModel):
+    """
+    Key-based concurrency control for agent runs.
+    
+    Ensures only one run per unique key value is active at a time.
+    The key is extracted from the trigger payload using dot-notation.
+    
+    Example YAML:
+        concurrency:
+          key: "process_id"
+          on_conflict: queue
+    """
+    key: str = Field(..., min_length=1, description="Dot-path to extract concurrency key from trigger payload (e.g., 'process_id', 'data.customer_id')")
+    on_conflict: Literal["queue", "drop"] = Field(
+        default="queue",
+        description="'queue' waits for active run to finish; 'drop' cancels the new run immediately"
+    )
 
 
 class McpServerConfig(BaseModel):
@@ -204,6 +223,7 @@ class AgentConfig(BaseModel):
     max_concurrent_runs: int = Field(default=1, ge=1, description="Maximum simultaneous runs allowed")
     retry_options: Optional[RetryOptions] = Field(default=None, description="Configuration for automatic retries")
     timeout: Optional[int] = Field(default=None, ge=5, description="Max execution time in seconds (min: 5). Capped by subscription.")
+    concurrency: Optional[ConcurrencyConfig] = Field(default=None, description="Key-based concurrency control. Ensures only one run per unique key value at a time.")
     
     @field_validator('version')
     @classmethod
