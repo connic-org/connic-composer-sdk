@@ -223,6 +223,10 @@ class AgentConfig(BaseModel):
     max_concurrent_runs: int = Field(default=1, ge=1, description="Maximum simultaneous runs allowed")
     retry_options: Optional[RetryOptions] = Field(default=None, description="Configuration for automatic retries")
     timeout: Optional[int] = Field(default=None, ge=5, description="Max execution time in seconds (min: 5). Capped by subscription.")
+    max_iterations: int = Field(
+        default=100, ge=1,
+        description="Maximum number of agent loop iterations per run. Each iteration is one LLM call (e.g. agent output, tool call, next output). Prevents infinite loops and excessive resource consumption."
+    )
     concurrency: Optional[ConcurrencyConfig] = Field(default=None, description="Key-based concurrency control. Ensures only one run per unique key value at a time.")
     
     @field_validator('version')
