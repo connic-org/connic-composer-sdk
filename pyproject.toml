@@ -30,6 +30,7 @@ dependencies = [
     "nats-py>=2.7.0",
     "httpx>=0.25.0",  # For API calls in test mode
     "websockets>=12.0",  # For log streaming in test mode
+    "simpleeval>=1.0.0",  # For evaluating conditional tool expressions
 ]
 
 [project.scripts]

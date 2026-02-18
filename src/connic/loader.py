@@ -130,12 +130,34 @@ class ProjectLoader:
         
         if config.type == AgentType.LLM:
             # LLM agents: resolve all tools from the tools list
-            for tool_ref in config.tools:
+            # Each entry is either a string (always available) or a dict {tool_ref: condition}
+            for tool_entry in config.tools:
+                if isinstance(tool_entry, str):
+                    tool_ref = tool_entry
+                    condition = None
+                elif isinstance(tool_entry, dict):
+                    if len(tool_entry) != 1:
+                        raise ValueError(
+                            f"Conditional tool entry must have exactly one key, got: {tool_entry}"
+                        )
+                    tool_ref = list(tool_entry.keys())[0]
+                    condition = str(list(tool_entry.values())[0])
+                else:
+                    raise ValueError(f"Invalid tool entry: {tool_entry}")
+                
+                if condition:
+                    self._validate_condition(condition, tool_ref)
+                
                 try:
                     tool = self._resolve_tool(tool_ref)
-                    tools.append(tool)
                 except Exception as e:
                     print(f"Warning: Could not resolve tool '{tool_ref}' for agent '{config.name}': {e}")
+                    continue
+                
+                if condition:
+                    tool.condition = condition
+                
+                tools.append(tool)
         
         elif config.type == AgentType.TOOL:
             # Tool agents: resolve the single tool_name
@@ -208,6 +230,16 @@ class ProjectLoader:
             parameters=schema
         )
     
+    def _validate_condition(self, condition: str, tool_ref: str) -> None:
+        """Validate that a condition expression is syntactically valid Python."""
+        import ast
+        try:
+            ast.parse(condition, mode='eval')
+        except SyntaxError as e:
+            raise ValueError(
+                f"Invalid condition syntax '{condition}' for tool '{tool_ref}': {e}"
+            )
+
     def _create_predefined_tool_marker(self, tool_name: str) -> Tool:
         """
         Create a marker for a predefined tool.

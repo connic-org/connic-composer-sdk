@@ -122,6 +122,9 @@ class Tool(BaseModel):
     
     # True for tools that will be injected by runner (trigger_agent, query_knowledge, etc.)
     is_predefined: bool = False
+    
+    # Condition expression for conditional tool availability (evaluated per-request)
+    condition: Optional[str] = None
 
     class Config:
         arbitrary_types_allowed = True
@@ -160,7 +163,7 @@ class AgentConfig(BaseModel):
     model: Optional[str] = Field(default=None, description="The AI model to use (required for LLM agents)")
     system_prompt: Optional[str] = Field(default=None, description="Instructions that define the agent's behavior")
     temperature: float = Field(default=1.0, ge=0.0, le=2.0, description="Controls randomness in output")
-    tools: List[str] = Field(default_factory=list, description="List of tools the agent can use")
+    tools: List[Any] = Field(default_factory=list, description="List of tools the agent can use. Each is a string (always available) or a mapping {tool_ref: condition_expression}.")
     
     # Sequential agent fields (required when type=sequential)
     agents: List[str] = Field(default_factory=list, description="List of agent names to execute in sequence")
