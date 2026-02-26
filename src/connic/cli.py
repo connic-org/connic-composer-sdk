@@ -243,7 +243,7 @@ mcp_servers:
 
 2. Validate your project:
    ```bash
-   connic dev
+   connic lint
    ```
 
 3. Connect your repository to Connic and push to deploy.
@@ -296,7 +296,7 @@ This project contains AI agents built with the Connic Composer SDK.
 
 3. Validate your project:
    ```bash
-   connic dev
+   connic lint
    ```
 
 4. Connect your repository to Connic and push to deploy.
@@ -328,12 +328,12 @@ See the [Connic Composer docs]({base_url}/docs/v1/composer/overview) for:
         click.echo("  README.md")
         click.echo("\nNext steps:")
         if include_examples:
-            click.echo("  1. Run 'connic dev' to validate your project")
+            click.echo("  1. Run 'connic lint' to validate your project")
             click.echo("  2. Edit the agent configs and tools as needed")
             click.echo("  3. Push to your connected repository to deploy")
         else:
             click.echo("  1. Create your first agent in agents/")
-            click.echo("  2. Run 'connic dev' to validate your project")
+            click.echo("  2. Run 'connic lint' to validate your project")
             click.echo("  3. Push to your connected repository to deploy")
 
 
@@ -513,7 +513,7 @@ def init(name: str, templates: str | None):
         click.echo(f"\n> Initialized with templates: {', '.join(template_ids)}")
         click.echo(f"Added agents, tools, middleware, schemas from: {', '.join(template_ids)}")
         click.echo("Next steps:")
-        click.echo("  1. Run 'connic dev' to validate your project")
+        click.echo("  1. Run 'connic lint' to validate your project")
         click.echo("  2. Run 'connic test' to test against Connic cloud")
         click.echo("  3. Run 'connic deploy' when ready")
         return
@@ -524,13 +524,13 @@ def init(name: str, templates: str | None):
 
 @main.command()
 @click.option("--verbose", "-v", is_flag=True, help="Show detailed output")
-def dev(verbose: bool):
-    """Validate and preview agents locally.
-    
+def lint(verbose: bool):
+    """Validate agent configurations and tools.
+
     Loads all agents and tools, validates configurations,
     and displays a summary of the project.
     """
-    click.echo("Connic Composer SDK - Development Mode\n")
+    click.echo("Connic Composer SDK - Validation\n")
     
     try:
         loader = ProjectLoader(".")
@@ -633,8 +633,11 @@ def dev(verbose: bool):
             
             # Show missing tools as warnings
             loaded_tool_names = {t.name for t in agent.tools}
-            for tool_ref in config.tools:
-                # Extract function name from tool reference
+            for tool_entry in config.tools:
+                if isinstance(tool_entry, dict):
+                    tool_ref = list(tool_entry.keys())[0]
+                else:
+                    tool_ref = str(tool_entry)
                 parts = tool_ref.split(".")
                 func_name = parts[-1]
                 if func_name not in loaded_tool_names:
@@ -645,6 +648,14 @@ def dev(verbose: bool):
     
     click.echo("✓ Project validation complete")
     click.echo("\nTo deploy, push to your connected repository.")
+
+
+@main.command(hidden=True)
+@click.option("--verbose", "-v", is_flag=True, help="Show detailed output")
+def dev(verbose: bool):
+    """Alias for 'connic lint' (deprecated)."""
+    ctx = click.get_current_context()
+    return ctx.invoke(lint, verbose=verbose)
 
 
 @main.command()

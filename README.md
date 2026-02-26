@@ -30,7 +30,7 @@ connic init my-agents
 cd my-agents
 
 # Validate your project
-connic dev
+connic lint
 
 # Test with hot reload
 connic login
@@ -59,7 +59,7 @@ For detailed guides and configuration options, see the full documentation:
 | Command | Description |
 |---------|-------------|
 | `connic init [name]` | Initialize a new project |
-| `connic dev` | Validate project locally |
+| `connic lint` | Validate project locally |
 | `connic test [env]` | Start hot-reload test session |
 | `connic deploy` | Deploy to production |
 | `connic tools` | List available tools |
