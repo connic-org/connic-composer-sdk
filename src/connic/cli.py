@@ -102,8 +102,8 @@ def main():
     pass
 
 
-def _write_essential_files(base_path: Path, include_examples: bool = False, quiet: bool = False):
-    """Write files that are always created regardless of example inclusion."""
+def _write_essential_files(base_path: Path, quiet: bool = False):
+    """Write files that are always created during project init."""
 
     # .gitignore
     gitignore = base_path / ".gitignore"
@@ -148,124 +148,7 @@ Thumbs.db
     # README.md
     readme = base_path / "README.md"
     if not readme.exists():
-        if include_examples:
-            readme.write_text('''# Connic Agent Project
-
-This project contains AI agents built with the Connic Composer SDK.
-
-## Structure
-
-```
-├── agents/                    # Agent YAML configurations
-│   ├── assistant.yaml         # LLM agent with tools
-│   ├── invoice-processor.yaml # LLM agent with retry options
-│   ├── tax-calculator.yaml    # Tool agent (direct tool execution)
-│   ├── document-pipeline.yaml # Sequential agent (chains agents)
-│   ├── orchestrator.yaml      # Orchestrator agent (triggers other agents)
-│   ├── knowledge-agent.yaml   # Knowledge agent (RAG with query/store/delete)
-│   └── mcp-docs.yaml          # MCP agent (external tools via MCP)
-├── tools/                     # Python tool modules
-│   └── calculator.py
-├── middleware/                # Optional middleware for agents
-│   └── assistant.py           # Runs before/after assistant agent
-└── requirements.txt           # Python dependencies
-```
-
-## Agent Types
-
-Connic supports three types of agents:
-
-### LLM Agents (type: llm)
-Standard AI agents that use a language model to process requests.
-```yaml
-type: llm
-model: gemini/gemini-2.5-flash  # Provider prefix required
-system_prompt: "You are a helpful assistant..."
-tools:
-  - calculator.add
-```
-
-### Sequential Agents (type: sequential)
-Chain multiple agents together - each agent's output becomes the next agent's input.
-```yaml
-type: sequential
-agents:
-  - assistant
-  - invoice-processor
-```
-
-### Tool Agents (type: tool)
-Execute a tool directly without LLM reasoning. Perfect for deterministic operations.
-```yaml
-type: tool
-tool_name: calculator.calculate_tax
-```
-
-### Orchestrator Pattern (using trigger_agent)
-LLM agents can dynamically trigger other agents using the `trigger_agent` predefined tool.
-```yaml
-type: llm
-model: gemini/gemini-2.5-flash
-system_prompt: "You can trigger other agents..."
-tools:
-  - trigger_agent  # Predefined tool
-```
-
-### Knowledge Agents (using RAG tools)
-Agents can access a persistent knowledge base using semantic search.
-```yaml
-type: llm
-model: gemini/gemini-2.5-flash
-system_prompt: "You can search and store knowledge..."
-tools:
-  - query_knowledge   # Semantic search
-  - store_knowledge   # Add to knowledge base
-  - delete_knowledge  # Remove from knowledge base
-```
-
-### MCP Agents (using external MCP servers)
-Agents can connect to external MCP (Model Context Protocol) servers for additional tools.
-```yaml
-type: llm
-model: gemini/gemini-2.5-flash
-system_prompt: "You can fetch documentation..."
-mcp_servers:
-  - name: context7
-    url: https://mcp.context7.com/mcp
-```
-
-## Getting Started
-
-1. Install dependencies:
-   ```bash
-   pip install -r requirements.txt
-   ```
-
-2. Validate your project:
-   ```bash
-   connic lint
-   ```
-
-3. Connect your repository to Connic and push to deploy.
-
-## Middleware
-
-Middleware files are auto-discovered by agent name. Create a file in `middleware/`
-with the same name as your agent (e.g., `middleware/assistant.py` for the `assistant` agent).
-
-Middleware can define `before` and `after` functions:
-- `before(payload, context)` - Runs before the agent, can modify the payload
-- `after(response, context)` - Runs after the agent, can modify the response
-
-## Documentation
-
-See the [Connic Composer docs]({base_url}/docs/v1/composer/overview) for:
-- [Agent Configuration]({base_url}/docs/v1/composer/agent-configuration)
-- [Writing Tools]({base_url}/docs/v1/composer/write-tools)
-- [Middleware]({base_url}/docs/v1/composer/middleware)
-'''.format(base_url=DEFAULT_BASE_URL))
-        else:
-            readme.write_text('''# Connic Agent Project
+        readme.write_text('''# Connic Agent Project
 
 This project contains AI agents built with the Connic Composer SDK.
 
@@ -299,7 +182,7 @@ This project contains AI agents built with the Connic Composer SDK.
    connic lint
    ```
 
-4. Connect your repository to Connic and push to deploy.
+4. Connect your repository to Connic and push to deploy, or run `connic deploy`.
 
 ## Documentation
 
@@ -313,28 +196,13 @@ See the [Connic Composer docs]({base_url}/docs/v1/composer/overview) for:
     if not quiet:
         click.echo(f"\n> Initialized Connic project in {base_path.resolve()}\n")
         click.echo("Created files:")
-        if include_examples:
-            click.echo("  agents/assistant.yaml          (LLM agent)")
-            click.echo("  agents/invoice-processor.yaml  (LLM agent with retry)")
-            click.echo("  agents/tax-calculator.yaml     (Tool agent)")
-            click.echo("  agents/document-pipeline.yaml  (Sequential agent)")
-            click.echo("  agents/orchestrator.yaml       (Orchestrator with trigger_agent)")
-            click.echo("  agents/knowledge-agent.yaml    (Knowledge agent with RAG)")
-            click.echo("  agents/mcp-docs.yaml           (MCP agent with Context7)")
-            click.echo("  tools/calculator.py")
-            click.echo("  middleware/assistant.py")
         click.echo("  .gitignore")
         click.echo("  requirements.txt")
         click.echo("  README.md")
         click.echo("\nNext steps:")
-        if include_examples:
-            click.echo("  1. Run 'connic lint' to validate your project")
-            click.echo("  2. Edit the agent configs and tools as needed")
-            click.echo("  3. Push to your connected repository to deploy")
-        else:
-            click.echo("  1. Create your first agent in agents/")
-            click.echo("  2. Run 'connic lint' to validate your project")
-            click.echo("  3. Push to your connected repository to deploy")
+        click.echo("  1. Create your first agent in agents/")
+        click.echo("  2. Run 'connic lint' to validate your project")
+        click.echo("  3. Push to your connected repository to deploy")
 
 
 def _get_local_templates_path() -> Path | None:
@@ -505,7 +373,7 @@ def init(name: str, templates: str | None):
 
         if requirements_lines:
             _write_merged_requirements(base_path, requirements_lines)
-        _write_essential_files(base_path, include_examples=False, quiet=True)
+        _write_essential_files(base_path, quiet=True)
 
         if template_readmes:
             _append_template_readmes(base_path, template_readmes)
@@ -519,7 +387,7 @@ def init(name: str, templates: str | None):
         return
 
     # No templates: create clean project only (no example files)
-    _write_essential_files(base_path, include_examples=False)
+    _write_essential_files(base_path)
 
 
 def _run_lint(verbose: bool = False, quiet: bool = False) -> bool:
@@ -696,7 +564,7 @@ def _run_lint(verbose: bool = False, quiet: bool = False) -> bool:
         return False
 
     click.echo("✓ Project validation complete")
-    click.echo("\nTo deploy, push to your connected repository.")
+    click.echo("\nTo deploy, push to your connected repository or run 'connic deploy'.")
     return True
 
 
