@@ -522,86 +522,132 @@ def init(name: str, templates: str | None):
     _write_essential_files(base_path, include_examples=False)
 
 
-@main.command()
-@click.option("--verbose", "-v", is_flag=True, help="Show detailed output")
-def lint(verbose: bool):
-    """Validate agent configurations and tools.
+def _run_lint(verbose: bool = False, quiet: bool = False) -> bool:
+    """Run project validation. Returns True on success, False on failure.
 
-    Loads all agents and tools, validates configurations,
-    and displays a summary of the project.
+    Args:
+        verbose: Show extra detail per agent.
+        quiet:   Suppress per-agent output (used by deploy for a compact pre-flight check).
     """
-    click.echo("Connic Composer SDK - Validation\n")
-    
+    if not quiet:
+        click.echo("Connic Composer SDK - Validation\n")
+
+    errors: list[str] = []
+
     try:
         loader = ProjectLoader(".")
     except Exception as e:
-        click.echo(f"Error initializing project: {e}", err=True)
-        sys.exit(1)
-    
+        click.echo(f"Error: {e}", err=True)
+        return False
+
     # Discover tools
-    click.echo("Discovering tools...")
+    if not quiet:
+        click.echo("Discovering tools...")
     try:
         tools = loader.discover_tools()
+        errors.extend(loader._load_errors)
+        loader._load_errors.clear()
         total_tools = sum(len(funcs) for funcs in tools.values())
-        
-        if tools:
-            click.echo(f"  Found {total_tools} tools in {len(tools)} modules:")
-            for module, functions in sorted(tools.items()):
-                if verbose:
-                    click.echo(f"    {module}:")
-                    for func in functions:
-                        click.echo(f"      - {func}")
-                else:
-                    click.echo(f"    {module}: {', '.join(functions)}")
-        else:
-            click.echo("  No tools found in tools/ directory")
+        if not quiet:
+            if tools:
+                click.echo(f"  Found {total_tools} tools in {len(tools)} modules:")
+                for module, functions in sorted(tools.items()):
+                    if verbose:
+                        click.echo(f"    {module}:")
+                        for func in functions:
+                            click.echo(f"      - {func}")
+                    else:
+                        click.echo(f"    {module}: {', '.join(functions)}")
+            else:
+                click.echo("  No tools found in tools/ directory")
     except FileNotFoundError:
-        click.echo("  No tools/ directory found")
+        if not quiet:
+            click.echo("  No tools/ directory found")
         tools = {}
-    
-    click.echo()
-    
+
+    if not quiet:
+        click.echo()
+
     # Discover middlewares
-    click.echo("Discovering middlewares...")
+    if not quiet:
+        click.echo("Discovering middlewares...")
     try:
         middlewares = loader.discover_middlewares()
-        if middlewares:
-            click.echo(f"  Found middlewares for {len(middlewares)} agents:")
-            for agent_name, hooks in sorted(middlewares.items()):
-                click.echo(f"    {agent_name}: {', '.join(hooks)}")
-        else:
-            click.echo("  No middlewares found in middleware/ directory")
+        loader._load_errors.clear()  # middleware errors are non-fatal
+        if not quiet:
+            if middlewares:
+                click.echo(f"  Found middlewares for {len(middlewares)} agents:")
+                for agent_name, hooks in sorted(middlewares.items()):
+                    click.echo(f"    {agent_name}: {', '.join(hooks)}")
+            else:
+                click.echo("  No middlewares found in middleware/ directory")
     except FileNotFoundError:
-        click.echo("  No middleware/ directory found")
+        if not quiet:
+            click.echo("  No middleware/ directory found")
         middlewares = {}
-    
-    click.echo()
-    
+
+    if not quiet:
+        click.echo()
+
     # Load agents
-    click.echo("Loading agents...")
+    if not quiet:
+        click.echo("Loading agents...")
     try:
         agents = loader.load_agents()
+        errors.extend(loader._load_errors)
+        loader._load_errors.clear()
     except FileNotFoundError as e:
         click.echo(f"  {e}", err=True)
         click.echo("\nRun 'connic init' to create a sample project.")
-        sys.exit(1)
-    
-    if not agents:
-        click.echo("  No agents found in agents/ directory")
+        return False
+
+    if not agents and not errors:
+        click.echo("  No agents found in agents/ directory", err=True)
         click.echo("\nRun 'connic init' to create a sample project.")
-        sys.exit(1)
-    
+        return False
+
+    # Validate each agent
+    loaded_agent_names = {a.config.name for a in agents}
+    for agent in agents:
+        config = agent.config
+        agent_type = config.type.value if hasattr(config.type, 'value') else str(config.type)
+
+        if agent_type == "sequential":
+            for ref in config.agents:
+                if ref not in loaded_agent_names:
+                    errors.append(f"Sequential agent '{config.name}' references unknown agent '{ref}'")
+
+        elif agent_type == "llm":
+            loaded_tool_names = {t.name for t in agent.tools}
+            for tool_entry in config.tools:
+                tool_ref = list(tool_entry.keys())[0] if isinstance(tool_entry, dict) else str(tool_entry)
+                if tool_ref.split(".")[-1] not in loaded_tool_names:
+                    errors.append(f"Agent '{config.name}': unresolved tool '{tool_ref}'")
+
+        elif agent_type == "tool":
+            if not agent.tools:
+                errors.append(f"Tool agent '{config.name}': tool '{config.tool_name}' could not be resolved")
+
+    if quiet:
+        if errors:
+            for err in errors:
+                click.echo(f"  ✗ {err}", err=True)
+            return False
+        agent_names = [a.config.name for a in agents]
+        click.echo(f"  Lint passed: {len(agents)} agent(s) validated ({', '.join(agent_names)})")
+        return True
+
+    # Verbose output: print per-agent boxes
     click.echo(f"  Found {len(agents)} agents:\n")
-    
+
     for agent in agents:
         config = agent.config
         agent_type = config.type.value if hasattr(config.type, 'value') else str(config.type)
         type_label = {"llm": "🧠 LLM", "sequential": "🔗 Sequential", "tool": "🔧 Tool"}.get(agent_type, agent_type)
-        
+
         click.echo(f"  ┌─ {config.name} [{type_label}]")
         click.echo(f"  │  Description: {config.description}")
-        
-        # Type-specific info
+
         if agent_type == "llm":
             click.echo(f"  │  Model: {config.model}")
             if verbose:
@@ -610,44 +656,60 @@ def lint(verbose: bool):
             click.echo(f"  │  Chain: {' → '.join(config.agents)}")
         elif agent_type == "tool":
             click.echo(f"  │  Tool: {config.tool_name}")
-        
+
         if verbose:
             click.echo(f"  │  Max Concurrent Runs: {config.max_concurrent_runs}")
             if config.retry_options:
                 click.echo(f"  │  Retry: {config.retry_options.attempts} attempts, max {config.retry_options.max_delay}s delay")
             if config.timeout:
                 click.echo(f"  │  Timeout: {config.timeout}s")
-        
-        # Tools (for LLM agents)
+
         if agent_type == "llm":
             if agent.tools:
                 tool_names = [t.name for t in agent.tools]
                 click.echo(f"  │  Tools: {', '.join(tool_names)}")
             else:
                 click.echo("  │  Tools: (none)")
-            
-            # Show MCP servers if configured
+
             if config.mcp_servers:
                 for mcp_server in config.mcp_servers:
                     click.echo(f"  │  MCP Server: {mcp_server.name} ({mcp_server.url})")
-            
-            # Show missing tools as warnings
+
             loaded_tool_names = {t.name for t in agent.tools}
             for tool_entry in config.tools:
-                if isinstance(tool_entry, dict):
-                    tool_ref = list(tool_entry.keys())[0]
-                else:
-                    tool_ref = str(tool_entry)
-                parts = tool_ref.split(".")
-                func_name = parts[-1]
-                if func_name not in loaded_tool_names:
-                    click.echo(f"  │  ⚠ Missing tool: {tool_ref}")
-        
+                tool_ref = list(tool_entry.keys())[0] if isinstance(tool_entry, dict) else str(tool_entry)
+                if tool_ref.split(".")[-1] not in loaded_tool_names:
+                    click.echo(f"  │  ✗ Unresolved tool: {tool_ref}")
+
+        if agent_type == "sequential":
+            for ref in config.agents:
+                if ref not in loaded_agent_names:
+                    click.echo(f"  │  ✗ Unknown agent: '{ref}'")
+
         click.echo("  └─")
         click.echo()
-    
+
+    if errors:
+        click.echo(f"✗ Validation failed with {len(errors)} error(s):\n", err=True)
+        for err in errors:
+            click.echo(f"  ✗ {err}", err=True)
+        return False
+
     click.echo("✓ Project validation complete")
     click.echo("\nTo deploy, push to your connected repository.")
+    return True
+
+
+@main.command()
+@click.option("--verbose", "-v", is_flag=True, help="Show detailed output")
+def lint(verbose: bool):
+    """Validate agent configurations and tools.
+
+    Loads all agents and tools, validates configurations,
+    and displays a summary of the project.
+    """
+    if not _run_lint(verbose=verbose):
+        sys.exit(1)
 
 
 @main.command(hidden=True)
@@ -1199,35 +1261,26 @@ def deploy(env: str | None, api_url: str, api_key: str | None, project_id: str |
             pass
     
     # Validate required config
-    if not api_key:
-        click.echo("Error: API key required. Set CONNIC_API_KEY or use --api-key", err=True)
-        click.echo("\nCreate an API key in the dashboard: Project Settings → CLI → Create Key")
-        click.echo("\nOr run: connic login")
+    if not api_key or not project_id:
+        missing = "API key" if not api_key else "Project ID"
+        click.echo(f"Error: {missing} required.", err=True)
+        click.echo("\nRun 'connic login' to save your credentials interactively.")
+        click.echo("\nOr set them manually:")
+        click.echo("  CONNIC_API_KEY    - Your API key (Project Settings → CLI → Create Key)")
+        click.echo("  CONNIC_PROJECT_ID - Your project ID (Project Settings → CLI)")
         sys.exit(1)
-    
-    if not project_id:
-        click.echo("Error: Project ID required. Set CONNIC_PROJECT_ID or use --project-id", err=True)
-        click.echo("\nFind your Project ID in the dashboard: Project Settings → CLI")
-        click.echo("\nOr run: connic login")
-        sys.exit(1)
-    
+
     click.echo()
     click.secho("  Connic Deploy", fg="cyan", bold=True)
     click.echo("  " + "─" * 30)
     click.echo()
-    
-    # Validate local project
-    click.echo("  📦 Validating local project...")
-    try:
-        loader = ProjectLoader(".")
-        agents = loader.load_agents()
-        if not agents:
-            click.echo("  ✗ No agents found. Run 'connic init' first.", err=True)
-            sys.exit(1)
-        click.echo(f"     Found {len(agents)} agent(s): {[a.config.name for a in agents]}")
-    except Exception as e:
-        click.echo(f"  ✗ Error loading project: {e}", err=True)
+
+    # Lint before deploying
+    click.echo("  Running lint...")
+    if not _run_lint(quiet=True):
+        click.echo("  ✗ Lint failed. Fix the errors above before deploying.", err=True)
         sys.exit(1)
+    click.echo()
     
     # Create HTTP client
     headers = {
@@ -1361,14 +1414,17 @@ def deploy(env: str | None, api_url: str, api_key: str | None, project_id: str |
             
             deployment = resp.json()
             deployment_id = deployment["id"]
-            
+            queued = resp.headers.get("x-deployment-queued", "").lower() == "true"
+
             click.echo()
-            click.secho("  ✓ Deployment triggered!", fg="green", bold=True)
+            click.secho("  ✓ Deployment created!", fg="green", bold=True)
+            if queued:
+                click.echo()
+                click.echo("     Another deployment is currently building.")
+                click.echo("     Yours will start automatically when a slot is available.")
             click.echo()
-            click.echo(f"     Deployment ID: {deployment_id[:8]}...")
-            click.echo()
-            click.echo("     Check deployment status in your project dashboard:")
-            click.echo(f"     {DEFAULT_BASE_URL}/projects/{project_id}/deployments")
+            click.echo("     Track your deployment:")
+            click.echo(f"     {DEFAULT_BASE_URL}/projects/{project_id}/deployments/{deployment_id}")
             click.echo()
             
     except Exception as e:

@@ -39,6 +39,8 @@ class ProjectLoader:
         self._loaded_middlewares: Dict[str, Optional[Middleware]] = {}
         # Cache for loaded schemas
         self._loaded_schemas: Dict[str, Dict[str, Any]] = {}
+        # Errors accumulated during loading (checked by linter)
+        self._load_errors: List[str] = []
         
         # Ensure project root is in sys.path for imports
         if str(self.project_root) not in sys.path:
@@ -69,7 +71,7 @@ class ProjectLoader:
         
         if errors:
             for error in errors:
-                print(f"Warning: {error}")
+                self._load_errors.append(f"Failed to load agent: {error}")
         
         return agents
 
@@ -151,7 +153,7 @@ class ProjectLoader:
                 try:
                     tool = self._resolve_tool(tool_ref)
                 except Exception as e:
-                    print(f"Warning: Could not resolve tool '{tool_ref}' for agent '{config.name}': {e}")
+                    self._load_errors.append(f"Agent '{config.name}': cannot resolve tool '{tool_ref}': {e}")
                     continue
                 
                 if condition:
@@ -166,7 +168,7 @@ class ProjectLoader:
                     tool = self._resolve_tool(config.tool_name)
                     tools.append(tool)
                 except Exception as e:
-                    print(f"Warning: Could not resolve tool '{config.tool_name}' for tool agent '{config.name}': {e}")
+                    self._load_errors.append(f"Tool agent '{config.name}': cannot resolve tool '{config.tool_name}': {e}")
         
         # Sequential agents don't need tools - they orchestrate other agents
 
@@ -524,7 +526,7 @@ class ProjectLoader:
                 if functions:
                     tools[module_name] = functions
             except Exception as e:
-                print(f"Warning: Could not discover tools in {module_name}: {e}")
+                self._load_errors.append(f"Tool module '{module_name}': failed to import: {e}")
         
         return tools
 
