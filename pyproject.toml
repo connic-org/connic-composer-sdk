@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "connic-composer-sdk"
-version = "0.1.2"
+version = "0.1.3"
 description = "The Connic Composer SDK for building agents and enterprise-level tools."
 authors = [
   { name = "Connic Team", email = "hello@connic.co" },
