@@ -1,13 +1,17 @@
 import os
 import sys
+import tempfile
+import zipfile
 from pathlib import Path
-
 import click
+import httpx
 
 from .loader import ProjectLoader
 
 DEFAULT_API_URL = os.environ.get("CONNIC_API_URL", "https://api.connic.co/v1")
 DEFAULT_BASE_URL = os.environ.get("CONNIC_BASE_URL", "https://connic.co")
+TEMPLATES_REPO = "connic-org/connic-awesome-agents"
+TEMPLATES_ZIP_URL = f"https://github.com/{TEMPLATES_REPO}/archive/refs/heads/main.zip"
 
 # =============================================================================
 # File Validation Constants and Helpers
@@ -98,371 +102,10 @@ def main():
     pass
 
 
-@main.command()
-@click.argument("name", required=False, default=".")
-def init(name: str):
-    """Initialize a new Connic project.
-    
-    Creates the project structure with sample agent and tool files.
-    
-    Examples:
-        connic init              # Initialize in current directory
-        connic init my-project   # Create new directory
-    """
-    base_path = Path(name)
-    
-    if name != ".":
-        if base_path.exists():
-            click.echo(f"Error: Directory '{name}' already exists.", err=True)
-            sys.exit(1)
-        base_path.mkdir(parents=True)
-        click.echo(f"Created directory: {name}")
-    
-    # Create directories
-    (base_path / "agents").mkdir(exist_ok=True)
-    (base_path / "tools").mkdir(exist_ok=True)
-    (base_path / "middleware").mkdir(exist_ok=True)
-    (base_path / "schemas").mkdir(exist_ok=True)
-    
-    # 1. Sample Tool - Calculator
-    tools_file = base_path / "tools" / "calculator.py"
-    if not tools_file.exists():
-        tools_file.write_text('''"""Calculator tools for mathematical operations."""
+def _write_essential_files(base_path: Path, include_examples: bool = False, quiet: bool = False):
+    """Write files that are always created regardless of example inclusion."""
 
-
-def add(a: float, b: float) -> float:
-    """Add two numbers together.
-    
-    Args:
-        a: The first number
-        b: The second number
-    
-    Returns:
-        The sum of a and b
-    """
-    return a + b
-
-
-def multiply(a: float, b: float) -> float:
-    """Multiply two numbers.
-    
-    Args:
-        a: The first number
-        b: The second number
-    
-    Returns:
-        The product of a and b
-    """
-    return a * b
-
-
-def calculate_tax(amount: float, rate: float = 0.19) -> float:
-    """Calculate tax for a given amount.
-    
-    Args:
-        amount: The base amount to calculate tax on
-        rate: The tax rate as a decimal (default: 0.19 for 19%)
-    
-    Returns:
-        The calculated tax amount
-    """
-    return amount * rate
-''')
-    
-    # 2. Sample LLM Agent - Assistant
-    agent_file = base_path / "agents" / "assistant.yaml"
-    if not agent_file.exists():
-        agent_file.write_text('''version: "1.0"
-
-# LLM agents use AI models to process requests
-# type: llm is the default, so it can be omitted
-
-name: assistant
-type: llm
-model: gemini/gemini-2.5-flash
-description: "A helpful general-purpose assistant with calculator capabilities"
-system_prompt: |
-  You are a helpful assistant with access to calculator tools.
-  
-  When users ask mathematical questions, use the available tools:
-  - Use 'add' for addition
-  - Use 'multiply' for multiplication  
-  - Use 'calculate_tax' for tax calculations
-  
-  Always show your work and explain the calculations.
-
-tools:
-  - calculator.add
-  - calculator.multiply
-  - calculator.calculate_tax
-''')
-
-    # 3. Sample Agent - Invoice Processor (more complex LLM example)
-    invoice_agent = base_path / "agents" / "invoice-processor.yaml"
-    if not invoice_agent.exists():
-        invoice_agent.write_text('''version: "1.0"
-
-name: invoice-processor
-type: llm
-model: gemini/gemini-2.5-pro
-description: "Extracts data from invoices and validates totals"
-system_prompt: |
-  You are an expert accountant specializing in invoice processing.
-  
-  Your responsibilities:
-  1. Extract all relevant fields from invoices (vendor, date, line items, totals)
-  2. Use the calculator tools to verify mathematical accuracy
-  3. Flag any discrepancies between line items and totals
-  4. Format extracted data in a structured JSON format
-  
-  Always double-check calculations before confirming totals are correct.
-
-max_concurrent_runs: 1
-temperature: 0.3
-retry_options:
-  attempts: 5
-  max_delay: 60
-
-# Timeout in seconds (min: 5). Capped by your subscription's limit.
-timeout: 30
-
-tools:
-  - calculator.add
-  - calculator.multiply
-  - calculator.calculate_tax
-
-# Output schema for structured JSON response (see schemas/invoice.json)
-output_schema: invoice
-''')
-
-    # 3b. Sample Output Schema - Invoice
-    schema_file = base_path / "schemas" / "invoice.json"
-    if not schema_file.exists():
-        schema_file.write_text('''{
-  "type": "object",
-  "description": "Extracted invoice data",
-  "properties": {
-    "vendor": {
-      "type": "string",
-      "description": "Vendor or company name"
-    },
-    "date": {
-      "type": "string",
-      "description": "Invoice date (YYYY-MM-DD)"
-    },
-    "total": {
-      "type": "number",
-      "description": "Total amount"
-    },
-    "currency": {
-      "type": "string",
-      "description": "Currency code (e.g., USD, EUR)"
-    }
-  },
-  "required": ["vendor", "total"]
-}
-''')
-
-    # 4. Sample TOOL Agent - Tax Calculator (direct tool execution)
-    tax_agent = base_path / "agents" / "tax-calculator.yaml"
-    if not tax_agent.exists():
-        tax_agent.write_text('''version: "1.0"
-
-# Tool agents execute a single tool directly without LLM
-# Perfect for deterministic operations that don't need AI reasoning
-
-name: tax-calculator
-type: tool
-description: "Calculates tax directly using the calculator tool"
-tool_name: calculator.calculate_tax
-''')
-
-    # 5. Sample SEQUENTIAL Agent - Document Pipeline (chains agents)
-    pipeline_agent = base_path / "agents" / "document-pipeline.yaml"
-    if not pipeline_agent.exists():
-        pipeline_agent.write_text('''version: "1.0"
-
-# Sequential agents chain multiple agents together
-# Each agent in the chain receives the previous agent's output as input
-
-name: document-pipeline
-type: sequential
-description: "Processes documents through extraction and validation"
-
-# Agents execute in order: assistant -> invoice-processor
-# The output of 'assistant' becomes the input to 'invoice-processor'
-agents:
-  - assistant
-  - invoice-processor
-''')
-
-    # 6. Sample Orchestrator Agent - Uses trigger_agent predefined tool
-    orchestrator_agent = base_path / "agents" / "orchestrator.yaml"
-    if not orchestrator_agent.exists():
-        orchestrator_agent.write_text('''version: "1.0"
-
-# Orchestrator agents dynamically trigger other agents using the trigger_agent tool
-# Unlike sequential agents, orchestrators can decide at runtime which agents to call
-
-name: orchestrator
-type: llm
-model: gemini/gemini-2.5-flash
-description: "Orchestrates multiple specialized agents based on the task"
-system_prompt: |
-  You are an orchestrator that coordinates specialized agents to complete tasks.
-  
-  Available agents you can trigger:
-  - assistant: General-purpose assistant with calculator tools
-  - invoice-processor: Extracts and validates invoice data
-  - tax-calculator: Calculates tax amounts directly
-  
-  Use the trigger_agent tool to delegate work. You can:
-  - Wait for results: trigger_agent(agent_name="assistant", payload={"message": "..."})
-  - Fire-and-forget: trigger_agent(agent_name="...", payload=..., wait_for_response=False)
-  
-  Analyze the user's request and decide which agent(s) to use.
-  You can trigger multiple agents and combine their results.
-
-tools:
-  - trigger_agent  # Predefined tool - triggers other agents in the project
-''')
-
-    # 7. Sample Knowledge Agent - Uses RAG predefined tools
-    knowledge_agent = base_path / "agents" / "knowledge-agent.yaml"
-    if not knowledge_agent.exists():
-        knowledge_agent.write_text('''version: "1.0"
-
-# Knowledge Agent - Uses RAG (Retrieval-Augmented Generation) to query and store knowledge
-# This agent can search, remember, and manage information in the project's knowledge base
-
-name: knowledge-agent
-type: llm
-model: gemini/gemini-2.5-flash
-description: "An agent with persistent memory that can store and retrieve knowledge"
-system_prompt: |
-  You are a knowledge-aware assistant with access to a persistent knowledge base.
-  
-  You can:
-  - Search the knowledge base for relevant information using query_knowledge
-  - Store new information for future retrieval using store_knowledge
-  - Delete outdated information using delete_knowledge
-  
-  ## How the Knowledge Base Works
-  
-  The knowledge base uses semantic search (vector embeddings), so:
-  - Queries find information by meaning, not just exact keywords
-  - Long content is automatically chunked for better retrieval
-  - Use namespaces to organize information (e.g., "user_preferences", "meeting_notes")
-  - Entry IDs are unique within a namespace
-  
-  ## Best Practices
-  
-  1. **Before answering questions**, search the knowledge base first to see if relevant
-     information exists. Use specific, descriptive queries for best results.
-  
-  2. **When storing knowledge**, use descriptive entry_ids (e.g., "company-refund-policy")
-     and appropriate namespaces to make future retrieval easier.
-  
-  3. **Be proactive** - if a user shares important information, offer to save it
-     to the knowledge base for future reference.
-  
-  4. **Cite your sources** - when using information from the knowledge base, mention
-     the entry_id and any relevant context.
-
-temperature: 0.7
-
-tools:
-  - query_knowledge   # Search the knowledge base using semantic search
-  - store_knowledge   # Store new information for future retrieval
-  - delete_knowledge  # Remove outdated entries from the knowledge base
-''')
-
-    # 8. Sample MCP Agent - Uses Context7 public MCP server
-    mcp_agent = base_path / "agents" / "mcp-docs.yaml"
-    if not mcp_agent.exists():
-        mcp_agent.write_text('''version: "1.0"
-
-# MCP Agent Example - Connects to Context7's public MCP server
-# This demonstrates how to use external MCP servers for additional tools
-
-name: mcp-docs
-type: llm
-model: gemini/gemini-2.5-flash
-description: "An agent that can fetch library documentation using Context7 MCP"
-system_prompt: |
-  You are a helpful coding assistant with access to up-to-date library documentation.
-  
-  You have access to MCP tools that can:
-  - Resolve library names to their documentation IDs
-  - Fetch current documentation for popular libraries and frameworks
-  
-  When a user asks about a library or framework:
-  1. Use the available tools to fetch the latest documentation
-  2. Provide accurate, up-to-date information
-  3. Include code examples when relevant
-  
-  Always base your answers on the documentation you retrieve.
-
-temperature: 0.7
-max_concurrent_runs: 1
-
-# MCP Server Configuration - Context7 public documentation server (no auth required)
-mcp_servers:
-  - name: context7
-    url: https://mcp.context7.com/mcp
-''')
-
-    # 9. Sample Middleware - Assistant
-    middleware_file = base_path / "middleware" / "assistant.py"
-    if not middleware_file.exists():
-        middleware_file.write_text('''"""Middleware for the assistant agent.
-
-Middleware functions run before and after agent execution.
-The file name must match the agent name (assistant.py for assistant agent).
-
-This example:
-- Before: Adds current date/time context so the agent knows today's date
-- After: Wraps the response in a structured JSON format with metadata
-"""
-import json
-from datetime import datetime
-from typing import Any, Dict
-
-
-async def before(content: Dict[str, Any], context: Dict[str, Any]) -> Dict[str, Any]:
-    """
-    Called before the agent runs. Adds current timestamp context.
-    """
-    # Add current date/time context so the agent knows "today's date"
-    now = datetime.now()
-    time_context = f"[Current time: {now.strftime('%A, %B %d, %Y at %I:%M %p')}]"
-    
-    # Insert context at the beginning of the message
-    content["parts"].insert(0, {"text": time_context})
-    
-    return content
-
-
-async def after(response: str, context: Dict[str, Any]) -> str:
-    """
-    Called after the agent completes. Wraps response in structured JSON.
-    """
-    # Wrap the response in a structured format with metadata
-    structured = {
-        "response": response,
-        "metadata": {
-            "run_id": context.get("run_id"),
-            "agent": context.get("agent_name"),
-            "model": context.get("model"),
-            "duration_ms": context.get("duration_ms"),
-            "tokens": context.get("token_usage", {}),
-        }
-    }
-    
-    return json.dumps(structured, indent=2)
-''')
-
-    # 10. .gitignore
+    # .gitignore
     gitignore = base_path / ".gitignore"
     if not gitignore.exists():
         gitignore.write_text('''# Connic
@@ -494,7 +137,7 @@ build/
 Thumbs.db
 ''')
 
-    # 11. requirements.txt
+    # requirements.txt
     requirements = base_path / "requirements.txt"
     if not requirements.exists():
         requirements.write_text('''# Add your tool dependencies below
@@ -502,10 +145,11 @@ Thumbs.db
 # pandas>=2.0.0  # For data processing
 ''')
 
-    # 12. README
+    # README.md
     readme = base_path / "README.md"
     if not readme.exists():
-        readme.write_text('''# Connic Agent Project
+        if include_examples:
+            readme.write_text('''# Connic Agent Project
 
 This project contains AI agents built with the Connic Composer SDK.
 
@@ -620,25 +264,227 @@ See the [Connic Composer docs]({base_url}/docs/v1/composer) for:
 - [Writing Tools]({base_url}/docs/v1/composer/write-tools)
 - [Middleware]({base_url}/docs/v1/composer/middleware)
 '''.format(base_url=DEFAULT_BASE_URL))
+        else:
+            readme.write_text('''# Connic Agent Project
 
-    click.echo(f"\n✓ Initialized Connic project in {base_path.resolve()}\n")
-    click.echo("Created files:")
-    click.echo("  agents/assistant.yaml          (LLM agent)")
-    click.echo("  agents/invoice-processor.yaml  (LLM agent with retry)")
-    click.echo("  agents/tax-calculator.yaml     (Tool agent)")
-    click.echo("  agents/document-pipeline.yaml  (Sequential agent)")
-    click.echo("  agents/orchestrator.yaml       (Orchestrator with trigger_agent)")
-    click.echo("  agents/knowledge-agent.yaml    (Knowledge agent with RAG)")
-    click.echo("  agents/mcp-docs.yaml           (MCP agent with Context7)")
-    click.echo("  tools/calculator.py")
-    click.echo("  middleware/assistant.py")
-    click.echo("  .gitignore")
-    click.echo("  requirements.txt")
-    click.echo("  README.md")
-    click.echo("\nNext steps:")
-    click.echo("  1. Run 'connic dev' to validate your project")
-    click.echo("  2. Edit the agent configs and tools as needed")
-    click.echo("  3. Push to your connected repository to deploy")
+This project contains AI agents built with the Connic Composer SDK.
+
+## Structure
+
+```
+├── agents/       # Agent YAML configurations
+├── tools/        # Python tool modules
+├── middleware/    # Optional middleware for agents
+├── schemas/      # Output schemas for structured responses
+└── requirements.txt
+```
+
+## Getting Started
+
+1. Create your first agent in `agents/`:
+   ```yaml
+   version: "1.0"
+   name: my-agent
+   type: llm
+   model: gemini/gemini-2.5-flash
+   description: "My first agent"
+   system_prompt: |
+     You are a helpful assistant.
+   ```
+
+2. Optionally add tools in `tools/` and reference them in your agent config.
+
+3. Validate your project:
+   ```bash
+   connic dev
+   ```
+
+4. Connect your repository to Connic and push to deploy.
+
+## Documentation
+
+See the [Connic Composer docs]({base_url}/docs/v1/composer) for:
+- [Agent Configuration]({base_url}/docs/v1/composer/agent-configuration)
+- [Writing Tools]({base_url}/docs/v1/composer/write-tools)
+- [Middleware]({base_url}/docs/v1/composer/middleware)
+'''.format(base_url=DEFAULT_BASE_URL))
+
+    # Output (skip when quiet=True, e.g. when init used templates)
+    if not quiet:
+        click.echo(f"\n> Initialized Connic project in {base_path.resolve()}\n")
+        click.echo("Created files:")
+        if include_examples:
+            click.echo("  agents/assistant.yaml          (LLM agent)")
+            click.echo("  agents/invoice-processor.yaml  (LLM agent with retry)")
+            click.echo("  agents/tax-calculator.yaml     (Tool agent)")
+            click.echo("  agents/document-pipeline.yaml  (Sequential agent)")
+            click.echo("  agents/orchestrator.yaml       (Orchestrator with trigger_agent)")
+            click.echo("  agents/knowledge-agent.yaml    (Knowledge agent with RAG)")
+            click.echo("  agents/mcp-docs.yaml           (MCP agent with Context7)")
+            click.echo("  tools/calculator.py")
+            click.echo("  middleware/assistant.py")
+        click.echo("  .gitignore")
+        click.echo("  requirements.txt")
+        click.echo("  README.md")
+        click.echo("\nNext steps:")
+        if include_examples:
+            click.echo("  1. Run 'connic dev' to validate your project")
+            click.echo("  2. Edit the agent configs and tools as needed")
+            click.echo("  3. Push to your connected repository to deploy")
+        else:
+            click.echo("  1. Create your first agent in agents/")
+            click.echo("  2. Run 'connic dev' to validate your project")
+            click.echo("  3. Push to your connected repository to deploy")
+
+
+def _get_local_templates_path() -> Path | None:
+    """Find local connic-awesome-agents directory for development."""
+    cwd = Path.cwd()
+    for candidate in [cwd / "connic-awesome-agents", cwd.parent / "connic-awesome-agents"]:
+        if candidate.exists():
+            return candidate
+    return None
+
+
+def _fetch_templates_from_github() -> Path | None:
+    """Download repo zip and extract. Returns path to extracted dir or None."""
+    try:
+        with httpx.Client(timeout=30.0, follow_redirects=True) as client:
+            r = client.get(TEMPLATES_ZIP_URL)
+            r.raise_for_status()
+            zip_bytes = r.content
+    except Exception as e:
+        click.echo(f"Could not fetch templates from GitHub: {e}", err=True)
+        return None
+    try:
+        tmp = tempfile.mkdtemp()
+        zip_path = Path(tmp) / "templates.zip"
+        zip_path.write_bytes(zip_bytes)
+        with zipfile.ZipFile(zip_path, "r") as zf:
+            zf.extractall(tmp)
+        # Extract creates connic-awesome-agents-main/
+        extracted = Path(tmp) / "connic-awesome-agents-main"
+        if not extracted.exists():
+            return None
+        return extracted
+    except Exception as e:
+        click.echo(f"Could not extract templates: {e}", err=True)
+        return None
+
+
+def _merge_template_into_project(
+    template_src: Path,
+    base_path: Path,
+    requirements_lines: list[str],
+) -> None:
+    """Copy template folder contents into project, merge requirements."""
+    for subdir in ["agents", "tools", "middleware", "schemas"]:
+        src_dir = template_src / subdir
+        dst_dir = base_path / subdir
+        if src_dir.exists():
+            dst_dir.mkdir(exist_ok=True)
+            for f in src_dir.iterdir():
+                if f.is_file() and not f.name.startswith("_"):
+                    (dst_dir / f.name).write_bytes(f.read_bytes())
+    req_file = template_src / "requirements.txt"
+    if req_file.exists():
+        requirements_lines.extend(req_file.read_text().strip().splitlines())
+
+
+def _write_merged_requirements(base_path: Path, lines: list[str]) -> None:
+    """Write merged, deduplicated requirements.txt."""
+    seen = set()
+    unique = []
+    for line in lines:
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            if stripped and stripped not in seen:
+                seen.add(stripped)
+                unique.append(line)
+        else:
+            pkg = stripped.split("#")[0].strip().split("==")[0].split(">=")[0].split("<=")[0]
+            if pkg and pkg not in seen:
+                seen.add(pkg)
+                unique.append(line)
+    (base_path / "requirements.txt").write_text("\n".join(unique) + "\n")
+
+
+@main.command()
+@click.argument("name", required=False, default=".")
+@click.option(
+    "--templates",
+    "-t",
+    default=None,
+    help="Comma-separated template names (e.g., invoice,support). Browse at connic.co/agents",
+)
+def init(name: str, templates: str | None):
+    """Initialize a new Connic project.
+
+    Creates the project structure. Use --templates to add agent templates from
+    connic-awesome-agents. Without --templates, creates a clean scaffold only.
+
+    Examples:
+        connic init                        # Clean project, no examples
+        connic init my-project             # Clean project in new directory
+        connic init . --templates=invoice  # Project with invoice template
+        connic init app --templates=invoice,support
+    """
+    base_path = Path(name)
+
+    if name != ".":
+        if base_path.exists():
+            click.echo(f"Error: Directory '{name}' already exists.", err=True)
+            sys.exit(1)
+        base_path.mkdir(parents=True)
+        click.echo(f"Created directory: {name}")
+
+    # Create directories
+    (base_path / "agents").mkdir(exist_ok=True)
+    (base_path / "tools").mkdir(exist_ok=True)
+    (base_path / "middleware").mkdir(exist_ok=True)
+    (base_path / "schemas").mkdir(exist_ok=True)
+
+    if templates:
+        # Fetch and merge templates
+        template_ids = [t.strip().lower() for t in templates.split(",") if t.strip()]
+        if not template_ids:
+            click.echo("Error: No valid template names provided.", err=True)
+            sys.exit(1)
+
+        extracted = _fetch_templates_from_github()
+        if not extracted:
+            local_path = _get_local_templates_path()
+            if local_path:
+                extracted = local_path
+                click.echo("Using local connic-awesome-agents (GitHub unavailable)")
+            else:
+                click.echo("Error: Could not fetch templates. Try again or use a local connic-awesome-agents folder.", err=True)
+                sys.exit(1)
+        else:
+            click.echo("Fetched templates from connic-awesome-agents")
+
+        requirements_lines = []
+        for tid in template_ids:
+            template_dir = extracted / tid
+            if not template_dir.is_dir():
+                click.echo(f"Error: Template '{tid}' not found in connic-awesome-agents", err=True)
+                sys.exit(1)
+            _merge_template_into_project(template_dir, base_path, requirements_lines)
+            click.echo(f"  Added template: {tid}")
+
+        if requirements_lines:
+            _write_merged_requirements(base_path, requirements_lines)
+        _write_essential_files(base_path, include_examples=False, quiet=True)
+        click.echo(f"\n> Initialized with templates: {', '.join(template_ids)}")
+        click.echo(f"Added agents, tools, middleware, schemas from: {', '.join(template_ids)}")
+        click.echo("Next steps:")
+        click.echo("  1. Run 'connic dev' to validate your project")
+        click.echo("  2. Run 'connic test' to test against Connic cloud")
+        click.echo("  3. Run 'connic deploy' when ready")
+        return
+
+    # No templates: create clean project only (no example files)
+    _write_essential_files(base_path, include_examples=False)
 
 
 @main.command()
