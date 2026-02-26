@@ -48,10 +48,10 @@ For detailed guides and configuration options, see the full documentation:
 |-------|------|
 | **Overview** | [Getting Started](https://connic.co/docs/v1/composer/overview) |
 | **Agent Configuration** | [Agent YAML Reference](https://connic.co/docs/v1/composer/agent-configuration) |
-| **Custom Tools** | [Writing Python Tools](https://connic.co/docs/v1/composer/tools) |
+| **Custom Tools** | [Writing Python Tools](https://connic.co/docs/v1/composer/write-tools) |
 | **Testing** | [Local Development & Testing](https://connic.co/docs/v1/composer/testing) |
 | **Deployment** | [Deploying Agents](https://connic.co/docs/v1/composer/deployment) |
-| **Knowledge & RAG** | [Built-in RAG](https://connic.co/docs/v1/composer/knowledge) |
+| **Knowledge & RAG** | [Built-in RAG](https://connic.co/docs/v1/composer/knowledge-tools) |
 | **Middleware** | [Request/Response Hooks](https://connic.co/docs/v1/composer/middleware) |
 
 ## CLI Commands
@@ -81,6 +81,6 @@ MIT License - see [LICENSE](LICENSE) file.
 
 **Built with ❤️ by the Connic team**
 
-[Website](https://connic.co) • [Documentation](https://connic.co/docs) • [Projects](https://connic.co/projects)
+[Website](https://connic.co) • [Documentation](https://connic.co/docs/v1) • [Projects](https://connic.co/projects)
 
 </div>

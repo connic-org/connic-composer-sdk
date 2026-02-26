@@ -96,7 +96,7 @@ def _validate_project_files() -> tuple[bool, str, list[Path]]:
 
 
 @click.group()
-@click.version_option(version="0.1.0", prog_name="connic")
+@click.version_option(version="0.1.3", prog_name="connic")
 def main():
     """Connic Composer SDK - Build agents with code."""
     pass
@@ -259,7 +259,7 @@ Middleware can define `before` and `after` functions:
 
 ## Documentation
 
-See the [Connic Composer docs]({base_url}/docs/v1/composer) for:
+See the [Connic Composer docs]({base_url}/docs/v1/composer/overview) for:
 - [Agent Configuration]({base_url}/docs/v1/composer/agent-configuration)
 - [Writing Tools]({base_url}/docs/v1/composer/write-tools)
 - [Middleware]({base_url}/docs/v1/composer/middleware)
@@ -303,7 +303,7 @@ This project contains AI agents built with the Connic Composer SDK.
 
 ## Documentation
 
-See the [Connic Composer docs]({base_url}/docs/v1/composer) for:
+See the [Connic Composer docs]({base_url}/docs/v1/composer/overview) for:
 - [Agent Configuration]({base_url}/docs/v1/composer/agent-configuration)
 - [Writing Tools]({base_url}/docs/v1/composer/write-tools)
 - [Middleware]({base_url}/docs/v1/composer/middleware)
@@ -376,8 +376,11 @@ def _merge_template_into_project(
     template_src: Path,
     base_path: Path,
     requirements_lines: list[str],
-) -> None:
-    """Copy template folder contents into project, merge requirements."""
+) -> str | None:
+    """Copy template folder contents into project, merge requirements.
+    
+    Returns the template README content if it exists, None otherwise.
+    """
     for subdir in ["agents", "tools", "middleware", "schemas"]:
         src_dir = template_src / subdir
         dst_dir = base_path / subdir
@@ -389,6 +392,10 @@ def _merge_template_into_project(
     req_file = template_src / "requirements.txt"
     if req_file.exists():
         requirements_lines.extend(req_file.read_text().strip().splitlines())
+    readme_file = template_src / "README.md"
+    if readme_file.exists():
+        return readme_file.read_text().strip()
+    return None
 
 
 def _write_merged_requirements(base_path: Path, lines: list[str]) -> None:
@@ -407,6 +414,27 @@ def _write_merged_requirements(base_path: Path, lines: list[str]) -> None:
                 seen.add(pkg)
                 unique.append(line)
     (base_path / "requirements.txt").write_text("\n".join(unique) + "\n")
+
+
+def _append_template_readmes(base_path: Path, template_readmes: list[str]) -> None:
+    """Append template README content to the project README."""
+    readme = base_path / "README.md"
+    if not readme.exists():
+        return
+    existing = readme.read_text()
+
+    sections = []
+    for content in template_readmes:
+        lines = content.strip().splitlines()
+        if not lines:
+            continue
+        heading = lines[0].lstrip("# ").strip()
+        body = "\n".join(lines[1:]).strip()
+        sections.append(f"## {heading}\n\n{body}")
+
+    if sections:
+        separator = "\n\n---\n\n"
+        readme.write_text(existing.rstrip() + separator + separator.join(sections) + "\n")
 
 
 @main.command()
@@ -464,17 +492,24 @@ def init(name: str, templates: str | None):
             click.echo("Fetched templates from connic-awesome-agents")
 
         requirements_lines = []
+        template_readmes: list[str] = []
         for tid in template_ids:
             template_dir = extracted / tid
             if not template_dir.is_dir():
                 click.echo(f"Error: Template '{tid}' not found in connic-awesome-agents", err=True)
                 sys.exit(1)
-            _merge_template_into_project(template_dir, base_path, requirements_lines)
+            readme_content = _merge_template_into_project(template_dir, base_path, requirements_lines)
+            if readme_content:
+                template_readmes.append(readme_content)
             click.echo(f"  Added template: {tid}")
 
         if requirements_lines:
             _write_merged_requirements(base_path, requirements_lines)
         _write_essential_files(base_path, include_examples=False, quiet=True)
+
+        if template_readmes:
+            _append_template_readmes(base_path, template_readmes)
+
         click.echo(f"\n> Initialized with templates: {', '.join(template_ids)}")
         click.echo(f"Added agents, tools, middleware, schemas from: {', '.join(template_ids)}")
         click.echo("Next steps:")
