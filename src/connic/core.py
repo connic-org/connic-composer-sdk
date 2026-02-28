@@ -94,6 +94,100 @@ class ConcurrencyConfig(BaseModel):
     )
 
 
+class CollectionPermissions(BaseModel):
+    """Per-collection permission overrides for database access control."""
+    prevent_delete: Optional[bool] = Field(
+        default=None,
+        description="If true, db_delete is blocked for this collection. Inherits global setting if None."
+    )
+    prevent_write: Optional[bool] = Field(
+        default=None,
+        description="If true, db_insert and db_update are blocked for this collection. Inherits global setting if None."
+    )
+
+
+class DatabaseAccessConfig(BaseModel):
+    """
+    Access control configuration for database tools.
+
+    Example YAML (simple - flat list, global flags apply to all):
+        database:
+          collections: [orders, customers]
+          prevent_delete: true
+          prevent_write: false
+
+    Example YAML (advanced - per-collection overrides):
+        database:
+          prevent_delete: true
+          prevent_write: false
+          collections:
+            orders:
+              prevent_write: true
+            customers: {}
+            logs:
+              prevent_delete: false
+    """
+    collections: Optional[Dict[str, CollectionPermissions]] = Field(
+        default=None,
+        description="Restrict access to these collections only. None means all collections are accessible. "
+                    "After YAML parsing, this is always a dict mapping collection names to their permissions."
+    )
+    prevent_delete: bool = Field(
+        default=False,
+        description="If true, db_delete is blocked for all collections (can be overridden per collection)."
+    )
+    prevent_write: bool = Field(
+        default=False,
+        description="If true, db_insert and db_update are blocked for all collections (can be overridden per collection)."
+    )
+
+
+class NamespacePermissions(BaseModel):
+    """Per-namespace permission overrides for knowledge access control."""
+    prevent_delete: Optional[bool] = Field(
+        default=None,
+        description="If true, delete_knowledge is blocked for this namespace. Inherits global setting if None."
+    )
+    prevent_write: Optional[bool] = Field(
+        default=None,
+        description="If true, store_knowledge is blocked for this namespace. Inherits global setting if None."
+    )
+
+
+class KnowledgeAccessConfig(BaseModel):
+    """
+    Access control configuration for knowledge tools.
+
+    Example YAML (simple - flat list, global flags apply to all):
+        knowledge:
+          namespaces: [products, faq]
+          prevent_delete: true
+          prevent_write: false
+
+    Example YAML (advanced - per-namespace overrides):
+        knowledge:
+          prevent_delete: true
+          prevent_write: false
+          namespaces:
+            products:
+              prevent_write: true
+            faq: {}
+    """
+    namespaces: Optional[Dict[str, NamespacePermissions]] = Field(
+        default=None,
+        description="Restrict access to these namespaces only. None means all namespaces are accessible. "
+                    "After YAML parsing, this is always a dict mapping namespace names to their permissions."
+    )
+    prevent_delete: bool = Field(
+        default=False,
+        description="If true, delete_knowledge is blocked for all namespaces (can be overridden per namespace)."
+    )
+    prevent_write: bool = Field(
+        default=False,
+        description="If true, store_knowledge is blocked for all namespaces (can be overridden per namespace)."
+    )
+
+
 class McpServerConfig(BaseModel):
     """
     Configuration for an MCP (Model Context Protocol) server connection.
@@ -190,6 +284,20 @@ class AgentConfig(BaseModel):
     # Tool agent fields (required when type=tool)
     tool_name: Optional[str] = Field(default=None, description="Tool to execute for tool-type agents")
     
+    # Database access control
+    database: Optional[DatabaseAccessConfig] = Field(
+        default=None,
+        description="Access control configuration for database tools. "
+                    "If omitted, the agent has unrestricted database access."
+    )
+
+    # Knowledge access control
+    knowledge: Optional[KnowledgeAccessConfig] = Field(
+        default=None,
+        description="Access control configuration for knowledge tools. "
+                    "If omitted, the agent has unrestricted knowledge access."
+    )
+
     # MCP server connections
     mcp_servers: List[McpServerConfig] = Field(
         default_factory=list, 

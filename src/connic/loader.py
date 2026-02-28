@@ -8,16 +8,26 @@ from typing import Any, Dict, List, Optional, Union, get_args, get_origin, get_t
 
 import yaml
 
-from .core import Agent, AgentConfig, AgentType, McpServerConfig, Middleware, RetryOptions, Tool
+from .core import (
+    Agent, AgentConfig, AgentType, CollectionPermissions, DatabaseAccessConfig,
+    KnowledgeAccessConfig, McpServerConfig, Middleware, NamespacePermissions, RetryOptions, Tool,
+)
 
 # List of predefined tool names - SDK knows names only, not implementations
 # Actual implementations are in the runner (backend/app/templates/predefined_tools/)
 PREDEFINED_TOOL_NAMES = {
     "trigger_agent",
-    "query_knowledge",   # Query the knowledge base using semantic search
-    "store_knowledge",   # Store new knowledge in the knowledge base
-    "delete_knowledge",  # Delete knowledge from the knowledge base
-    "web_search",        # Search the web for real-time information (costs 2x runs)
+    "query_knowledge",      # Query the knowledge base using semantic search
+    "store_knowledge",      # Store new knowledge in the knowledge base
+    "delete_knowledge",     # Delete knowledge from the knowledge base
+    "web_search",           # Search the web for real-time information (costs 2x runs)
+    # Database tools
+    "db_find",              # Query documents with JSON filters
+    "db_insert",            # Insert documents into a collection (auto-creates collection)
+    "db_update",            # Update documents matching a filter
+    "db_delete",            # Delete documents matching a filter
+    "db_count",             # Count documents matching a filter
+    "db_list_collections",  # List all collections in the environment
 }
 
 
@@ -109,6 +119,34 @@ class ProjectLoader:
                 for server in config_data["mcp_servers"]
             ]
         
+        # Handle database access config
+        if "database" in config_data and config_data["database"]:
+            db_raw = dict(config_data["database"])
+            if "collections" in db_raw and isinstance(db_raw["collections"], list):
+                # Simple format: flat list -> dict with empty per-collection permissions
+                db_raw["collections"] = {name: CollectionPermissions() for name in db_raw["collections"]}
+            elif "collections" in db_raw and isinstance(db_raw["collections"], dict):
+                # Advanced format: dict with optional per-collection overrides
+                db_raw["collections"] = {
+                    name: CollectionPermissions(**(perms or {}))
+                    for name, perms in db_raw["collections"].items()
+                }
+            config_data["database"] = DatabaseAccessConfig(**db_raw)
+
+        # Handle knowledge access config
+        if "knowledge" in config_data and config_data["knowledge"]:
+            kn_raw = dict(config_data["knowledge"])
+            if "namespaces" in kn_raw and isinstance(kn_raw["namespaces"], list):
+                # Simple format: flat list -> dict with empty per-namespace permissions
+                kn_raw["namespaces"] = {name: NamespacePermissions() for name in kn_raw["namespaces"]}
+            elif "namespaces" in kn_raw and isinstance(kn_raw["namespaces"], dict):
+                # Advanced format: dict with optional per-namespace overrides
+                kn_raw["namespaces"] = {
+                    name: NamespacePermissions(**(perms or {}))
+                    for name, perms in kn_raw["namespaces"].items()
+                }
+            config_data["knowledge"] = KnowledgeAccessConfig(**kn_raw)
+
         # Convert type string to enum if present
         if "type" in config_data and isinstance(config_data["type"], str):
             config_data["type"] = AgentType(config_data["type"])
