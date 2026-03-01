@@ -75,6 +75,48 @@ class RetryOptions(BaseModel):
     max_delay: int = Field(default=30, ge=1, le=300, description="Maximum seconds between retries (max: 300s)")
 
 
+class SessionConfig(BaseModel):
+    """
+    Persistent session configuration for maintaining conversation history across requests.
+
+    When configured, the agent reuses sessions keyed by a resolved value,
+    enabling multi-turn conversations that survive restarts and redeployments.
+
+    Example YAML:
+        session:
+          key: context.telegram_chat_id
+          ttl: 86400
+    """
+    key: str = Field(
+        ..., min_length=1,
+        description="Dot-path expression to resolve session ID. "
+                    "Prefix with 'context.' to read from middleware context, "
+                    "or 'input.' to read from the raw payload."
+    )
+    ttl: Optional[int] = Field(
+        default=None, ge=60,
+        description="Session time-to-live in seconds. Sessions not updated within "
+                    "this period are considered expired. "
+                    "When not set, sessions never expire."
+    )
+
+    @field_validator('key')
+    @classmethod
+    def validate_key_prefix(cls, v: str) -> str:
+        if not v.startswith("context.") and not v.startswith("input."):
+            raise ValueError(
+                f"Invalid session key '{v}'. Must start with 'context.' or 'input.' "
+                "(e.g., 'context.chat_id' or 'input.user_id')."
+            )
+        parts = v.split(".", 1)
+        if len(parts) < 2 or not parts[1]:
+            raise ValueError(
+                f"Invalid session key '{v}'. Must specify a field after the prefix "
+                "(e.g., 'context.chat_id')."
+            )
+        return v
+
+
 class ConcurrencyConfig(BaseModel):
     """
     Key-based concurrency control for agent runs.
@@ -336,6 +378,13 @@ class AgentConfig(BaseModel):
         description="Maximum number of agent loop iterations per run. Each iteration is one LLM call (e.g. agent output, tool call, next output). Prevents infinite loops and excessive resource consumption."
     )
     concurrency: Optional[ConcurrencyConfig] = Field(default=None, description="Key-based concurrency control. Ensures only one run per unique key value at a time.")
+    
+    # Persistent session configuration
+    session: Optional[SessionConfig] = Field(
+        default=None,
+        description="Persistent session configuration. When set, the agent maintains "
+                    "conversation history across requests, keyed by the resolved value."
+    )
     
     @field_validator('version')
     @classmethod
