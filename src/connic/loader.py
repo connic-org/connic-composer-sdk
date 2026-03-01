@@ -21,6 +21,7 @@ PREDEFINED_TOOL_NAMES = {
     "store_knowledge",      # Store new knowledge in the knowledge base
     "delete_knowledge",     # Delete knowledge from the knowledge base
     "web_search",           # Search the web for real-time information (costs 2x runs)
+    "web_read_page",        # Fetch a web page and return its content as markdown (costs 2x runs)
     # Database tools
     "db_find",              # Query documents with JSON filters
     "db_insert",            # Insert documents into a collection (auto-creates collection)

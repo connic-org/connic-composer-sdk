@@ -198,6 +198,34 @@ async def web_search(
     )
 
 
+async def web_read_page(
+    url: str,
+) -> Dict[str, Any]:
+    """
+    Fetch a web page and return its content as markdown.
+
+    This is a managed service - no configuration required.
+    Note: Each call to web_read_page adds 1 additional billable run.
+    (e.g., a run with 2 scrapes counts as 3 runs: 1 base + 2 scrapes)
+
+    Args:
+        url: The URL of the page to fetch
+
+    Returns:
+        A dictionary containing:
+        - markdown: The page content as markdown
+        - url: The URL that was fetched
+
+    Example:
+        result = await web_read_page("https://example.com/article")
+        print(result["markdown"])
+    """
+    raise RuntimeError(
+        "web_read_page will be auto-injected when running via connic CLI or after deployment. "
+        "Run 'connic test' to test your agents with predefined tools."
+    )
+
+
 async def db_find(
     collection: str,
     filter: Optional[Dict[str, Any]] = None,
@@ -358,6 +386,7 @@ __all__ = [
     "store_knowledge",
     "delete_knowledge",
     "web_search",
+    "web_read_page",
     # Database tools
     "db_find",
     "db_insert",
