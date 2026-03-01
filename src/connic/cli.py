@@ -96,7 +96,7 @@ def _validate_project_files() -> tuple[bool, str, list[Path]]:
 
 
 @click.group()
-@click.version_option(version="0.1.3", prog_name="connic")
+@click.version_option(version="0.1.4", prog_name="connic")
 def main():
     """Connic Composer SDK - Build agents with code."""
     pass
