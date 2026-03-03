@@ -230,6 +230,108 @@ class KnowledgeAccessConfig(BaseModel):
     )
 
 
+class GuardrailResult(BaseModel):
+    """
+    Result returned by a guardrail check function.
+
+    Custom guardrails return this from their ``check()`` function.
+
+    Example::
+
+        from connic import GuardrailResult
+
+        def check(content: str, context: dict) -> GuardrailResult:
+            if "bad" in content:
+                return GuardrailResult(passed=False, message="Content policy violation")
+            return GuardrailResult(passed=True)
+    """
+    passed: bool
+    message: Optional[str] = None
+    details: Optional[Dict[str, Any]] = None
+
+
+class GuardrailRule(BaseModel):
+    """
+    A single guardrail rule within a guardrails configuration.
+
+    Example YAML::
+
+        - type: prompt_injection
+          mode: block
+        - type: pii
+          mode: redact
+          config:
+            entities: [email, phone, ssn]
+        - type: custom
+          name: my-check
+          mode: warn
+    """
+    type: str = Field(..., description="Guardrail type (e.g., prompt_injection, pii, moderation, topic_restriction, regex, custom)")
+    mode: str = Field(default="block", description="Action on violation: block, warn, or redact (PII only)")
+    name: Optional[str] = Field(default=None, description="Name of the custom guardrail file (only for type=custom)")
+    config: Dict[str, Any] = Field(default_factory=dict, description="Type-specific configuration options")
+
+    @field_validator('mode')
+    @classmethod
+    def validate_mode(cls, v: str) -> str:
+        allowed = {"block", "warn", "redact"}
+        if v not in allowed:
+            raise ValueError(f"Invalid guardrail mode '{v}'. Must be one of: {', '.join(sorted(allowed))}")
+        return v
+
+
+BUILTIN_GUARDRAIL_TYPES = {
+    "prompt_injection", "pii", "moderation", "topic_restriction", "regex", "custom",
+    "pii_leakage", "system_prompt_leakage", "relevance", "data_exfiltration",
+}
+
+
+class GuardrailsConfig(BaseModel):
+    """
+    Input and output guardrails configuration for an agent.
+
+    Example YAML::
+
+        guardrails:
+          input:
+            - type: prompt_injection
+              mode: block
+            - type: pii
+              mode: redact
+          output:
+            - type: moderation
+              mode: block
+            - type: system_prompt_leakage
+              mode: block
+    """
+    input: List[GuardrailRule] = Field(default_factory=list, description="Guardrails applied to agent input before execution")
+    output: List[GuardrailRule] = Field(default_factory=list, description="Guardrails applied to agent output after execution")
+
+    @model_validator(mode='after')
+    def validate_rules(self):
+        for rule in self.input + self.output:
+            if rule.type == "custom" and not rule.name:
+                raise ValueError("Custom guardrails require a 'name' field pointing to the guardrail file")
+            if rule.type not in BUILTIN_GUARDRAIL_TYPES:
+                raise ValueError(
+                    f"Unknown guardrail type '{rule.type}'. "
+                    f"Available types: {', '.join(sorted(BUILTIN_GUARDRAIL_TYPES))}"
+                )
+            if rule.mode == "redact" and rule.type not in ("pii", "pii_leakage"):
+                raise ValueError(f"Mode 'redact' is only supported for 'pii' and 'pii_leakage' guardrails, not '{rule.type}'")
+        return self
+
+
+class CustomGuardrail(BaseModel):
+    """A loaded custom guardrail check function."""
+    name: str
+    check: Callable[..., Any]
+    is_async: bool = False
+
+    class Config:
+        arbitrary_types_allowed = True
+
+
 class McpServerConfig(BaseModel):
     """
     Configuration for an MCP (Model Context Protocol) server connection.
@@ -384,6 +486,13 @@ class AgentConfig(BaseModel):
         default=None,
         description="Persistent session configuration. When set, the agent maintains "
                     "conversation history across requests, keyed by the resolved value."
+    )
+    
+    # Guardrails configuration
+    guardrails: Optional[GuardrailsConfig] = Field(
+        default=None,
+        description="Input and output guardrails for safety and compliance. "
+                    "Guardrails run before/after agent execution to enforce content policies."
     )
     
     @field_validator('version')

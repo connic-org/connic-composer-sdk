@@ -9,7 +9,8 @@ from typing import Any, Dict, List, Optional, Union, get_args, get_origin, get_t
 import yaml
 
 from .core import (
-    Agent, AgentConfig, AgentType, CollectionPermissions, DatabaseAccessConfig,
+    Agent, AgentConfig, AgentType, CollectionPermissions, CustomGuardrail,
+    DatabaseAccessConfig, GuardrailResult, GuardrailRule, GuardrailsConfig,
     KnowledgeAccessConfig, McpServerConfig, Middleware, NamespacePermissions, RetryOptions, Tool,
 )
 
@@ -43,6 +44,7 @@ class ProjectLoader:
         self.tools_dir = self.project_root / "tools"
         self.middleware_dir = self.project_root / "middleware"
         self.schemas_dir = self.project_root / "schemas"
+        self.guardrails_dir = self.project_root / "guardrails"
         
         # Cache for loaded modules to avoid reloading
         self._loaded_modules: Dict[str, Any] = {}
@@ -50,6 +52,8 @@ class ProjectLoader:
         self._loaded_middlewares: Dict[str, Optional[Middleware]] = {}
         # Cache for loaded schemas
         self._loaded_schemas: Dict[str, Dict[str, Any]] = {}
+        # Cache for loaded custom guardrails
+        self._loaded_guardrails: Dict[str, Optional[CustomGuardrail]] = {}
         # Errors accumulated during loading (checked by linter)
         self._load_errors: List[str] = []
         
@@ -147,6 +151,18 @@ class ProjectLoader:
                     for name, perms in kn_raw["namespaces"].items()
                 }
             config_data["knowledge"] = KnowledgeAccessConfig(**kn_raw)
+
+        # Handle guardrails config
+        if "guardrails" in config_data and config_data["guardrails"]:
+            gr_raw = config_data["guardrails"]
+            parsed = {}
+            for direction in ("input", "output"):
+                if direction in gr_raw and gr_raw[direction]:
+                    parsed[direction] = [
+                        GuardrailRule(**rule) if isinstance(rule, dict) else rule
+                        for rule in gr_raw[direction]
+                    ]
+            config_data["guardrails"] = GuardrailsConfig(**parsed)
 
         # Convert type string to enum if present
         if "type" in config_data and isinstance(config_data["type"], str):
@@ -658,3 +674,73 @@ class ProjectLoader:
                 print(f"Warning: Could not discover middleware for {agent_name}: {e}")
         
         return middlewares
+
+    def load_guardrail(self, name: str) -> Optional[CustomGuardrail]:
+        """
+        Load a custom guardrail by name.
+        
+        Custom guardrail files live in the guardrails/ directory and must
+        export a ``check(content: str, context: dict) -> GuardrailResult``
+        function.
+        
+        Args:
+            name: Name of the guardrail (matches filename without .py)
+            
+        Returns:
+            CustomGuardrail object, or None if no guardrail file exists
+        """
+        if name in self._loaded_guardrails:
+            return self._loaded_guardrails[name]
+        
+        guardrail_file = self.guardrails_dir / f"{name}.py"
+        if not guardrail_file.exists():
+            self._loaded_guardrails[name] = None
+            return None
+        
+        try:
+            spec = importlib.util.spec_from_file_location(
+                f"guardrails.{name}", guardrail_file
+            )
+            if not spec or not spec.loader:
+                self._loaded_guardrails[name] = None
+                return None
+            
+            module = importlib.util.module_from_spec(spec)
+            sys.modules[f"guardrails.{name}"] = module
+            spec.loader.exec_module(module)
+            
+            check_func = getattr(module, 'check', None)
+            
+            if check_func is None or not callable(check_func):
+                self._load_errors.append(
+                    f"Custom guardrail '{name}': missing or non-callable 'check' function"
+                )
+                self._loaded_guardrails[name] = None
+                return None
+            
+            is_async = asyncio.iscoroutinefunction(check_func)
+            guardrail = CustomGuardrail(name=name, check=check_func, is_async=is_async)
+            self._loaded_guardrails[name] = guardrail
+            return guardrail
+            
+        except Exception as e:
+            print(f"Warning: Failed to load guardrail '{name}': {e}")
+            self._loaded_guardrails[name] = None
+            return None
+
+    def discover_guardrails(self) -> List[str]:
+        """
+        Discover all custom guardrail files in the guardrails/ directory.
+        
+        Returns:
+            List of guardrail names (filenames without .py extension)
+        """
+        if not self.guardrails_dir.exists():
+            return []
+        
+        guardrails = []
+        for gf in self.guardrails_dir.glob("*.py"):
+            if not gf.name.startswith("_"):
+                guardrails.append(gf.stem)
+        
+        return sorted(guardrails)
