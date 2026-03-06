@@ -73,6 +73,7 @@ class RetryOptions(BaseModel):
     """Configuration for automatic retries on failures."""
     attempts: int = Field(default=3, ge=1, le=10, description="Maximum retry attempts (max: 10)")
     max_delay: int = Field(default=30, ge=1, le=300, description="Maximum seconds between retries (max: 300s)")
+    rerun_middleware: bool = Field(default=False, description="Re-execute the 'before' middleware on each retry attempt. Useful when middleware enriches the prompt with external state that may change between retries.")
 
 
 class SessionConfig(BaseModel):

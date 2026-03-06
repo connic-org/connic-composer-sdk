@@ -96,7 +96,7 @@ def _validate_project_files() -> tuple[bool, str, list[Path]]:
 
 
 @click.group()
-@click.version_option(version="0.1.5", prog_name="connic")
+@click.version_option(version="0.1.6", prog_name="connic")
 def main():
     """Connic Composer SDK - Build agents with code."""
     pass
@@ -528,7 +528,10 @@ def _run_lint(verbose: bool = False, quiet: bool = False) -> bool:
         if verbose:
             click.echo(f"  │  Max Concurrent Runs: {config.max_concurrent_runs}")
             if config.retry_options:
-                click.echo(f"  │  Retry: {config.retry_options.attempts} attempts, max {config.retry_options.max_delay}s delay")
+                retry_info = f"  │  Retry: {config.retry_options.attempts} attempts, max {config.retry_options.max_delay}s delay"
+                if config.retry_options.rerun_middleware:
+                    retry_info += " (rerun middleware)"
+                click.echo(retry_info)
             if config.timeout:
                 click.echo(f"  │  Timeout: {config.timeout}s")
 
