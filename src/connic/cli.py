@@ -96,7 +96,7 @@ def _validate_project_files() -> tuple[bool, str, list[Path]]:
 
 
 @click.group()
-@click.version_option(version="0.1.6", prog_name="connic")
+@click.version_option(version="0.1.7", prog_name="connic")
 def main():
     """Connic Composer SDK - Build agents with code."""
     pass
@@ -155,7 +155,7 @@ This project contains AI agents built with the Connic Composer SDK.
 ## Structure
 
 ```
-├── agents/       # Agent YAML configurations
+├── agents/       # Agent YAML configurations (subfolders supported)
 ├── tools/        # Python tool modules
 ├── middleware/    # Optional middleware for agents
 ├── schemas/      # Output schemas for structured responses
@@ -164,7 +164,7 @@ This project contains AI agents built with the Connic Composer SDK.
 
 ## Getting Started
 
-1. Create your first agent in `agents/`:
+1. Create your first agent anywhere under `agents/`:
    ```yaml
    version: "1.0"
    name: my-agent
@@ -200,7 +200,7 @@ See the [Connic Composer docs]({base_url}/docs/v1/composer/overview) for:
         click.echo("  requirements.txt")
         click.echo("  README.md")
         click.echo("\nNext steps:")
-        click.echo("  1. Create your first agent in agents/")
+        click.echo("  1. Create your first agent anywhere under agents/")
         click.echo("  2. Run 'connic lint' to validate your project")
         click.echo("  3. Push to your connected repository to deploy")
 
@@ -244,6 +244,7 @@ def _merge_template_into_project(
     template_src: Path,
     base_path: Path,
     requirements_lines: list[str],
+    template_id: str,
 ) -> str | None:
     """Copy template folder contents into project, merge requirements.
     
@@ -254,9 +255,13 @@ def _merge_template_into_project(
         dst_dir = base_path / subdir
         if src_dir.exists():
             dst_dir.mkdir(exist_ok=True)
-            for f in src_dir.iterdir():
-                if f.is_file() and not f.name.startswith("_"):
-                    (dst_dir / f.name).write_bytes(f.read_bytes())
+            for f in src_dir.rglob("*"):
+                if not f.is_file() or f.name.startswith("_"):
+                    continue
+                relative_path = f.relative_to(src_dir)
+                destination = dst_dir / template_id / relative_path if subdir == "agents" else dst_dir / relative_path
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                destination.write_bytes(f.read_bytes())
     req_file = template_src / "requirements.txt"
     if req_file.exists():
         requirements_lines.extend(req_file.read_text().strip().splitlines())
@@ -366,7 +371,7 @@ def init(name: str, templates: str | None):
             if not template_dir.is_dir():
                 click.echo(f"Error: Template '{tid}' not found in connic-awesome-agents", err=True)
                 sys.exit(1)
-            readme_content = _merge_template_into_project(template_dir, base_path, requirements_lines)
+            readme_content = _merge_template_into_project(template_dir, base_path, requirements_lines, tid)
             if readme_content:
                 template_readmes.append(readme_content)
             click.echo(f"  Added template: {tid}")
@@ -470,7 +475,7 @@ def _run_lint(verbose: bool = False, quiet: bool = False) -> bool:
         return False
 
     if not agents and not errors:
-        click.echo("  No agents found in agents/ directory", err=True)
+        click.echo("  No agents found in agents/", err=True)
         click.echo("\nRun 'connic init' to create a sample project.")
         return False
 
@@ -483,18 +488,8 @@ def _run_lint(verbose: bool = False, quiet: bool = False) -> bool:
         if agent_type == "sequential":
             for ref in config.agents:
                 if ref not in loaded_agent_names:
-                    errors.append(f"Sequential agent '{config.name}' references unknown agent '{ref}'")
-
-        elif agent_type == "llm":
-            loaded_tool_names = {t.name for t in agent.tools}
-            for tool_entry in config.tools:
-                tool_ref = list(tool_entry.keys())[0] if isinstance(tool_entry, dict) else str(tool_entry)
-                if tool_ref.split(".")[-1] not in loaded_tool_names:
-                    errors.append(f"Agent '{config.name}': unresolved tool '{tool_ref}'")
-
-        elif agent_type == "tool":
-            if not agent.tools:
-                errors.append(f"Tool agent '{config.name}': tool '{config.tool_name}' could not be resolved")
+                    location = f" ({config.source_path})" if config.source_path else ""
+                    errors.append(f"Sequential agent '{config.name}'{location} references unknown agent '{ref}'")
 
     if quiet:
         if errors:
@@ -514,6 +509,8 @@ def _run_lint(verbose: bool = False, quiet: bool = False) -> bool:
         type_label = {"llm": "🧠 LLM", "sequential": "🔗 Sequential", "tool": "🔧 Tool"}.get(agent_type, agent_type)
 
         click.echo(f"  ┌─ {config.name} [{type_label}]")
+        if config.source_path:
+            click.echo(f"  │  Path: {config.source_path}")
         click.echo(f"  │  Description: {config.description}")
 
         if agent_type == "llm":
@@ -537,7 +534,7 @@ def _run_lint(verbose: bool = False, quiet: bool = False) -> bool:
 
         if agent_type == "llm":
             if agent.tools:
-                tool_names = [t.name for t in agent.tools]
+                tool_names = [t.ref or t.name for t in agent.tools]
                 click.echo(f"  │  Tools: {', '.join(tool_names)}")
             else:
                 click.echo("  │  Tools: (none)")
@@ -545,12 +542,6 @@ def _run_lint(verbose: bool = False, quiet: bool = False) -> bool:
             if config.mcp_servers:
                 for mcp_server in config.mcp_servers:
                     click.echo(f"  │  MCP Server: {mcp_server.name} ({mcp_server.url})")
-
-            loaded_tool_names = {t.name for t in agent.tools}
-            for tool_entry in config.tools:
-                tool_ref = list(tool_entry.keys())[0] if isinstance(tool_entry, dict) else str(tool_entry)
-                if tool_ref.split(".")[-1] not in loaded_tool_names:
-                    click.echo(f"  │  ✗ Unresolved tool: {tool_ref}")
 
         if agent_type == "sequential":
             for ref in config.agents:
@@ -609,7 +600,7 @@ def tools():
     click.echo("Available tools:\n")
     
     for module, functions in sorted(discovered.items()):
-        click.echo(f"  {module}.py:")
+        click.echo(f"  {module.replace('.', '/')}.py:")
         for func_name in functions:
             # Load the tool to get description
             try:
@@ -623,7 +614,7 @@ def tools():
                 click.echo(f"    - {func_name}")
         click.echo()
     
-    click.echo("Use in agent YAML as: <module>.<function>")
+    click.echo("Use in agent YAML as the exact module path under tools/, e.g. <module>.<function> or <directory>.<module>.<function>")
 
 
 # =============================================================================
@@ -696,7 +687,11 @@ def test(name: str, api_url: str, api_key: str, project_id: str):
         if not agents:
             click.echo("Error: No agents found. Run 'connic init' first.", err=True)
             sys.exit(1)
-        click.echo(f"  Found {len(agents)} agents: {[a.config.name for a in agents]}")
+        agent_summaries = [
+            f"{a.config.name} ({a.config.source_path})" if a.config.source_path else a.config.name
+            for a in agents
+        ]
+        click.echo(f"  Found {len(agents)} agents: {agent_summaries}")
     except Exception as e:
         click.echo(f"Error loading project: {e}", err=True)
         sys.exit(1)

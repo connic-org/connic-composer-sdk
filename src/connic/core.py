@@ -384,6 +384,9 @@ class Tool(BaseModel):
     # Condition expression for conditional tool availability (evaluated per-request)
     condition: Optional[str] = None
 
+    # Canonical tool reference (e.g. calculator.add or billing.calculator.add)
+    ref: Optional[str] = None
+
     class Config:
         arbitrary_types_allowed = True
     
@@ -421,13 +424,13 @@ class AgentConfig(BaseModel):
     model: Optional[str] = Field(default=None, description="The AI model to use (required for LLM agents)")
     system_prompt: Optional[str] = Field(default=None, description="Instructions that define the agent's behavior")
     temperature: float = Field(default=1.0, ge=0.0, le=2.0, description="Controls randomness in output")
-    tools: List[Any] = Field(default_factory=list, description="List of tools the agent can use. Each is a string (always available) or a mapping {tool_ref: condition_expression}.")
+    tools: List[Any] = Field(default_factory=list, description="List of tools the agent can use. Each is a string (always available) or a mapping {tool_ref: condition_expression}. Tool refs must use the exact module path under tools/, such as module.function or directory.module.function.")
     
     # Sequential agent fields (required when type=sequential)
     agents: List[str] = Field(default_factory=list, description="List of agent names to execute in sequence")
     
     # Tool agent fields (required when type=tool)
-    tool_name: Optional[str] = Field(default=None, description="Tool to execute for tool-type agents")
+    tool_name: Optional[str] = Field(default=None, description="Tool to execute for tool-type agents using the exact module path under tools/ (module.function or directory.module.function)")
     
     # Database access control
     database: Optional[DatabaseAccessConfig] = Field(
@@ -460,6 +463,10 @@ class AgentConfig(BaseModel):
     output_schema_dict: Optional[Dict[str, Any]] = Field(
         default=None,
         description="The loaded JSON Schema dict (populated at runtime by loader)"
+    )
+    source_path: Optional[str] = Field(
+        default=None,
+        description="The relative path to the agent YAML file (populated at runtime by loader)"
     )
     
     # Reasoning configuration (LLM agents only)

@@ -61,6 +61,26 @@ class ProjectLoader:
         if str(self.project_root) not in sys.path:
             sys.path.insert(0, str(self.project_root))
 
+    def _discover_agent_files(self) -> List[Path]:
+        """Discover agent YAML files recursively under agents/."""
+        agent_files: List[Path] = []
+        seen_paths = set()
+
+        for pattern in ("*.yaml", "*.yml"):
+            for agent_file in self.agents_dir.rglob(pattern):
+                relative_parts = agent_file.relative_to(self.agents_dir).parts
+                if any(part.startswith(".") for part in relative_parts):
+                    continue
+
+                resolved_path = agent_file.resolve()
+                if resolved_path in seen_paths:
+                    continue
+
+                seen_paths.add(resolved_path)
+                agent_files.append(agent_file)
+
+        return sorted(agent_files, key=lambda path: path.relative_to(self.agents_dir).as_posix())
+
     def load_agents(self) -> List[Agent]:
         """
         Scans the agents directory and loads all defined agents.
@@ -77,12 +97,24 @@ class ProjectLoader:
         agents = []
         errors = []
         
-        for agent_file in sorted(self.agents_dir.glob("*.yaml")):
+        loaded_names: Dict[str, Path] = {}
+
+        for agent_file in self._discover_agent_files():
             try:
                 agent = self._load_single_agent(agent_file)
+                existing_file = loaded_names.get(agent.config.name)
+                if existing_file:
+                    existing_rel = existing_file.relative_to(self.project_root).as_posix()
+                    current_rel = agent_file.relative_to(self.project_root).as_posix()
+                    errors.append(
+                        f"{current_rel}: duplicate agent name '{agent.config.name}' already defined in {existing_rel}"
+                    )
+                    continue
+
+                loaded_names[agent.config.name] = agent_file
                 agents.append(agent)
             except Exception as e:
-                errors.append(f"{agent_file.name}: {e}")
+                errors.append(f"{agent_file.relative_to(self.project_root).as_posix()}: {e}")
         
         if errors:
             for error in errors:
@@ -100,10 +132,11 @@ class ProjectLoader:
         Returns:
             The loaded Agent object
         """
-        agent_file = self.agents_dir / f"{name}.yaml"
-        if not agent_file.exists():
-            raise FileNotFoundError(f"Agent '{name}' not found at {agent_file}")
-        return self._load_single_agent(agent_file)
+        for agent in self.load_agents():
+            if agent.config.name == name:
+                return agent
+
+        raise FileNotFoundError(f"Agent '{name}' not found under {self.agents_dir}")
 
     def _load_single_agent(self, agent_file: Path) -> Agent:
         """Load a single agent from a YAML file."""
@@ -170,6 +203,7 @@ class ProjectLoader:
         
         # Parse config
         config = AgentConfig(**config_data)
+        config.source_path = agent_file.relative_to(self.project_root).as_posix()
         
         # Load output schema if specified (LLM agents only)
         if config.output_schema:
@@ -224,7 +258,26 @@ class ProjectLoader:
                     tools.append(tool)
                 except Exception as e:
                     self._load_errors.append(f"Tool agent '{config.name}': cannot resolve tool '{config.tool_name}': {e}")
-        
+
+        duplicate_tool_names: Dict[str, List[str]] = {}
+        for tool in tools:
+            duplicate_tool_names.setdefault(tool.name, []).append(tool.ref or tool.name)
+
+        collisions = {
+            tool_name: refs
+            for tool_name, refs in duplicate_tool_names.items()
+            if len(refs) > 1
+        }
+        if collisions:
+            messages = [
+                f"'{tool_name}' via {', '.join(sorted(refs))}"
+                for tool_name, refs in sorted(collisions.items())
+            ]
+            raise ValueError(
+                "Agent exposes duplicate tool names. Tool function names must be unique within an agent: "
+                + "; ".join(messages)
+            )
+
         # Sequential agents don't need tools - they orchestrate other agents
 
         return Agent(config=config, tools=tools)
@@ -236,7 +289,9 @@ class ProjectLoader:
         For predefined tools (e.g., "trigger_agent"), creates a marker that
         the runner will inject the actual implementation for.
         
-        For user-defined tools, format: "module.function" (e.g., "calculator.add")
+        For user-defined tools, format: "module.function" for top-level modules
+        or "directory.module.function" for nested modules (e.g.,
+        "calculator.add" or "billing.calculator.add")
         
         Args:
             tool_ref: The tool reference string
@@ -248,27 +303,37 @@ class ProjectLoader:
         if tool_ref in PREDEFINED_TOOL_NAMES:
             return self._create_predefined_tool_marker(tool_ref)
         
-        # User-defined tool: expect "module.function" format
+        # User-defined tool: expect an exact module path plus function name.
+        # Top-level modules use "module.function" and nested modules use
+        # "directory.module.function".
         parts = tool_ref.split(".")
         
-        if len(parts) != 2:
+        if len(parts) < 2:
             raise ValueError(
                 f"Invalid tool reference '{tool_ref}'. "
-                "Use 'module.function' format (e.g., 'calculator.add') "
+                "Use 'module.function' or 'directory.module.function' format "
+                "(e.g., 'calculator.add' or 'billing.calculator.add') "
                 f"or a predefined tool name ({', '.join(PREDEFINED_TOOL_NAMES)})."
             )
         
-        module_name = parts[0]
-        function_name = parts[1]
+        module_name = ".".join(parts[:-1])
+        function_name = parts[-1]
 
-        module = self._load_tool_module(module_name)
+        resolved_module_name = self._resolve_tool_module_name(module_name)
+
+        module = self._load_tool_module(resolved_module_name)
         
         func = getattr(module, function_name, None)
         if func is None:
-            raise ValueError(f"Function '{function_name}' not found in module '{module_name}'")
+            raise ValueError(f"Function '{function_name}' not found in module '{resolved_module_name}'")
         
         if not callable(func):
-            raise ValueError(f"'{function_name}' in module '{module_name}' is not callable")
+            raise ValueError(f"'{function_name}' in module '{resolved_module_name}' is not callable")
+
+        if getattr(func, "__module__", None) != f"tools.{resolved_module_name}":
+            raise ValueError(
+                f"Function '{function_name}' is not defined in module '{resolved_module_name}'"
+            )
 
         # Check if function is async
         is_async = asyncio.iscoroutinefunction(func)
@@ -284,7 +349,8 @@ class ProjectLoader:
             description=description,
             func=func,
             is_async=is_async,
-            parameters=schema
+            parameters=schema,
+            ref=f"{resolved_module_name}.{function_name}",
         )
     
     def _validate_condition(self, condition: str, tool_ref: str) -> None:
@@ -309,6 +375,7 @@ class ProjectLoader:
             is_async=True,   # Will be set by runner
             parameters={},   # Will be set by runner
             is_predefined=True,  # Marker for runner to inject implementation
+            ref=tool_name,
         )
 
     def _load_schema(self, schema_name: str) -> Dict[str, Any]:
@@ -451,13 +518,13 @@ class ProjectLoader:
             return {"type": "string"}
         
         if origin is list:
-            schema = {"type": "array"}
+            schema: Dict[str, Any] = {"type": "array"}
             if args:
                 schema["items"] = self._type_to_schema(args[0])
             return schema
-        
+
         if origin is dict:
-            schema = {"type": "object"}
+            schema: Dict[str, Any] = {"type": "object"}
             if len(args) >= 2:
                 schema["additionalProperties"] = self._type_to_schema(args[1])
             return schema
@@ -530,7 +597,7 @@ class ProjectLoader:
         Dynamically loads a Python module from the tools/ directory.
         
         Args:
-            module_name: Name of the module (filename without .py)
+            module_name: Exact dotted module name relative to tools/
             
         Returns:
             The loaded module object
@@ -538,39 +605,85 @@ class ProjectLoader:
         if module_name in self._loaded_modules:
             return self._loaded_modules[module_name]
 
-        file_path = self.tools_dir / f"{module_name}.py"
-        if not file_path.exists():
-            raise FileNotFoundError(f"Tool module '{module_name}' not found at {file_path}")
+        tool_modules = self._discover_tool_modules()
+        file_path = tool_modules.get(module_name)
+        if file_path is None:
+            raise FileNotFoundError(f"Tool module '{module_name}' not found under {self.tools_dir}")
 
-        spec = importlib.util.spec_from_file_location(f"tools.{module_name}", file_path)
+        import_name = f"tools.{module_name}"
+        spec = importlib.util.spec_from_file_location(import_name, file_path)
         if not spec or not spec.loader:
             raise ImportError(f"Could not load module spec for {file_path}")
         
         module = importlib.util.module_from_spec(spec)
         
         # Add to sys.modules so imports inside the module work
-        sys.modules[f"tools.{module_name}"] = module
+        sys.modules[import_name] = module
         
         spec.loader.exec_module(module)
         self._loaded_modules[module_name] = module
         return module
+
+    def _discover_tool_files(self) -> List[Path]:
+        """Discover tool modules recursively under tools/."""
+        if not self.tools_dir.exists():
+            return []
+
+        tool_files: List[Path] = []
+        seen_paths = set()
+
+        for tool_file in self.tools_dir.rglob("*.py"):
+            relative_parts = tool_file.relative_to(self.tools_dir).parts
+            if any(part.startswith(".") for part in relative_parts):
+                continue
+            if tool_file.name.startswith("_"):
+                continue
+
+            resolved_path = tool_file.resolve()
+            if resolved_path in seen_paths:
+                continue
+
+            seen_paths.add(resolved_path)
+            tool_files.append(tool_file)
+
+        return sorted(tool_files, key=lambda path: path.relative_to(self.tools_dir).as_posix())
+
+    def _tool_module_name_from_path(self, tool_file: Path) -> str:
+        """Convert a tool path to a dotted module name."""
+        relative_path = tool_file.relative_to(self.tools_dir)
+        return ".".join(relative_path.with_suffix("").parts)
+
+    def _discover_tool_modules(self) -> Dict[str, Path]:
+        """Build an index of exact tool module names to paths."""
+        return {
+            self._tool_module_name_from_path(tool_file): tool_file
+            for tool_file in self._discover_tool_files()
+        }
+
+    def _resolve_tool_module_name(self, module_name: str) -> str:
+        """Resolve a tool module reference to its exact dotted module name."""
+        tool_modules = self._discover_tool_modules()
+        if module_name in tool_modules:
+            return module_name
+
+        raise FileNotFoundError(
+            f"Tool module '{module_name}' not found under {self.tools_dir}. "
+            "Use the exact dotted path relative to tools/ (for example, 'math.calculator')."
+        )
 
     def discover_tools(self) -> Dict[str, List[str]]:
         """
         Discover all available tools in the project.
         
         Returns:
-            Dict mapping module names to lists of function names
+            Dict mapping dotted module names to lists of function names
         """
         if not self.tools_dir.exists():
             return {}
         
         tools = {}
-        for tool_file in self.tools_dir.glob("*.py"):
-            if tool_file.name.startswith("_"):
-                continue
-            
-            module_name = tool_file.stem
+        for tool_file in self._discover_tool_files():
+            module_name = self._tool_module_name_from_path(tool_file)
             try:
                 module = self._load_tool_module(module_name)
                 functions = []
