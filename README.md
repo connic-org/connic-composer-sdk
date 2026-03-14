@@ -59,6 +59,7 @@ For detailed guides and configuration options, see the full documentation:
 | Command | Description |
 |---------|-------------|
 | `connic init [name]` | Initialize a new project |
+| `connic migrate` | Migrate a LangChain or ADK project into Connic |
 | `connic lint` | Validate project locally |
 | `connic test [env]` | Start hot-reload test session |
 | `connic deploy` | Deploy to production |

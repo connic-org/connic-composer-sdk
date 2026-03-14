@@ -3,10 +3,13 @@ import sys
 import tempfile
 import zipfile
 from pathlib import Path
+
 import click
 import httpx
 
 from .loader import ProjectLoader
+from .migrate import register_migrate_command
+from .update_check import print_update_hint
 
 DEFAULT_API_URL = os.environ.get("CONNIC_API_URL", "https://api.connic.co/v1")
 DEFAULT_BASE_URL = os.environ.get("CONNIC_BASE_URL", "https://connic.co")
@@ -96,10 +99,10 @@ def _validate_project_files() -> tuple[bool, str, list[Path]]:
 
 
 @click.group()
-@click.version_option(version="0.1.7", prog_name="connic")
+@click.version_option(version="0.1.8", prog_name="connic")
 def main():
     """Connic Composer SDK - Build agents with code."""
-    pass
+    print_update_hint()
 
 
 def _write_essential_files(base_path: Path, quiet: bool = False):
@@ -395,7 +398,7 @@ def init(name: str, templates: str | None):
     _write_essential_files(base_path)
 
 
-def _run_lint(verbose: bool = False, quiet: bool = False) -> bool:
+def _run_lint(verbose: bool = False, quiet: bool = False, project_root: str = ".") -> bool:
     """Run project validation. Returns True on success, False on failure.
 
     Args:
@@ -408,7 +411,7 @@ def _run_lint(verbose: bool = False, quiet: bool = False) -> bool:
     errors: list[str] = []
 
     try:
-        loader = ProjectLoader(".")
+        loader = ProjectLoader(project_root)
     except Exception as e:
         click.echo(f"Error: {e}", err=True)
         return False
@@ -561,6 +564,8 @@ def _run_lint(verbose: bool = False, quiet: bool = False) -> bool:
     click.echo("\nTo deploy, push to your connected repository or run 'connic deploy'.")
     return True
 
+
+register_migrate_command(main, _write_essential_files, _run_lint)
 
 @main.command()
 @click.option("--verbose", "-v", is_flag=True, help="Show detailed output")

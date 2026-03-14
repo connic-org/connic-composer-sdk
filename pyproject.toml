@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "connic-composer-sdk"
-version = "0.1.7"
+version = "0.1.8"
 description = "The Connic Composer SDK for building agents and enterprise-level tools."
 authors = [
   { name = "Connic Team", email = "hello@connic.co" },
@@ -48,3 +48,4 @@ target-version = "py310"
 
 [tool.ruff.lint]
 select = ["E", "F", "I"]  # E/F = pyflakes/pycodestyle, I = isort
+ignore = ["E501"]
