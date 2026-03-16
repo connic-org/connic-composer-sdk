@@ -164,7 +164,9 @@ async def delete_knowledge(
 
 async def web_search(
     query: str,
-    max_results: int = 5
+    max_results: int = 5,
+    country: Optional[str] = None,
+    include_news: bool = False,
 ) -> Dict[str, Any]:
     """
     Search the web for real-time information.
@@ -176,19 +178,20 @@ async def web_search(
     Args:
         query: The search query
         max_results: Number of results to return (default: 5, max: 10)
+        country: ISO 3166-1 alpha-2 country code for geo-targeted results
+                 (e.g. "DE", "US", "FR"). If not set, defaults to global results.
+        include_news: Also search recent news articles (default: False).
+                      News results are merged into the results list.
     
     Returns:
         A dictionary containing:
-        - answer: AI-generated summary of search findings
         - results: List of search results, each with:
             - title: Page title
             - url: Page URL
             - content: Snippet of page content
-            - score: Relevance score
     
     Example:
         result = await web_search("latest news on AI regulations")
-        print(result["answer"])
         for r in result["results"]:
             print(f"- {r['title']}: {r['url']}")
     """
