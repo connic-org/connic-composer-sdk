@@ -29,6 +29,7 @@ from .core import (
 # Actual implementations are in the runner (backend/app/templates/predefined_tools/)
 PREDEFINED_TOOL_NAMES = {
     "trigger_agent",
+    "trigger_agent_at",
     "query_knowledge",      # Query the knowledge base using semantic search
     "store_knowledge",      # Store new knowledge in the knowledge base
     "delete_knowledge",     # Delete knowledge from the knowledge base

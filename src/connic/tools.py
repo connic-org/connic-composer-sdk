@@ -50,6 +50,42 @@ async def trigger_agent(
     )
 
 
+async def trigger_agent_at(
+    agent_name: str,
+    payload: Any,
+    delay: Optional[Dict[str, float]] = None,
+    unix_timestamp: Optional[float] = None,
+) -> dict:
+    """
+    Schedule another agent to be triggered at a specific time in the future.
+
+    Exactly one of ``delay`` or ``unix_timestamp`` must be provided.
+
+    Args:
+        agent_name: Name of the agent to trigger
+        payload: Data to send to the agent (dict, list, or string)
+        delay: Relative time offset as a dict with keys d (days), h (hours),
+               m (minutes), s (seconds). At least one key is required.
+               Example: {"h": 2, "m": 30} triggers in 2 hours and 30 minutes.
+        unix_timestamp: Absolute Unix timestamp (seconds since epoch) for
+                        when to trigger the agent.
+
+    Returns:
+        dict with 'run_id', 'scheduled_at' (ISO 8601 UTC), and 'status'
+
+    Example:
+        result = await trigger_agent_at(
+            agent_name="report-generator",
+            payload={"report_type": "daily"},
+            delay={"h": 2, "m": 30}
+        )
+    """
+    raise RuntimeError(
+        "trigger_agent_at will be auto-injected when testing using the connic CLI or deploying. "
+        "Run 'connic test' to test your agents with predefined tools."
+    )
+
+
 async def query_knowledge(
     query: str,
     namespace: Optional[str] = None,
@@ -385,6 +421,7 @@ async def db_list_collections() -> Dict[str, Any]:
 # All available predefined tools
 __all__ = [
     "trigger_agent",
+    "trigger_agent_at",
     "query_knowledge",
     "store_knowledge",
     "delete_knowledge",
