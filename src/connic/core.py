@@ -422,6 +422,7 @@ class AgentConfig(BaseModel):
     
     # LLM agent fields (required when type=llm)
     model: Optional[str] = Field(default=None, description="The AI model to use (required for LLM agents)")
+    fallback_model: Optional[str] = Field(default=None, description="Fallback AI model to use when the primary model's provider is unavailable (LLM agents only)")
     system_prompt: Optional[str] = Field(default=None, description="Instructions that define the agent's behavior")
     temperature: float = Field(default=1.0, ge=0.0, le=2.0, description="Controls randomness in output")
     tools: List[Any] = Field(default_factory=list, description="List of tools the agent can use. Each is a string (always available) or a mapping {tool_ref: condition_expression}. Tool refs must use the exact module path under tools/, such as module.function or directory.module.function.")

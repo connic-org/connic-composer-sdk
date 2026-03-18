@@ -518,6 +518,8 @@ def _run_lint(verbose: bool = False, quiet: bool = False, project_root: str = ".
 
         if agent_type == "llm":
             click.echo(f"  │  Model: {config.model}")
+            if config.fallback_model:
+                click.echo(f"  │  Fallback Model: {config.fallback_model}")
             if verbose:
                 click.echo(f"  │  Temperature: {config.temperature}")
         elif agent_type == "sequential":
@@ -1027,56 +1029,82 @@ def test(name: str, api_url: str, api_key: str, project_id: str):
 
 
 @main.command()
+@click.option("--token", envvar="CONNIC_TOKEN", help="Login token (project_id:api_key) from the dashboard")
 @click.option("--api-key", envvar="CONNIC_API_KEY", help="Connic API key")
 @click.option("--project-id", envvar="CONNIC_PROJECT_ID", help="Connic project ID")
-def login(api_key: str | None, project_id: str | None):
+@click.option("--base-url", envvar="CONNIC_BASE_URL", default=DEFAULT_BASE_URL, help="Connic dashboard URL")
+def login(token: str | None, api_key: str | None, project_id: str | None, base_url: str):
     """
     Save Connic credentials for the current project.
-    
+
     Creates a .connic file with your API key and project ID.
-    Run without options for interactive mode.
-    
+    Run without options for interactive mode - opens the dashboard
+    to create an API key and gives you a single token to paste.
+
     \b
     Example:
         connic login
+        connic login --token <project_id>:<api_key>
         connic login --api-key cnc_xxx --project-id <uuid>
     """
     import json
-    
+    import webbrowser
+
     click.echo()
     click.secho("  Connic CLI Login", fg="cyan", bold=True)
     click.echo("  " + "─" * 30)
     click.echo()
-    
-    # Interactive prompts for missing values
-    if not api_key:
-        click.echo("  Create an API key in the Connic dashboard under")
-        click.echo("  Project Settings → CLI → Create Key")
+
+    if token:
+        project_id, api_key = _parse_login_token(token)
+
+    if not api_key or not project_id:
+        login_url = f"{base_url}/projects?to=/settings/cli?add=1"
+
+        click.echo("  Opening the Connic dashboard to create an API key...")
         click.echo()
-        api_key = click.prompt(click.style("  API Key", fg="yellow"), hide_input=True)
-    
-    if not project_id:
+        click.echo(f"  If the browser doesn't open, visit:")
+        click.secho(f"  {login_url}", fg="cyan", underline=True)
         click.echo()
-        click.echo("  The Project ID is shown in Project Settings → CLI")
+
+        try:
+            webbrowser.open(login_url)
+        except Exception:
+            pass
+
+        click.echo("  After creating a key, copy the login token and paste it below.")
         click.echo()
-        project_id = click.prompt(click.style("  Project ID", fg="yellow"))
-    
+        raw_token = click.prompt(click.style("  Login Token", fg="yellow"), hide_input=True)
+        project_id, api_key = _parse_login_token(raw_token.strip())
+
     config = {
         "api_key": api_key,
         "project_id": project_id,
     }
-    
+
     connic_file = Path(".connic")
     connic_file.write_text(json.dumps(config, indent=2))
-    
+
     click.echo()
-    click.secho("  ✓ Credentials saved to .connic", fg="green", bold=True)
+    click.secho("  Credentials saved to .connic", fg="green", bold=True)
     click.echo()
-    click.echo(f"    API Key:  {api_key[:12]}•••")
+    click.echo(f"    API Key:  {api_key[:12]}...")
     click.echo(f"    Project:  {project_id}")
     click.echo()
-    click.secho("  ⚠️  Remember to add .connic to your .gitignore!", fg="yellow")
+    click.secho("  Remember to add .connic to your .gitignore!", fg="yellow")
     click.echo()
+
+
+def _parse_login_token(token: str) -> tuple[str, str]:
+    """Parse a login token in the format project_id:api_key."""
+    if ":" not in token:
+        click.secho("  Invalid token format. Expected project_id:api_key", fg="red")
+        raise SystemExit(1)
+    project_id, api_key = token.split(":", 1)
+    if not project_id or not api_key:
+        click.secho("  Invalid token format. Expected project_id:api_key", fg="red")
+        raise SystemExit(1)
+    return project_id, api_key
 
 
 # =============================================================================
