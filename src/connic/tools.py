@@ -198,6 +198,51 @@ async def delete_knowledge(
     )
 
 
+async def kb_list_namespaces(
+    parent: Optional[str] = None,
+    depth: int = 1,
+) -> Dict[str, Any]:
+    """
+    List knowledge base namespaces to discover how content is organized.
+
+    Namespaces are hierarchical, separated by dots (e.g. "policies.hr.leave").
+    Use this tool to explore the namespace hierarchy before searching.
+    Call without arguments to see top-level namespaces, then drill down
+    into specific namespaces to see their sub-namespaces.
+
+    Args:
+        parent: Optional parent namespace to list children of.
+                e.g. "policies" returns "policies.hr", "policies.legal", etc.
+                If not provided, lists top-level namespaces.
+        depth: How many levels deep to list (default: 1, max: 10).
+               1 = direct children only, 0 = all descendants.
+
+    Returns:
+        When parent is not provided:
+            A list of namespace objects, each with:
+            - name: Full namespace path
+            - entry_count: Number of entries directly in this namespace
+            - total_entry_count: Entries in this namespace and all sub-namespaces
+            - has_children: Whether sub-namespaces exist
+
+        When parent is provided:
+            A dictionary with:
+            - parent: Info about the parent namespace
+            - namespaces: List of child namespace objects
+
+    Example:
+        # List top-level namespaces
+        result = await kb_list_namespaces()
+
+        # Drill into a specific namespace
+        result = await kb_list_namespaces(parent="policies")
+    """
+    raise RuntimeError(
+        "kb_list_namespaces will be auto-injected when testing using the connic CLI or deploying. "
+        "Run 'connic test' to test your agents with predefined tools."
+    )
+
+
 async def web_search(
     query: str,
     max_results: int = 5,

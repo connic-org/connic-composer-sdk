@@ -30,9 +30,10 @@ from .core import (
 PREDEFINED_TOOL_NAMES = {
     "trigger_agent",
     "trigger_agent_at",
-    "query_knowledge",      # Query the knowledge base using semantic search
-    "store_knowledge",      # Store new knowledge in the knowledge base
-    "delete_knowledge",     # Delete knowledge from the knowledge base
+    "query_knowledge",              # Query the knowledge base using semantic search
+    "store_knowledge",              # Store new knowledge in the knowledge base
+    "delete_knowledge",             # Delete knowledge from the knowledge base
+    "kb_list_namespaces",           # List knowledge base namespaces and hierarchy
     "web_search",           # Search the web for real-time information (costs 2x runs)
     "web_read_page",        # Fetch a web page and return its content as markdown (costs 2x runs)
     # Database tools
