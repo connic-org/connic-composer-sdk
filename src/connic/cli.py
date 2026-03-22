@@ -99,7 +99,7 @@ def _validate_project_files() -> tuple[bool, str, list[Path]]:
 
 
 @click.group()
-@click.version_option(version="0.1.10", prog_name="connic")
+@click.version_option(version="0.1.11", prog_name="connic")
 def main():
     """Connic Composer SDK - Build agents with code."""
     print_update_hint()
@@ -707,7 +707,6 @@ def test(name: str, api_url: str, api_key: str, project_id: str):
     # Use longer timeout for session creation (image building can take time)
     headers = {
         "Authorization": f"Bearer {api_key}",
-        "Content-Type": "application/json",
     }
     client = httpx.Client(base_url=api_url, headers=headers, timeout=120.0)
     
@@ -789,10 +788,12 @@ def test(name: str, api_url: str, api_key: str, project_id: str):
         waited = 0
         container_ready = False
         
+        consecutive_errors = 0
         while waited < max_wait:
             try:
                 status_resp = client.get(f"/test-sessions/{session_id}")
                 if status_resp.status_code == 200:
+                    consecutive_errors = 0
                     status_data = status_resp.json()
                     container_status = status_data.get("container_status", "starting")
                     
@@ -808,7 +809,14 @@ def test(name: str, api_url: str, api_key: str, project_id: str):
                         sys.exit(1)
                     else:
                         click.echo(".", nl=False)
+                else:
+                    consecutive_errors += 1
+                    if consecutive_errors >= 3:
+                        click.echo(f" [HTTP {status_resp.status_code}]", nl=False)
+                    else:
+                        click.echo(".", nl=False)
             except Exception:
+                consecutive_errors += 1
                 click.echo(".", nl=False)
             
             time.sleep(poll_interval)
@@ -858,14 +866,9 @@ def test(name: str, api_url: str, api_key: str, project_id: str):
                 # Validation error - return error message instead of crashing
                 return None, 0, str(e)
             
-            # Upload as multipart form - client already has auth headers
-            # We need to use httpx directly without Content-Type header for multipart
-            upload_resp = httpx.post(
-                f"{api_url}/test-sessions/{session_id}/files",
+            upload_resp = client.post(
+                f"/test-sessions/{session_id}/files",
                 files={"file": ("files.tar.gz", content, "application/gzip")},
-                headers={
-                    "Authorization": f"Bearer {api_key}",
-                },
                 timeout=60.0,
             )
             
