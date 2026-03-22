@@ -1,14 +1,20 @@
 # Connic Composer SDK
 
+<div align="center">
+
 Build Connic agents in code.
 
 Define agents in YAML, extend them with Python, test them with hot reload against Connic cloud, and deploy them to Connic-managed environments.
 
-[PyPI version](https://pypi.org/project/connic-composer-sdk/)
-[Python 3.10+](https://www.python.org/downloads/)
-[License: MIT](https://opensource.org/licenses/MIT)
+[![PyPI version](https://img.shields.io/pypi/v/connic-composer-sdk.svg)](https://pypi.org/project/connic-composer-sdk/)
+[![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
 [Documentation](https://connic.co/docs/v1/composer/overview) • [Quickstart](https://connic.co/docs/v1/quickstart) • [Agent Templates](https://connic.co/agents) • [Dashboard](https://connic.co/projects)
+
+</div>
+
+---
 
 ## What It Is
 
@@ -185,7 +191,6 @@ Related docs:
 
 ## CLI Commands
 
-
 | Command                              | Description                                                     |
 | ------------------------------------ | --------------------------------------------------------------- |
 | `connic init [name]`                 | Create a new project scaffold                                   |
@@ -194,9 +199,8 @@ Related docs:
 | `connic lint`                        | Validate agents, tools, middleware, and schemas locally         |
 | `connic tools`                       | List discovered tools and signatures                            |
 | `connic test [name]`                 | Start an isolated cloud test environment with hot reload        |
-| `connic deploy`                      | Deploy from the CLI to a Connic environment                     |
+| `connic deploy`                      | Deploy from the CLI to a Connic environment for projects without a connected Git repository |
 | `connic migrate`                     | Migrate a LangChain or Google ADK project into a Connic project |
-
 
 Run `connic <command> --help` for flags and examples.
 
@@ -227,7 +231,6 @@ Deployment targets Connic-managed environments.
 
 ## Documentation
 
-
 | Topic               | Link                                                                                                     |
 | ------------------- | -------------------------------------------------------------------------------------------------------- |
 | Overview            | [connic.co/docs/v1/composer/overview](https://connic.co/docs/v1/composer/overview)                       |
@@ -242,7 +245,6 @@ Deployment targets Connic-managed environments.
 | Guardrails          | [connic.co/docs/v1/composer/guardrails](https://connic.co/docs/v1/composer/guardrails)                   |
 | Knowledge Tools     | [connic.co/docs/v1/composer/knowledge-tools](https://connic.co/docs/v1/composer/knowledge-tools)         |
 | Database Tools      | [connic.co/docs/v1/composer/database-tools](https://connic.co/docs/v1/composer/database-tools)           |
-
 
 ## Contributing
 

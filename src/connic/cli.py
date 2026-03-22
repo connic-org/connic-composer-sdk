@@ -99,7 +99,7 @@ def _validate_project_files() -> tuple[bool, str, list[Path]]:
 
 
 @click.group()
-@click.version_option(version="0.1.11", prog_name="connic")
+@click.version_option(version="0.1.12", prog_name="connic")
 def main():
     """Connic Composer SDK - Build agents with code."""
     print_update_hint()
@@ -783,7 +783,7 @@ def test(name: str, api_url: str, api_key: str, project_id: str):
         
         # Poll for container to be ready
         click.echo("\n  Waiting for container to start (this can take a few seconds)", nl=False)
-        max_wait = 300  # 5 minutes max
+        max_wait = 600  # 10 minutes max
         poll_interval = 3
         waited = 0
         container_ready = False
@@ -824,7 +824,7 @@ def test(name: str, api_url: str, api_key: str, project_id: str):
         
         if not container_ready:
             click.echo(" timeout")
-            click.echo("  Container did not start within 5 minutes", err=True)
+            click.echo("  Container did not start within 10 minutes", err=True)
             click.echo("  Check backend logs for details", err=True)
             cleanup()
             sys.exit(1)
