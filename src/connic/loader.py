@@ -1,4 +1,5 @@
 import asyncio
+import fnmatch
 import importlib.util
 import inspect
 import json
@@ -51,14 +52,14 @@ class ProjectLoader:
     Loads a Connic project from disk, discovering agents, tools, and middlewares.
     """
     
-    def __init__(self, project_root: str = "."):
+    def __init__(self, project_root: str = ".", api_spec_tools: Optional[Dict[str, Dict[str, Any]]] = None):
         self.project_root = Path(project_root).resolve()
         self.agents_dir = self.project_root / "agents"
         self.tools_dir = self.project_root / "tools"
         self.middleware_dir = self.project_root / "middleware"
         self.schemas_dir = self.project_root / "schemas"
         self.guardrails_dir = self.project_root / "guardrails"
-        
+
         # Cache for loaded modules to avoid reloading
         self._loaded_modules: Dict[str, Any] = {}
         # Cache for loaded middlewares
@@ -69,7 +70,11 @@ class ProjectLoader:
         self._loaded_guardrails: Dict[str, Optional[CustomGuardrail]] = {}
         # Errors accumulated during loading (checked by linter)
         self._load_errors: List[str] = []
-        
+        # Warnings for api: refs that can't be validated locally (no registry)
+        self._api_spec_warnings: List[str] = []
+
+        self._api_spec_tools: Dict[str, Dict[str, Any]] = api_spec_tools or {}
+
         # Ensure project root is in sys.path for imports
         if str(self.project_root) not in sys.path:
             sys.path.insert(0, str(self.project_root))
@@ -231,7 +236,7 @@ class ProjectLoader:
         
         # Resolve tools based on agent type
         tools = []
-        
+
         if config.type == AgentType.LLM:
             # LLM agents: resolve all tools from the tools list
             # Each entry is either a string (always available) or a dict {tool_ref: condition}
@@ -248,27 +253,27 @@ class ProjectLoader:
                     condition = str(list(tool_entry.values())[0])
                 else:
                     raise ValueError(f"Invalid tool entry: {tool_entry}")
-                
+
                 if condition:
                     self._validate_condition(condition, tool_ref)
-                
+
                 try:
-                    tool = self._resolve_tool(tool_ref)
+                    resolved = self._resolve_tools(tool_ref)
                 except Exception as e:
                     self._load_errors.append(f"Agent '{config.name}': cannot resolve tool '{tool_ref}': {e}")
                     continue
-                
-                if condition:
-                    tool.condition = condition
-                
-                tools.append(tool)
-        
+
+                for tool in resolved:
+                    if condition:
+                        tool.condition = condition
+                    tools.append(tool)
+
         elif config.type == AgentType.TOOL:
             # Tool agents: resolve the single tool_name
             if config.tool_name:
                 try:
-                    tool = self._resolve_tool(config.tool_name)
-                    tools.append(tool)
+                    resolved = self._resolve_tools(config.tool_name)
+                    tools.extend(resolved)
                 except Exception as e:
                     self._load_errors.append(f"Tool agent '{config.name}': cannot resolve tool '{config.tool_name}': {e}")
 
@@ -295,51 +300,38 @@ class ProjectLoader:
 
         return Agent(config=config, tools=tools)
 
-    def _resolve_tool(self, tool_ref: str) -> Tool:
-        """
-        Resolves a tool reference to a Tool object.
-        
-        For predefined tools (e.g., "trigger_agent"), creates a marker that
-        the runner will inject the actual implementation for.
-        
-        For user-defined tools, format: "module.function" for top-level modules
-        or "directory.module.function" for nested modules (e.g.,
-        "calculator.add" or "billing.calculator.add")
-        
-        Args:
-            tool_ref: The tool reference string
-            
-        Returns:
-            A Tool object wrapping the function (or a marker for predefined tools)
-        """
-        # Check if it's a predefined tool (name only, no implementation)
+    def _resolve_tools(self, tool_ref: str) -> List[Tool]:
+        """Resolve a tool reference to one or more Tool instances (file tools, api: spec, wildcards, predefined)."""
         if tool_ref in PREDEFINED_TOOL_NAMES:
-            return self._create_predefined_tool_marker(tool_ref)
-        
-        # User-defined tool: expect an exact module path plus function name.
-        # Top-level modules use "module.function" and nested modules use
-        # "directory.module.function".
+            return [self._create_predefined_tool_marker(tool_ref)]
+
+        if tool_ref.startswith("api:"):
+            return self._resolve_api_spec_tools(tool_ref[4:])
+
+        if "*" in tool_ref:
+            return self._resolve_wildcard(tool_ref)
+
         parts = tool_ref.split(".")
-        
+
         if len(parts) < 2:
             raise ValueError(
                 f"Invalid tool reference '{tool_ref}'. "
                 "Use 'module.function' or 'directory.module.function' format "
-                "(e.g., 'calculator.add' or 'billing.calculator.add') "
+                "(e.g., 'calculator.add' or 'billing.calculator.add'), "
+                "'api:spec_name.tool_name' for API spec tools, "
                 f"or a predefined tool name ({', '.join(PREDEFINED_TOOL_NAMES)})."
             )
-        
+
         module_name = ".".join(parts[:-1])
         function_name = parts[-1]
 
         resolved_module_name = self._resolve_tool_module_name(module_name)
-
         module = self._load_tool_module(resolved_module_name)
-        
+
         func = getattr(module, function_name, None)
         if func is None:
             raise ValueError(f"Function '{function_name}' not found in module '{resolved_module_name}'")
-        
+
         if not callable(func):
             raise ValueError(f"'{function_name}' in module '{resolved_module_name}' is not callable")
 
@@ -348,22 +340,119 @@ class ProjectLoader:
                 f"Function '{function_name}' is not defined in module '{resolved_module_name}'"
             )
 
-        # Check if function is async
         is_async = asyncio.iscoroutinefunction(func)
-        
-        # Get description from docstring
         description = inspect.getdoc(func) or "No description provided."
-        
-        # Generate JSON schema for parameters
         schema = self._generate_schema(func)
-        
-        return Tool(
+
+        return [Tool(
             name=function_name,
             description=description,
             func=func,
             is_async=is_async,
             parameters=schema,
             ref=f"{resolved_module_name}.{function_name}",
+        )]
+
+    def _resolve_wildcard(self, tool_ref: str) -> List[Tool]:
+        """Match file-based tools under a module prefix against a fnmatch pattern."""
+        parts = tool_ref.split(".", 1)
+        if len(parts) != 2:
+            raise ValueError(
+                f"Invalid wildcard pattern '{tool_ref}'. Use 'module.pattern' format (e.g., 'billing.*')"
+            )
+
+        module_part, pattern = parts
+
+        matched_tools: List[Tool] = []
+
+        tool_modules = self._discover_tool_modules()
+        if module_part in tool_modules:
+            try:
+                module = self._load_tool_module(module_part)
+                for func_name, func in inspect.getmembers(module, inspect.isfunction):
+                    if func_name.startswith("_"):
+                        continue
+                    if getattr(func, "__module__", None) != f"tools.{module_part}":
+                        continue
+                    if not fnmatch.fnmatch(func_name, pattern):
+                        continue
+
+                    is_async = asyncio.iscoroutinefunction(func)
+                    description = inspect.getdoc(func) or "No description provided."
+                    schema = self._generate_schema(func)
+
+                    matched_tools.append(Tool(
+                        name=func_name,
+                        description=description,
+                        func=func,
+                        is_async=is_async,
+                        parameters=schema,
+                        ref=f"{module_part}.{func_name}",
+                    ))
+            except Exception as e:
+                self._load_errors.append(f"Wildcard '{tool_ref}': failed to load module '{module_part}': {e}")
+
+        if not matched_tools:
+            raise ValueError(f"Wildcard '{tool_ref}' matched no tools")
+
+        return matched_tools
+
+    def _resolve_api_spec_tools(self, stripped_ref: str) -> List[Tool]:
+        """Resolve an api: prefixed tool reference (exact or wildcard) against the API spec registry."""
+        if not self._api_spec_tools:
+            self._api_spec_warnings.append(f"api:{stripped_ref}")
+            return []
+
+        if "*" in stripped_ref:
+            parts = stripped_ref.split(".", 1)
+            if len(parts) != 2:
+                raise ValueError(
+                    f"Invalid API spec wildcard 'api:{stripped_ref}'. "
+                    "Use 'api:spec_name.pattern' format (e.g., 'api:my_api.*')"
+                )
+            spec_name, pattern = parts
+            if spec_name not in self._api_spec_tools:
+                raise ValueError(f"API spec '{spec_name}' not found in registry")
+
+            matched = []
+            for tool_name, tool_def in self._api_spec_tools[spec_name].items():
+                if fnmatch.fnmatch(tool_name, pattern):
+                    matched.append(self._make_api_spec_tool(spec_name, tool_name, tool_def))
+            if not matched:
+                raise ValueError(f"Wildcard 'api:{stripped_ref}' matched no tools")
+            return matched
+
+        parts = stripped_ref.split(".")
+        if len(parts) < 2:
+            raise ValueError(
+                f"Invalid API spec tool reference 'api:{stripped_ref}'. "
+                "Use 'api:spec_name.tool_name' format (e.g., 'api:my_api.users_get')"
+            )
+
+        spec_name = ".".join(parts[:-1])
+        tool_name = parts[-1]
+
+        if spec_name not in self._api_spec_tools:
+            raise ValueError(f"API spec '{spec_name}' not found in registry")
+
+        spec_tools = self._api_spec_tools[spec_name]
+        if tool_name not in spec_tools:
+            raise ValueError(
+                f"Tool '{tool_name}' not found in API spec '{spec_name}'. "
+                f"Available: {', '.join(sorted(spec_tools.keys()))}"
+            )
+
+        return [self._make_api_spec_tool(spec_name, tool_name, spec_tools[tool_name])]
+
+    def _make_api_spec_tool(self, spec_name: str, tool_name: str, tool_def: Dict[str, Any]) -> Tool:
+        return Tool(
+            name=tool_name,
+            description=tool_def.get("description", f"{tool_def.get('method', 'GET')} {tool_def.get('path', '')}"),
+            func=None,
+            is_async=True,
+            parameters=tool_def.get("parameters", {"type": "object", "properties": {}, "required": []}),
+            is_predefined=True,
+            ref=f"api:{spec_name}.{tool_name}",
         )
     
     def _validate_condition(self, condition: str, tool_ref: str) -> None:

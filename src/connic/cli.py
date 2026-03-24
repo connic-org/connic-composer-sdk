@@ -99,7 +99,7 @@ def _validate_project_files() -> tuple[bool, str, list[Path]]:
 
 
 @click.group()
-@click.version_option(version="0.1.12", prog_name="connic")
+@click.version_option(version="0.1.13", prog_name="connic")
 def main():
     """Connic Composer SDK - Build agents with code."""
     print_update_hint()
@@ -472,6 +472,8 @@ def _run_lint(verbose: bool = False, quiet: bool = False, project_root: str = ".
         agents = loader.load_agents()
         errors.extend(loader._load_errors)
         loader._load_errors.clear()
+        api_spec_warnings = list(loader._api_spec_warnings)
+        loader._api_spec_warnings.clear()
     except FileNotFoundError as e:
         click.echo(f"  {e}", err=True)
         click.echo("\nRun 'connic init' to create a sample project.")
@@ -499,6 +501,8 @@ def _run_lint(verbose: bool = False, quiet: bool = False, project_root: str = ".
             for err in errors:
                 click.echo(f"  ✗ {err}", err=True)
             return False
+        if api_spec_warnings:
+            click.echo(f"  {len(api_spec_warnings)} API spec tool ref(s) skipped (validated at deploy time)")
         agent_names = [a.config.name for a in agents]
         click.echo(f"  Lint passed: {len(agents)} agent(s) validated ({', '.join(agent_names)})")
         return True
@@ -554,6 +558,12 @@ def _run_lint(verbose: bool = False, quiet: bool = False, project_root: str = ".
                     click.echo(f"  │  ✗ Unknown agent: '{ref}'")
 
         click.echo("  └─")
+        click.echo()
+
+    if api_spec_warnings:
+        click.echo(f"ℹ {len(api_spec_warnings)} API spec tool ref(s) skipped (validated at deploy time):")
+        for ref in api_spec_warnings:
+            click.echo(f"  - {ref}")
         click.echo()
 
     if errors:
