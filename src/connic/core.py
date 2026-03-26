@@ -469,6 +469,20 @@ class AgentConfig(BaseModel):
         default=None,
         description="The relative path to the agent YAML file (populated at runtime by loader)"
     )
+
+    # A/B test fields - populated by loader, not from YAML
+    is_test_variant: bool = Field(
+        default=False,
+        description="True if this agent is a test variant (name matches {base}-test-{name} pattern)"
+    )
+    base_agent_name: Optional[str] = Field(
+        default=None,
+        description="Name of the base agent this is a test variant of (populated at runtime by loader)"
+    )
+    test_name: Optional[str] = Field(
+        default=None,
+        description="Test identifier extracted from the agent name (part after -test-). Populated at runtime by loader."
+    )
     
     # Reasoning configuration (LLM agents only)
     reasoning: Optional[bool] = Field(

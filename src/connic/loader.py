@@ -137,7 +137,41 @@ class ProjectLoader:
         if errors:
             for error in errors:
                 self._load_errors.append(f"Failed to load agent: {error}")
-        
+
+        # Detect A/B test variant agents by naming convention: {base-agent}-test-{name}
+        base_agent_names = set(loaded_names.keys())
+        for agent in agents:
+            name = agent.config.name
+            if "-test-" not in name:
+                continue
+
+            # Try all possible split points to find the longest matching base agent
+            idx = 0
+            matched_base = None
+            while True:
+                pos = name.find("-test-", idx)
+                if pos == -1:
+                    break
+                candidate_base = name[:pos]
+                candidate_test = name[pos + len("-test-"):]
+                if candidate_base in base_agent_names and candidate_test:
+                    matched_base = candidate_base
+                    matched_test = candidate_test
+                    # Keep looking for a longer base match
+                idx = pos + 1
+
+            if matched_base:
+                agent.config.is_test_variant = True
+                agent.config.base_agent_name = matched_base
+                agent.config.test_name = matched_test
+            else:
+                # Name contains -test- but no base agent matches — load error
+                self._load_errors.append(
+                    f"Agent '{name}' looks like a test variant (contains '-test-') "
+                    f"but no matching base agent was found. "
+                    f"Expected a base agent named '{name.split('-test-')[0]}' to exist."
+                )
+
         return agents
 
     def load_agent(self, name: str) -> Agent:
