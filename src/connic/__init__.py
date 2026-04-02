@@ -32,7 +32,7 @@ from . import tools
 from .core import Agent, AgentConfig, GuardrailResult, Middleware, RetryOptions, StopProcessing, Tool
 from .loader import ProjectLoader
 
-__version__ = "0.1.14"
+__version__ = "0.1.15"
 
 __all__ = [
     "Agent",

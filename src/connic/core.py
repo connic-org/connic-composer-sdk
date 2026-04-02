@@ -14,17 +14,22 @@ class AgentType(str, Enum):
 
 class StopProcessing(Exception):
     """
-    Raise this in middleware to gracefully stop agent execution and return a custom response.
-    
-    Example:
+    Raise this in middleware or in tools to gracefully stop the run
+    and return a custom response string. The run is marked completed, not failed.
+
+    Middleware example:
         async def before(content, context: dict):
-            # Check first text part for authentication
-            if content.parts and content.parts[0].text:
-                if "api_key" not in content.parts[0].text:
-                    raise StopProcessing("Authentication required: missing api_key")
+            if not _is_authenticated(content):
+                raise StopProcessing("Authentication required")
             return content
-    
-    The message will be returned as the response without running the agent.
+
+    Tool example:
+        from connic.core import StopProcessing
+
+        def refund_order(order_id: str, context: dict) -> str:
+            if not context.get("refunds_enabled"):
+                raise StopProcessing("Refunds are disabled for this account")
+            return "Refund processed"
     """
     def __init__(self, response: str):
         self.response = response

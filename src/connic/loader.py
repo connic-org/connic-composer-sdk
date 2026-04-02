@@ -1,9 +1,11 @@
+import ast
 import asyncio
 import fnmatch
 import importlib.util
 import inspect
 import json
 import sys
+import types
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Union, get_args, get_origin, get_type_hints
 
@@ -52,13 +54,17 @@ class ProjectLoader:
     Loads a Connic project from disk, discovering agents, tools, and middlewares.
     """
     
-    def __init__(self, project_root: str = ".", api_spec_tools: Optional[Dict[str, Dict[str, Any]]] = None):
+    def __init__(self, project_root: str = ".", api_spec_tools: Optional[Dict[str, Dict[str, Any]]] = None, validation_only: bool = False):
         self.project_root = Path(project_root).resolve()
         self.agents_dir = self.project_root / "agents"
         self.tools_dir = self.project_root / "tools"
         self.middleware_dir = self.project_root / "middleware"
         self.schemas_dir = self.project_root / "schemas"
         self.guardrails_dir = self.project_root / "guardrails"
+
+        # When True, use AST parsing instead of importing tool modules.
+        # This avoids executing code and needing external dependencies at validation time.
+        self._validation_only = validation_only
 
         # Cache for loaded modules to avoid reloading
         self._loaded_modules: Dict[str, Any] = {}
@@ -491,7 +497,6 @@ class ProjectLoader:
     
     def _validate_condition(self, condition: str, tool_ref: str) -> None:
         """Validate that a condition expression is syntactically valid Python."""
-        import ast
         try:
             ast.parse(condition, mode='eval')
         except SyntaxError as e:
@@ -731,7 +736,8 @@ class ProjectLoader:
     def _load_tool_module(self, module_name: str):
         """
         Dynamically loads a Python module from the tools/ directory.
-        
+        In validation mode, uses AST parsing to extract function metadata.
+
         Args:
             module_name: Exact dotted module name relative to tools/
             
@@ -746,19 +752,141 @@ class ProjectLoader:
         if file_path is None:
             raise FileNotFoundError(f"Tool module '{module_name}' not found under {self.tools_dir}")
 
+        if self._validation_only:
+            return self._load_tool_module_from_ast(module_name, file_path)
+
         import_name = f"tools.{module_name}"
         spec = importlib.util.spec_from_file_location(import_name, file_path)
         if not spec or not spec.loader:
             raise ImportError(f"Could not load module spec for {file_path}")
-        
+
         module = importlib.util.module_from_spec(spec)
-        
+
         # Add to sys.modules so imports inside the module work
         sys.modules[import_name] = module
-        
+
         spec.loader.exec_module(module)
         self._loaded_modules[module_name] = module
         return module
+
+    def _load_tool_module_from_ast(self, module_name: str, file_path: Path):
+        """
+        Parse a tool module via AST to extract function metadata without executing code.
+        Creates a synthetic module with stub functions that have correct signatures,
+        docstrings, and async flags for validation and schema generation.
+        """
+        source = file_path.read_text()
+        tree = ast.parse(source, filename=str(file_path))
+
+        import_name = f"tools.{module_name}"
+        module = types.ModuleType(import_name)
+        module.__file__ = str(file_path)
+        module.__name__ = import_name
+
+        for node in ast.iter_child_nodes(tree):
+            if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                continue
+            if node.name.startswith("_"):
+                continue
+
+            stub = self._create_ast_stub(node, import_name)
+            setattr(module, node.name, stub)
+
+        sys.modules[import_name] = module
+        self._loaded_modules[module_name] = module
+        return module
+
+    def _create_ast_stub(self, node: ast.AST, module_name: str):
+        """Create a stub function from an AST FunctionDef/AsyncFunctionDef node."""
+        is_async = isinstance(node, ast.AsyncFunctionDef)
+
+        if is_async:
+            async def stub(**kwargs): pass
+        else:
+            def stub(**kwargs): pass
+
+        stub.__name__ = node.name
+        stub.__qualname__ = node.name
+        stub.__module__ = module_name
+        stub.__doc__ = ast.get_docstring(node)
+
+        # Build inspect.Parameter list from AST args
+        parameters = []
+        args = node.args
+        num_defaults = len(args.defaults)
+        num_args = len(args.args)
+        first_default_idx = num_args - num_defaults
+
+        for i, arg in enumerate(args.args):
+            if arg.arg == "self":
+                continue
+
+            annotation = inspect.Parameter.empty
+            if arg.annotation:
+                annotation = self._resolve_ast_annotation(arg.annotation)
+
+            default = inspect.Parameter.empty
+            if i >= first_default_idx:
+                default = self._resolve_ast_default(args.defaults[i - first_default_idx])
+
+            parameters.append(inspect.Parameter(
+                name=arg.arg,
+                kind=inspect.Parameter.POSITIONAL_OR_KEYWORD,
+                default=default,
+                annotation=annotation,
+            ))
+
+        stub.__signature__ = inspect.Signature(parameters)
+
+        annotations = {}
+        for param in parameters:
+            if param.annotation != inspect.Parameter.empty:
+                annotations[param.name] = param.annotation
+        stub.__annotations__ = annotations
+
+        return stub
+
+    _AST_BUILTIN_TYPES = {
+        "str": str, "int": int, "float": float, "bool": bool,
+        "list": list, "dict": dict, "None": type(None),
+    }
+
+    def _resolve_ast_annotation(self, node: ast.AST):
+        """Map an AST annotation node to a Python type. Returns Parameter.empty for unresolvable types."""
+        if isinstance(node, ast.Name):
+            return self._AST_BUILTIN_TYPES.get(node.id, inspect.Parameter.empty)
+        if isinstance(node, ast.Constant):
+            if node.value is None:
+                return type(None)
+            if isinstance(node.value, str):
+                return self._AST_BUILTIN_TYPES.get(node.value, inspect.Parameter.empty)
+        if isinstance(node, ast.Attribute):
+            return inspect.Parameter.empty
+        if isinstance(node, ast.Subscript):
+            # Handle Optional[X], List[X], Dict[K, V]
+            if isinstance(node.value, ast.Name):
+                base = node.value.id
+                if base == "Optional":
+                    # Optional[X] -> resolve X
+                    return self._resolve_ast_annotation(node.slice)
+                if base == "List" or base == "list":
+                    return list
+                if base == "Dict" or base == "dict":
+                    return dict
+        return inspect.Parameter.empty
+
+    def _resolve_ast_default(self, node: ast.AST):
+        """Extract a literal default value from an AST node."""
+        if isinstance(node, ast.Constant):
+            return node.value
+        if isinstance(node, ast.Name) and node.id == "None":
+            return None
+        if isinstance(node, ast.List) and not node.elts:
+            return []
+        if isinstance(node, ast.Dict) and not node.keys:
+            return {}
+        # For complex defaults, return None to mark as "has a default"
+        return None
 
     def _discover_tool_files(self) -> List[Path]:
         """Discover tool modules recursively under tools/."""
