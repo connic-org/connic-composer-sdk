@@ -99,7 +99,7 @@ def _validate_project_files() -> tuple[bool, str, list[Path]]:
 
 
 @click.group()
-@click.version_option(version="0.1.15", prog_name="connic")
+@click.version_option(version="0.1.16", prog_name="connic")
 def main():
     """Connic Composer SDK - Build agents with code."""
     print_update_hint()
@@ -461,6 +461,27 @@ def _run_lint(verbose: bool = False, quiet: bool = False, project_root: str = ".
         if not quiet:
             click.echo("  No middleware/ directory found")
         middlewares = {}
+
+    if not quiet:
+        click.echo()
+
+    # Discover tool hooks
+    if not quiet:
+        click.echo("Discovering tool hooks...")
+    try:
+        tool_hooks = loader.discover_tool_hooks()
+        loader._load_errors.clear()  # hook errors are non-fatal
+        if not quiet:
+            if tool_hooks:
+                click.echo(f"  Found hooks for {len(tool_hooks)} agents:")
+                for agent_name, available in sorted(tool_hooks.items()):
+                    click.echo(f"    {agent_name}: {', '.join(available)}")
+            else:
+                click.echo("  No hooks found in hooks/ directory")
+    except FileNotFoundError:
+        if not quiet:
+            click.echo("  No hooks/ directory found")
+        tool_hooks = {}
 
     if not quiet:
         click.echo()

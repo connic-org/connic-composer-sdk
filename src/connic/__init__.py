@@ -29,15 +29,17 @@ Middleware:
 
 # Predefined tools module - for use in custom tools
 from . import tools
-from .core import Agent, AgentConfig, GuardrailResult, Middleware, RetryOptions, StopProcessing, Tool
+from .core import AbortTool, Agent, AgentConfig, GuardrailResult, Middleware, RetryOptions, StopProcessing, Tool, ToolHook
 from .loader import ProjectLoader
 
-__version__ = "0.1.15"
+__version__ = "0.1.16"
 
 __all__ = [
+    "AbortTool",
     "Agent",
-    "AgentConfig", 
+    "AgentConfig",
     "Tool",
+    "ToolHook",
     "RetryOptions",
     "Middleware",
     "StopProcessing",

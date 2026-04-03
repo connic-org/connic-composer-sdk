@@ -24,7 +24,7 @@ class StopProcessing(Exception):
             return content
 
     Tool example:
-        from connic.core import StopProcessing
+        from connic import StopProcessing
 
         def refund_order(order_id: str, context: dict) -> str:
             if not context.get("refunds_enabled"):
@@ -34,6 +34,27 @@ class StopProcessing(Exception):
     def __init__(self, response: str):
         self.response = response
         super().__init__(response)
+
+
+class AbortTool(Exception):
+    """
+    Raise this in a tool hook's before() to skip tool execution and return
+    a custom result. Unlike StopProcessing (which aborts the entire run),
+    AbortTool only skips the current tool call. The returned result is passed
+    back to the LLM as if the tool had executed normally, but the tool
+    execution is marked as an error in traces.
+
+    Hook example:
+        from connic import AbortTool
+
+        async def before(tool_name: str, params: dict, context: dict) -> dict:
+            if tool_name == "db_delete" and not context.get("is_admin"):
+                raise AbortTool({"error": "Only admins can delete records"})
+            return params
+    """
+    def __init__(self, result: str | dict):
+        self.result = result
+        super().__init__(str(result))
 
 
 class Middleware(BaseModel):
@@ -69,7 +90,40 @@ class Middleware(BaseModel):
     """
     before: Optional[Callable[..., Any]] = None
     after: Optional[Callable[..., Any]] = None
-    
+
+    class Config:
+        arbitrary_types_allowed = True
+
+
+class ToolHook(BaseModel):
+    """
+    Hook functions that run before and after tool execution for an agent.
+
+    Hook files are Python modules in the hooks/ directory,
+    named after the agent they apply to (e.g., hooks/assistant.py).
+
+    The 'before' hook receives the tool name, a dict of parameters that will
+    be passed to the tool, and an optional shared context dict. It can modify
+    params, raise AbortTool to skip the tool, or raise StopProcessing to
+    abort the entire run.
+
+    The 'after' hook receives the tool name, the original params, the tool's
+    result, and an optional context dict. It can modify the result.
+
+    Example hook file (hooks/assistant.py):
+        from connic import AbortTool
+
+        async def before(tool_name: str, params: dict, context: dict) -> dict:
+            if tool_name == "db_delete" and not context.get("is_admin"):
+                raise AbortTool({"error": "Only admins can delete records"})
+            return params
+
+        async def after(tool_name: str, params: dict, result, context: dict):
+            return result
+    """
+    before: Optional[Callable[..., Any]] = None
+    after: Optional[Callable[..., Any]] = None
+
     class Config:
         arbitrary_types_allowed = True
 

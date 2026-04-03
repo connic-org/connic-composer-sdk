@@ -26,6 +26,7 @@ from .core import (
     NamespacePermissions,
     RetryOptions,
     Tool,
+    ToolHook,
 )
 
 # List of predefined tool names - SDK knows names only, not implementations
@@ -61,6 +62,7 @@ class ProjectLoader:
         self.middleware_dir = self.project_root / "middleware"
         self.schemas_dir = self.project_root / "schemas"
         self.guardrails_dir = self.project_root / "guardrails"
+        self.hooks_dir = self.project_root / "hooks"
 
         # When True, use AST parsing instead of importing tool modules.
         # This avoids executing code and needing external dependencies at validation time.
@@ -74,6 +76,8 @@ class ProjectLoader:
         self._loaded_schemas: Dict[str, Dict[str, Any]] = {}
         # Cache for loaded custom guardrails
         self._loaded_guardrails: Dict[str, Optional[CustomGuardrail]] = {}
+        # Cache for loaded tool hooks
+        self._loaded_tool_hooks: Dict[str, Optional[ToolHook]] = {}
         # Errors accumulated during loading (checked by linter)
         self._load_errors: List[str] = []
         # Warnings for api: refs that can't be validated locally (no registry)
@@ -1051,6 +1055,91 @@ class ProjectLoader:
                 print(f"Warning: Could not discover middleware for {agent_name}: {e}")
         
         return middlewares
+
+    def load_tool_hooks(self, agent_name: str) -> Optional[ToolHook]:
+        """
+        Load tool hooks for a specific agent by name.
+
+        Hook files are automatically discovered from the hooks/ directory.
+        The file must be named after the agent (e.g., hooks/assistant.py for agent 'assistant').
+
+        Args:
+            agent_name: Name of the agent (matches YAML filename without extension)
+
+        Returns:
+            ToolHook object with before/after functions, or None if no hooks exist
+        """
+        if agent_name in self._loaded_tool_hooks:
+            return self._loaded_tool_hooks[agent_name]
+
+        hook_file = self.hooks_dir / f"{agent_name}.py"
+        if not hook_file.exists():
+            self._loaded_tool_hooks[agent_name] = None
+            return None
+
+        try:
+            spec = importlib.util.spec_from_file_location(
+                f"hooks.{agent_name}", hook_file
+            )
+            if not spec or not spec.loader:
+                self._loaded_tool_hooks[agent_name] = None
+                return None
+
+            module = importlib.util.module_from_spec(spec)
+            sys.modules[f"hooks.{agent_name}"] = module
+            spec.loader.exec_module(module)
+
+            before_func = getattr(module, 'before', None)
+            after_func = getattr(module, 'after', None)
+
+            if before_func is not None and not callable(before_func):
+                before_func = None
+            if after_func is not None and not callable(after_func):
+                after_func = None
+
+            if before_func is None and after_func is None:
+                self._loaded_tool_hooks[agent_name] = None
+                return None
+
+            hook = ToolHook(before=before_func, after=after_func)
+            self._loaded_tool_hooks[agent_name] = hook
+            return hook
+
+        except Exception as e:
+            print(f"Warning: Failed to load tool hooks for {agent_name}: {e}")
+            self._loaded_tool_hooks[agent_name] = None
+            return None
+
+    def discover_tool_hooks(self) -> Dict[str, List[str]]:
+        """
+        Discover all hook files and their available hooks.
+
+        Returns:
+            Dict mapping agent names to lists of available hooks ('before', 'after')
+        """
+        if not self.hooks_dir.exists():
+            return {}
+
+        hooks = {}
+        for hook_file in self.hooks_dir.glob("*.py"):
+            if hook_file.name.startswith("_"):
+                continue
+
+            agent_name = hook_file.stem
+            try:
+                hook = self.load_tool_hooks(agent_name)
+                if hook:
+                    available = []
+                    if hook.before is not None:
+                        available.append("before")
+                    if hook.after is not None:
+                        available.append("after")
+                    if available:
+                        hooks[agent_name] = available
+            except Exception as e:
+                print(f"Warning: Could not discover hooks for {agent_name}: {e}")
+
+        return hooks
 
     def load_guardrail(self, name: str) -> Optional[CustomGuardrail]:
         """
