@@ -410,12 +410,13 @@ class ApprovalConfig(BaseModel):
           tools:
             - order_tools.delete_order
             - order_tools.process_refund: param.amount > 50 and not context.is_admin
-          timeout: 300
+          timeout: 3600
           message: "This action requires human approval before proceeding."
     """
     tools: List[Union[str, Dict[str, str]]] = Field(..., description="Tool names (or {name: condition} mappings) requiring human approval before execution")
-    timeout: int = Field(default=300, ge=30, le=604800, description="Seconds to wait for approval before timing out")
+    timeout: int = Field(default=3600, ge=30, le=604800, description="Seconds to wait for approval before timing out")
     message: Optional[str] = Field(default=None, description="Custom message shown to human approvers")
+    on_rejection: Literal["fail", "continue"] = Field(default="fail", description='Behavior when rejected. "fail" terminates the run. "continue" resumes with a rejection message to the LLM.')
 
 
 class McpServerConfig(BaseModel):
