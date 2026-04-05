@@ -50,7 +50,7 @@ def _validate_project_files() -> tuple[bool, str, list[Path]]:
     valid_files = []
     total_size = 0
     
-    dirs_to_check = ["agents", "tools", "middleware", "schemas"]
+    dirs_to_check = ["agents", "tools", "middleware", "schemas", "guardrails", "hooks"]
     
     for dirname in dirs_to_check:
         dirpath = Path(dirname)
@@ -253,7 +253,7 @@ def _merge_template_into_project(
     
     Returns the template README content if it exists, None otherwise.
     """
-    for subdir in ["agents", "tools", "middleware", "schemas"]:
+    for subdir in ["agents", "tools", "middleware", "schemas", "guardrails", "hooks"]:
         src_dir = template_src / subdir
         dst_dir = base_path / subdir
         if src_dir.exists():
@@ -968,9 +968,8 @@ def test(name: str, api_url: str, api_key: str, project_id: str):
                 if "__pycache__" in str(src_path) or src_path.suffix == ".pyc":
                     return
                 
-                # Check if file is in watched directories (agents, tools, middleware)
-                # or is requirements.txt
-                watched_dirs = ["agents", "tools", "middleware", "schemas"]
+                # Check if file is in a watched directory or is requirements.txt
+                watched_dirs = ["agents", "tools", "middleware", "schemas", "guardrails", "hooks"]
                 is_watched = any(d in src_path.parts for d in watched_dirs)
                 is_requirements = src_path.name == "requirements.txt"
                 
@@ -985,7 +984,7 @@ def test(name: str, api_url: str, api_key: str, project_id: str):
         handler = FileChangeHandler()
         
         # Watch the project directories
-        for dirname in ["agents", "tools", "middleware", "schemas"]:
+        for dirname in ["agents", "tools", "middleware", "schemas", "guardrails", "hooks"]:
             dirpath = Path(dirname)
             if dirpath.exists():
                 observer.schedule(handler, str(dirpath), recursive=True)
