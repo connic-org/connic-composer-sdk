@@ -15,6 +15,7 @@ from .core import (
     Agent,
     AgentConfig,
     AgentType,
+    ApprovalConfig,
     CollectionPermissions,
     CustomGuardrail,
     DatabaseAccessConfig,
@@ -258,6 +259,21 @@ class ProjectLoader:
                         for rule in gr_raw[direction]
                     ]
             config_data["guardrails"] = GuardrailsConfig(**parsed)
+
+        # Handle approval config
+        if "approval" in config_data and config_data["approval"]:
+            approval_raw = config_data["approval"]
+            # Validate conditions on approval tools (same pattern as conditional tool parsing)
+            for entry in approval_raw.get("tools", []):
+                if isinstance(entry, dict):
+                    if len(entry) != 1:
+                        raise ValueError(
+                            f"Conditional approval entry must have exactly one key, got: {entry}"
+                        )
+                    tool_ref = list(entry.keys())[0]
+                    condition = str(list(entry.values())[0])
+                    self._validate_condition(condition, tool_ref)
+            config_data["approval"] = ApprovalConfig(**approval_raw)
 
         # Convert type string to enum if present
         if "type" in config_data and isinstance(config_data["type"], str):

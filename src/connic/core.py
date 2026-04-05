@@ -1,6 +1,6 @@
 import asyncio
 from enum import Enum
-from typing import Any, Callable, Dict, List, Literal, Optional
+from typing import Any, Callable, Dict, List, Literal, Optional, Union
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
@@ -392,6 +392,32 @@ class CustomGuardrail(BaseModel):
         arbitrary_types_allowed = True
 
 
+class ApprovalConfig(BaseModel):
+    """
+    Human-in-the-loop approval configuration.
+
+    When set on an agent, the specified tools will require human approval
+    before execution. The agent run pauses until a human approves or rejects
+    the tool call (or the timeout expires).
+
+    Each tool entry is either a plain string (always requires approval) or a
+    mapping ``{tool_ref: condition}`` where the condition is evaluated at call
+    time using ``param.*`` (tool parameters) and ``context.*`` (middleware
+    context). Approval is only required when the condition evaluates to true.
+
+    Example YAML:
+        approval:
+          tools:
+            - order_tools.delete_order
+            - order_tools.process_refund: param.amount > 50 and not context.is_admin
+          timeout: 300
+          message: "This action requires human approval before proceeding."
+    """
+    tools: List[Union[str, Dict[str, str]]] = Field(..., description="Tool names (or {name: condition} mappings) requiring human approval before execution")
+    timeout: int = Field(default=300, ge=30, le=604800, description="Seconds to wait for approval before timing out")
+    message: Optional[str] = Field(default=None, description="Custom message shown to human approvers")
+
+
 class McpServerConfig(BaseModel):
     """
     Configuration for an MCP (Model Context Protocol) server connection.
@@ -575,6 +601,13 @@ class AgentConfig(BaseModel):
         default=None,
         description="Input and output guardrails for safety and compliance. "
                     "Guardrails run before/after agent execution to enforce content policies."
+    )
+
+    # Human-in-the-loop approval configuration
+    approval: Optional[ApprovalConfig] = Field(
+        default=None,
+        description="Human-in-the-loop approval configuration. "
+                    "Specifies which tools require human approval before execution."
     )
     
     @field_validator('version')
