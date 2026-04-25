@@ -201,6 +201,38 @@ class ProjectLoader:
 
         raise FileNotFoundError(f"Agent '{name}' not found under {self.agents_dir}")
 
+    def _parse_tool_entry(self, tool_entry: Any, label: str) -> tuple[str, Optional[str]]:
+        if isinstance(tool_entry, str):
+            return tool_entry, None
+        if isinstance(tool_entry, dict):
+            if len(tool_entry) != 1:
+                raise ValueError(f"Conditional {label} entry must have exactly one key, got: {tool_entry}")
+            return list(tool_entry.keys())[0], str(list(tool_entry.values())[0])
+
+        field_name = "discoverable_tools" if label == "discoverable tool" else "tool"
+        raise ValueError(f"Invalid {field_name} entry: {tool_entry}")
+
+    def _resolve_agent_tool_entries(self, config: AgentConfig, entries: List[Any], label: str) -> List[Tool]:
+        resolved_tools = []
+        for tool_entry in entries:
+            tool_ref, condition = self._parse_tool_entry(tool_entry, label)
+
+            if condition:
+                self._validate_condition(condition, tool_ref)
+
+            try:
+                resolved = self._resolve_tools(tool_ref)
+            except Exception as e:
+                self._load_errors.append(f"Agent '{config.name}': cannot resolve {label} '{tool_ref}': {e}")
+                continue
+
+            for tool in resolved:
+                if condition:
+                    tool.condition = condition
+                resolved_tools.append(tool)
+
+        return resolved_tools
+
     def _load_single_agent(self, agent_file: Path) -> Agent:
         """Load a single agent from a YAML file."""
         with open(agent_file, "r") as f:
@@ -294,39 +326,16 @@ class ProjectLoader:
             else:
                 print(f"Warning: output_schema is only supported for LLM agents. Ignoring for '{config.name}' (type: {config.type.value})")
         
-        # Resolve tools based on agent type
         tools = []
+        discoverable_tools = []
 
         if config.type == AgentType.LLM:
-            # LLM agents: resolve all tools from the tools list
-            # Each entry is either a string (always available) or a dict {tool_ref: condition}
-            for tool_entry in config.tools:
-                if isinstance(tool_entry, str):
-                    tool_ref = tool_entry
-                    condition = None
-                elif isinstance(tool_entry, dict):
-                    if len(tool_entry) != 1:
-                        raise ValueError(
-                            f"Conditional tool entry must have exactly one key, got: {tool_entry}"
-                        )
-                    tool_ref = list(tool_entry.keys())[0]
-                    condition = str(list(tool_entry.values())[0])
-                else:
-                    raise ValueError(f"Invalid tool entry: {tool_entry}")
-
-                if condition:
-                    self._validate_condition(condition, tool_ref)
-
-                try:
-                    resolved = self._resolve_tools(tool_ref)
-                except Exception as e:
-                    self._load_errors.append(f"Agent '{config.name}': cannot resolve tool '{tool_ref}': {e}")
-                    continue
-
-                for tool in resolved:
-                    if condition:
-                        tool.condition = condition
-                    tools.append(tool)
+            tools = self._resolve_agent_tool_entries(config, config.tools, "tool")
+            discoverable_tools = self._resolve_agent_tool_entries(
+                config,
+                config.discoverable_tools,
+                "discoverable tool",
+            )
 
         elif config.type == AgentType.TOOL:
             # Tool agents: resolve the single tool_name
@@ -337,8 +346,17 @@ class ProjectLoader:
                 except Exception as e:
                     self._load_errors.append(f"Tool agent '{config.name}': cannot resolve tool '{config.tool_name}': {e}")
 
+        tool_names = {t.name for t in tools}
+        discoverable_names = {t.name for t in discoverable_tools}
+        overlap = tool_names & discoverable_names
+        if overlap:
+            raise ValueError(
+                f"Tools cannot appear in both 'tools' and 'discoverable_tools': {', '.join(sorted(overlap))}"
+            )
+
+        all_tools_for_dedup = tools + discoverable_tools
         duplicate_tool_names: Dict[str, List[str]] = {}
-        for tool in tools:
+        for tool in all_tools_for_dedup:
             duplicate_tool_names.setdefault(tool.name, []).append(tool.ref or tool.name)
 
         collisions = {
@@ -356,9 +374,18 @@ class ProjectLoader:
                 + "; ".join(messages)
             )
 
+        has_discoverable_mcp = any(mcp.discoverable for mcp in config.mcp_servers)
+
+        if discoverable_tools or has_discoverable_mcp:
+            existing_names = {t.name for t in tools}
+            if "search_tools" not in existing_names:
+                tools.append(self._create_predefined_tool_marker("search_tools"))
+            if "use_tool" not in existing_names:
+                tools.append(self._create_predefined_tool_marker("use_tool"))
+
         # Sequential agents don't need tools - they orchestrate other agents
 
-        return Agent(config=config, tools=tools)
+        return Agent(config=config, tools=tools, discoverable_tools=discoverable_tools)
 
     def _resolve_tools(self, tool_ref: str) -> List[Tool]:
         """Resolve a tool reference to one or more Tool instances (file tools, api: spec, wildcards, predefined)."""

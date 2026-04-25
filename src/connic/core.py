@@ -446,6 +446,10 @@ class McpServerConfig(BaseModel):
         default=None,
         description="Optional HTTP headers for authentication (supports ${VAR} substitution)"
     )
+    discoverable: bool = Field(
+        default=False,
+        description="When true, tools from this MCP server are indexed for on-demand discovery via search_tools instead of being loaded into the LLM context upfront."
+    )
 
 
 class Tool(BaseModel):
@@ -512,6 +516,7 @@ class AgentConfig(BaseModel):
     system_prompt: Optional[str] = Field(default=None, description="Instructions that define the agent's behavior")
     temperature: float = Field(default=1.0, ge=0.0, le=2.0, description="Controls randomness in output")
     tools: List[Any] = Field(default_factory=list, description="List of tools the agent can use. Each is a string (always available) or a mapping {tool_ref: condition_expression}. Tool refs must use the exact module path under tools/, such as module.function or directory.module.function.")
+    discoverable_tools: List[Any] = Field(default_factory=list, description="Tools indexed for on-demand discovery via search_tools. Same syntax as tools. These are not loaded into the LLM context upfront; the agent finds them by calling search_tools with a natural language query.")
     
     # Sequential agent fields (required when type=sequential)
     agents: List[str] = Field(default_factory=list, description="List of agent names to execute in sequence")
@@ -663,6 +668,7 @@ class Agent(BaseModel):
     """
     config: AgentConfig
     tools: List[Tool] = Field(default_factory=list)
+    discoverable_tools: List[Tool] = Field(default_factory=list)
     
     def get_tool(self, name: str) -> Optional[Tool]:
         """Get a tool by name."""
