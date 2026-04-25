@@ -32,7 +32,7 @@ from . import tools
 from .core import AbortTool, Agent, AgentConfig, GuardrailResult, Middleware, RetryOptions, StopProcessing, Tool, ToolHook
 from .loader import ProjectLoader
 
-__version__ = "0.1.16"
+__version__ = "0.1.17"
 
 __all__ = [
     "AbortTool",
