@@ -540,9 +540,8 @@ class AgentConfig(BaseModel):
 
     # MCP server connections
     mcp_servers: List[McpServerConfig] = Field(
-        default_factory=list, 
+        default_factory=list,
         description="List of MCP servers to connect to for external tools (max: 50 per agent)",
-        max_length=50
     )
     
     # Output schema for structured output (LLM agents only)

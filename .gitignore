@@ -41,3 +41,9 @@ htmlcov/
 .mypy_cache/
 
 /tests
+!/tests/
+/tests/*
+!/tests/unit/
+!/tests/unit/**
+/tests/unit/**/__pycache__/
+/tests/unit/**/*.py[cod]

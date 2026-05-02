@@ -642,7 +642,7 @@ def tools():
         for func_name in functions:
             # Load the tool to get description
             try:
-                tool = loader._resolve_tool(f"{module}.{func_name}")
+                tool = loader._resolve_tools(f"{module}.{func_name}")[0]
                 # Get first line of description
                 desc = tool.description.split('\n')[0][:60]
                 if len(tool.description.split('\n')[0]) > 60:

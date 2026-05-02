@@ -309,11 +309,11 @@ def _resolve_string_expr(
                 return None
         return "".join(parts).strip()
     if isinstance(expr, ast.Name):
-        if expr.id in seen:
-            return None
-        seen.add(expr.id)
         assigned = module_info.assignments.get(expr.id)
         if assigned is not None:
+            if expr.id in seen:
+                return None
+            seen.add(expr.id)
             return _resolve_string_expr(assigned, module_info, module_lookup, module_cache, seen)
         binding = module_info.imports.get(expr.id)
         if binding:
@@ -392,7 +392,7 @@ def _normalize_model_name(raw_model: str | None) -> str | None:
     lowered = model.lower()
     for key, provider in MIGRATION_MODEL_PROVIDER_MAP.items():
         if lowered.startswith(key):
-            if provider == key:
+            if provider == key and lowered == key:
                 return model
             return f"{provider}/{model}"
     if lowered.startswith("gpt-"):
@@ -507,6 +507,20 @@ def _predefined_tool_candidate(name: str) -> ToolCandidate | None:
     return None
 
 
+def _agent_tool_target_name(expr: ast.Call, module_info: ModuleInfo) -> str | None:
+    agent_expr = _get_keyword(expr, "agent") or (expr.args[0] if expr.args else None)
+    if isinstance(agent_expr, ast.Name):
+        assigned = module_info.assignments.get(agent_expr.id)
+        if isinstance(assigned, ast.Call):
+            literal_name = _get_keyword(assigned, "name")
+            if isinstance(literal_name, ast.Constant) and isinstance(literal_name.value, str):
+                return _sanitize_agent_name(literal_name.value, agent_expr.id)
+        return _sanitize_agent_name(agent_expr.id, agent_expr.id)
+    if isinstance(agent_expr, ast.Constant) and isinstance(agent_expr.value, str):
+        return _sanitize_agent_name(agent_expr.value, agent_expr.value)
+    return None
+
+
 def _unique_tool_candidates(candidates: list[ToolCandidate]) -> list[ToolCandidate]:
     unique = []
     seen = set()
@@ -585,8 +599,18 @@ def _resolve_tool_candidates(
             wrapped = _get_keyword(expr, "func") or (expr.args[0] if expr.args else None)
             return _resolve_tool_candidates(wrapped, module_info, module_lookup, notes, seen_names)
         if call_name == "AgentTool":
-            notes.append("Skipped ADK AgentTool wrapper because Connic does not have a direct agent-as-tool equivalent.")
-            return []
+            target_name = _agent_tool_target_name(expr, module_info)
+            if target_name:
+                notes.append(
+                    "Mapped ADK AgentTool wrapper to Connic trigger_agent. "
+                    f"Review calls to make sure they pass agent_name='{target_name}'."
+                )
+            else:
+                notes.append(
+                    "Mapped ADK AgentTool wrapper to Connic trigger_agent. "
+                    "Review calls to make sure they pass the intended agent_name."
+                )
+            return [ToolCandidate(function_name="trigger_agent", ref="trigger_agent")]
         if call_name == "MCPToolset":
             notes.append("Skipped ADK MCPToolset because it requires manual MCP server mapping in Connic.")
             return []
@@ -713,8 +737,9 @@ def _extract_adk_agents(module_info: ModuleInfo, module_lookup: dict[str, Path])
             notes.append("ADK sub_agents were migrated as a sequential Connic workflow.")
         elif sub_agents:
             notes.append(
-                "ADK agent references sub_agents. Connic does not have a direct multi-agent router equivalent, so review this agent manually."
+                "Mapped ADK sub_agents to Connic trigger_agent for delegation. Review the listed agent refs and update prompts as needed."
             )
+            tools.append(ToolCandidate(function_name="trigger_agent", ref="trigger_agent"))
 
         fallback_description = description or f"Migrated from ADK agent '{source_name}'."
         agents.append(

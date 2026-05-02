@@ -470,6 +470,7 @@ __all__ = [
     "query_knowledge",
     "store_knowledge",
     "delete_knowledge",
+    "kb_list_namespaces",
     "web_search",
     "web_read_page",
     # Database tools
@@ -480,4 +481,3 @@ __all__ = [
     "db_count",
     "db_list_collections",
 ]
-

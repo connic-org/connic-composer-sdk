@@ -39,8 +39,17 @@ connic = "connic.cli:main"
 [project.optional-dependencies]
 dev = [
     "pytest",
+    "pytest-cov",
     "ruff",
 ]
+
+[tool.pytest.ini_options]
+testpaths = ["tests/unit"]
+pythonpath = ["src"]
+
+[tool.coverage.run]
+source = ["src/connic"]
+omit = ["*/tests/*"]
 
 [tool.ruff]
 line-length = 140
