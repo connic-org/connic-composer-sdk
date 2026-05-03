@@ -29,6 +29,7 @@ Middleware:
 
 # Predefined tools module - for use in custom tools
 from . import tools
+from .bridge import bridge_host
 from .core import AbortTool, Agent, AgentConfig, GuardrailResult, Middleware, RetryOptions, StopProcessing, Tool, ToolHook
 from .loader import ProjectLoader
 
@@ -45,6 +46,7 @@ __all__ = [
     "StopProcessing",
     "GuardrailResult",
     "ProjectLoader",
+    "bridge_host",
     "tools",
     "__version__",
 ]
