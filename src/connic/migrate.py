@@ -1327,15 +1327,14 @@ def _generate_migrated_project(
 
 
 def register_migrate_command(main: click.Group, write_essential_files: WriteEssentialFiles, run_lint: RunLint) -> None:
+    from .cli import _done, _err, _fail_and_exit, _h1, _info, _ok, _step, _warn
+
     @main.command()
     @click.option("--source", "source_path", type=click.Path(path_type=Path, file_okay=False), default=None, help="Path to the existing LangChain or ADK project")
     @click.option("--dest", "destination_path", type=click.Path(path_type=Path, file_okay=False), default=None, help="Path for the new Connic project")
     def migrate(source_path: Path | None, destination_path: Path | None):
         """Migrate a LangChain or ADK project into a Connic project."""
-        click.echo()
-        click.secho("  Connic Migrate", fg="cyan", bold=True)
-        click.echo("  " + "─" * 30)
-        click.echo()
+        _h1("Migrate")
 
         if source_path is None:
             source_path = click.prompt(click.style("  Existing project path", fg="yellow"), type=click.Path(path_type=Path, file_okay=False))
@@ -1343,47 +1342,41 @@ def register_migrate_command(main: click.Group, write_essential_files: WriteEsse
             destination_path = click.prompt(click.style("  New Connic project path", fg="yellow"), type=click.Path(path_type=Path, file_okay=False))
 
         if source_path is None or destination_path is None:
-            click.echo("Error: Source path and destination path are required.", err=True)
-            sys.exit(1)
+            _fail_and_exit("Source path and destination path are required.")
 
         source_root = source_path.expanduser().resolve()
         destination_root = destination_path.expanduser().resolve()
 
         if not source_root.exists():
-            click.echo(f"Error: Source path '{source_root}' does not exist.", err=True)
-            sys.exit(1)
+            _fail_and_exit(f"Source path '{source_root}' does not exist.")
         if not source_root.is_dir():
-            click.echo(f"Error: Source path '{source_root}' is not a directory.", err=True)
-            sys.exit(1)
+            _fail_and_exit(f"Source path '{source_root}' is not a directory.")
         if source_root == destination_root:
-            click.echo("Error: Source path and destination path must be different.", err=True)
-            sys.exit(1)
+            _fail_and_exit("Source path and destination path must be different.")
         if _is_same_or_nested_path(destination_root, source_root):
-            click.echo("Error: Destination path cannot be inside the source project.", err=True)
-            sys.exit(1)
+            _fail_and_exit("Destination path cannot be inside the source project.")
         if destination_root.exists() and any(destination_root.iterdir()):
-            click.echo(f"Error: Destination path '{destination_root}' already exists and is not empty.", err=True)
-            sys.exit(1)
+            _fail_and_exit(f"Destination path '{destination_root}' already exists and is not empty.")
 
-        click.echo("  Scanning source project...")
+        _step("Scanning source project...")
         framework, detection_notes, agents, module_infos = _build_migration_candidates(source_root)
 
         if not agents:
-            click.echo(f"  Framework: {framework}")
+            _info(f"Framework: {framework}")
             for note in detection_notes:
-                click.echo(f"    - {note}", err=True)
-            click.echo("  ✗ No migratable agents were found.", err=True)
-            click.echo("  Add the project manually and use the migration guides for framework-specific help.", err=True)
+                _info(f"- {note}")
+            _err("No migratable agents were found.")
+            _info("Add the project manually and use the migration guides for framework-specific help.")
             sys.exit(1)
 
         tool_count = len({tool.ref or (str(tool.source_file), tool.function_name) for agent in agents for tool in agent.tool_candidates})
-        click.echo(f"  Framework: {framework}")
-        click.echo(f"  Agents found: {len(agents)}")
-        click.echo(f"  Tools found: {tool_count}")
+        _ok(f"Framework: {framework}")
+        _ok(f"Agents found: {len(agents)}")
+        _ok(f"Tools found: {tool_count}")
         for note in detection_notes:
-            click.echo(f"    - {note}")
-        click.echo()
+            _info(f"- {note}")
 
+        _step("Generating Connic project...")
         report_notes = _generate_migrated_project(
             source_root,
             destination_root,
@@ -1393,18 +1386,18 @@ def register_migrate_command(main: click.Group, write_essential_files: WriteEsse
             module_infos,
             write_essential_files,
         )
+        _ok(f"Generated at {destination_root}")
 
-        click.echo(f"  Generated Connic project in {destination_root}")
-        click.echo("  Running connic lint on the migrated project...")
+        _step("Running connic lint on the migrated project...")
         lint_ok = run_lint(quiet=True, project_root=str(destination_root))
-        click.echo()
+
+        _info(f"Project: {destination_root}")
+        _info(f"Report:  {destination_root / 'MIGRATION_REPORT.md'}")
+        if report_notes:
+            _info("Follow-up items were recorded in the migration report.")
 
         if lint_ok:
-            click.secho("  ✓ Migration complete", fg="green", bold=True)
+            _done("Migration complete.")
         else:
-            click.secho("  ⚠ Migration completed with lint issues", fg="yellow", bold=True)
-        click.echo(f"    Project: {destination_root}")
-        click.echo(f"    Report:  {destination_root / 'MIGRATION_REPORT.md'}")
-        if report_notes:
-            click.echo("    Follow-up items were recorded in the migration report.")
-        click.echo()
+            _warn("Migration completed with lint issues.")
+            click.echo()

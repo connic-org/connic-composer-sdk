@@ -160,7 +160,7 @@ def test_login_command_opens_dashboard_and_saves_interactive_token(tmp_path, mon
         "project_id": "proj_123",
     }
     assert "Credentials saved to .connic" in result.output
-    assert "API Key:  cnc_live_sec..." in result.output
+    assert "API key:  cnc_live_sec..." in result.output
     assert "Project:  proj_123" in result.output
 
 
@@ -220,7 +220,7 @@ def test_init_command_reports_missing_template_from_fetched_catalog(tmp_path, mo
     result = CliRunner().invoke(cli.main, ["init", "project", "--templates=missing"])
 
     assert result.exit_code == 1
-    assert "Fetched templates from connic-awesome-agents" in result.output
+    assert "Fetched" in result.output
     assert "Template 'missing' not found" in result.output
 
 
@@ -247,7 +247,7 @@ def test_init_command_merges_local_templates_when_github_is_unavailable(tmp_path
     assert (project / "tools" / "invoice_tools.py").exists()
     assert (project / "requirements.txt").read_text() == "pypdf>=4\n"
     assert "## Invoice Agent" in (project / "README.md").read_text()
-    assert "Using local connic-awesome-agents" in result.output
+    assert "using local connic-awesome-agents" in result.output
     assert "Initialized with templates: invoice" in result.output
 
 
@@ -408,7 +408,7 @@ def test_init_command_merges_fetched_templates_into_documented_project(tmp_path,
     readme = (project / "README.md").read_text()
     assert "## Invoice Agent" in readme
     assert "## Customer Support" in readme
-    assert "Fetched templates from connic-awesome-agents" in result.output
+    assert "Fetched" in result.output
     assert "Initialized with templates: invoice, customer-support" in result.output
 
 
@@ -512,24 +512,22 @@ def test_lint_command_reports_empty_project_without_agents(tmp_path, monkeypatch
 
     assert result.exit_code == 1
     assert "No agents found in agents/" in result.output
-    assert "Run 'connic init' to create a sample project." in result.output
+    assert "Run `connic init` to create a sample project." in result.output
 
 
-def test_dev_alias_invokes_lint_with_verbose_flag(tmp_path, monkeypatch):
+def test_dev_command_requires_credentials_before_loading_project(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(cli, "print_update_hint", lambda: None)
-    calls = []
 
-    def fake_run_lint(verbose=False, quiet=False, project_root="."):
-        calls.append({"verbose": verbose, "quiet": quiet, "project_root": project_root})
-        return True
+    def fail_if_called(*args, **kwargs):
+        raise AssertionError("dev should not load the project without credentials")
 
-    monkeypatch.setattr(cli, "_run_lint", fake_run_lint)
+    monkeypatch.setattr(cli, "ProjectLoader", fail_if_called)
 
-    result = CliRunner().invoke(cli.main, ["dev", "--verbose"])
+    result = CliRunner().invoke(cli.main, ["dev"])
 
-    assert result.exit_code == 0, result.output
-    assert calls == [{"verbose": True, "quiet": False, "project_root": "."}]
+    assert result.exit_code == 1
+    assert "API key required. Set CONNIC_API_KEY or use --api-key" in result.output
 
 
 def test_lint_command_prints_sequential_tool_and_runtime_controls(tmp_path, monkeypatch):
@@ -608,7 +606,7 @@ def test_tools_command_lists_nested_tool_modules(tmp_path, monkeypatch):
     assert "Available tools:" in result.output
     assert "billing/invoices.py:" in result.output
     assert "- lookup_invoice" in result.output
-    assert "Use in agent YAML as the exact module path under tools/" in result.output
+    assert "Use the exact module path under tools/" in result.output
 
 
 def test_tools_command_prints_truncated_tool_descriptions(tmp_path, monkeypatch):
@@ -667,8 +665,7 @@ def test_test_command_requires_credentials_before_loading_project(tmp_path, monk
     result = CliRunner().invoke(cli.main, ["test"])
 
     assert result.exit_code == 1
-    assert "Error: API key required." in result.output
-    assert "Or run: connic login" in result.output
+    assert "API key and project ID required. Run `connic login`." in result.output
 
 
 def test_test_command_reports_project_load_errors_before_creating_cloud_session(tmp_path, monkeypatch):
@@ -684,8 +681,7 @@ def test_test_command_reports_project_load_errors_before_creating_cloud_session(
     result = CliRunner().invoke(cli.main, ["test"])
 
     assert result.exit_code == 1
-    assert "Error loading project:" in result.output
-    assert "agents" in result.output
+    assert "No tests/ directory found in project" in result.output
 
 
 def test_test_command_ignores_invalid_saved_config_and_uses_explicit_credentials(tmp_path, monkeypatch):
@@ -713,11 +709,11 @@ def test_test_command_ignores_invalid_saved_config_and_uses_explicit_credentials
 
     result = CliRunner().invoke(
         cli.main,
-        ["test", "--api-key", "cnc_flag_secret", "--project-id", "proj_flag"],
+        ["dev", "--api-key", "cnc_flag_secret", "--project-id", "proj_flag"],
     )
 
     assert result.exit_code == 1
-    assert "Error creating test session: session service unavailable" in result.output
+    assert "Error creating dev session: session service unavailable" in result.output
 
 
 def test_test_command_reports_existing_active_session_conflict(tmp_path, monkeypatch):
@@ -749,7 +745,7 @@ def test_test_command_reports_existing_active_session_conflict(tmp_path, monkeyp
 
     monkeypatch.setattr(cli.httpx, "Client", FakeClient)
 
-    result = CliRunner().invoke(cli.main, ["test", "feature-preview"])
+    result = CliRunner().invoke(cli.main, ["dev", "feature-preview"])
 
     assert result.exit_code == 1
     assert "A test session is already active for this environment" in result.output
@@ -794,7 +790,7 @@ def test_test_command_cleans_up_when_container_fails_to_start(tmp_path, monkeypa
 
     monkeypatch.setattr(cli.httpx, "Client", FakeClient)
 
-    result = CliRunner().invoke(cli.main, ["test"])
+    result = CliRunner().invoke(cli.main, ["dev"])
 
     assert result.exit_code == 1
     assert calls == [("DELETE", "/test-sessions/sess_failed"), ("CLOSE",)]
@@ -840,7 +836,7 @@ def test_test_command_reports_container_start_timeout(tmp_path, monkeypatch):
     monkeypatch.setattr(cli.httpx, "Client", FakeClient)
     monkeypatch.setattr(time, "sleep", lambda seconds: None)
 
-    result = CliRunner().invoke(cli.main, ["test"])
+    result = CliRunner().invoke(cli.main, ["dev"])
 
     assert result.exit_code == 1
     assert calls == [("DELETE", "/test-sessions/sess_timeout"), ("CLOSE",)]
@@ -887,12 +883,11 @@ def test_test_command_reports_repeated_container_status_http_errors_before_timeo
     monkeypatch.setattr(cli.httpx, "Client", FakeClient)
     monkeypatch.setattr(time, "sleep", lambda seconds: None)
 
-    result = CliRunner().invoke(cli.main, ["test"])
+    result = CliRunner().invoke(cli.main, ["dev"])
 
     assert result.exit_code == 1
     assert calls.count(("GET", "/test-sessions/sess_polling")) == 200
     assert calls[-2:] == [("DELETE", "/test-sessions/sess_polling"), ("CLOSE",)]
-    assert "[HTTP 503]" in result.output
     assert "Container did not start within 10 minutes" in result.output
 
 
@@ -941,7 +936,7 @@ def test_test_command_cleans_up_when_initial_upload_finds_session_already_ended(
 
     monkeypatch.setattr(cli.httpx, "Client", FakeClient)
 
-    result = CliRunner().invoke(cli.main, ["test"])
+    result = CliRunner().invoke(cli.main, ["dev"])
 
     assert result.exit_code == 1
     assert calls == [
@@ -1041,7 +1036,7 @@ def test_test_command_creates_session_uploads_files_and_stops_when_server_delete
     monkeypatch.setattr(time, "sleep", lambda seconds: None)
     monkeypatch.setattr(time, "time", advance_time)
 
-    result = CliRunner().invoke(cli.main, ["test", "feature-preview"])
+    result = CliRunner().invoke(cli.main, ["dev", "feature-preview"])
 
     assert result.exit_code == 0, result.output
     assert ("POST", "/projects/proj_123/test-sessions", {"name": "feature-preview"}, None) in calls
@@ -1221,7 +1216,7 @@ def test_deploy_command_packages_project_files_and_uploads_to_default_environmen
         "requirements.txt",
     }
     assert "name: support" in support_config
-    assert "Deployment created!" in result.output
+    assert "Deployment created." in result.output
     assert "https://connic.co/projects/proj_123/deployments/dep_123" in result.output
 
 
@@ -1336,7 +1331,7 @@ def test_deploy_command_explicit_credentials_uploads_requested_environment_packa
     upload = requests[-1][2]
     assert upload["params"] == {"environment_id": "env_staging"}
     assert "Environment: Staging" in result.output
-    assert "Another deployment is currently building." in result.output
+    assert "Another deployment is currently building;" in result.output
     assert "dep_queued" in result.output
 
 
@@ -1424,8 +1419,8 @@ def test_deploy_command_requires_saved_or_environment_credentials(tmp_path, monk
     result = CliRunner().invoke(cli.main, ["deploy"])
 
     assert result.exit_code == 1
-    assert "Error: API key required." in result.output
-    assert "Run 'connic login' to save your credentials interactively." in result.output
+    assert "API key required." in result.output
+    assert "Run `connic login` to save your credentials interactively" in result.output
 
 
 def test_deploy_command_stops_when_lint_fails(tmp_path, monkeypatch):
@@ -1442,7 +1437,7 @@ def test_deploy_command_stops_when_lint_fails(tmp_path, monkeypatch):
     result = CliRunner().invoke(cli.main, ["deploy"])
 
     assert result.exit_code == 1
-    assert "Running lint" in result.output
+    assert "Validating project files" in result.output
     assert "Lint failed. Fix the errors above before deploying." in result.output
 
 
@@ -1748,7 +1743,7 @@ def test_deploy_command_uses_requested_environment_and_reports_queued_deployment
     assert names == {"agents/support.yaml", "tools/tickets.py"}
     assert "tickets.lookup_ticket" in support_config
     assert "Environment: Staging" in result.output
-    assert "Another deployment is currently building." in result.output
+    assert "Another deployment is currently building;" in result.output
     assert "https://connic.co/projects/proj_cli/deployments/dep_queued" in result.output
 
 
@@ -1994,7 +1989,7 @@ def test_test_command_starts_session_uploads_files_and_stops_when_server_ends_se
     monkeypatch.setattr("signal.signal", lambda *args: None)
     monkeypatch.setitem(sys.modules, "time", FakeTime)
 
-    result = CliRunner().invoke(cli.main, ["test", "support-dev"])
+    result = CliRunner().invoke(cli.main, ["dev", "support-dev"])
 
     assert result.exit_code == 0, result.output
     assert requests[0] == ("POST", "/projects/proj_123/test-sessions", {"json": {"name": "support-dev"}, "files": None, "timeout": None})
@@ -2103,7 +2098,7 @@ def test_test_command_keeps_session_open_after_initial_upload_validation_error(t
     monkeypatch.setattr("signal.signal", lambda *args: None)
     monkeypatch.setitem(sys.modules, "time", FakeTime)
 
-    result = CliRunner().invoke(cli.main, ["test"])
+    result = CliRunner().invoke(cli.main, ["dev"])
 
     assert result.exit_code == 0, result.output
     assert ("POST", "/test-sessions/sess_123/files", {"json": None, "files": True, "timeout": 60.0}) not in requests
@@ -2148,7 +2143,7 @@ def test_test_command_reports_named_environment_conflict_without_cleanup_delete(
     monkeypatch.setattr(cli.httpx, "Client", FakeClient)
     monkeypatch.setattr("signal.signal", lambda *args: None)
 
-    result = CliRunner().invoke(cli.main, ["test", "support-dev"])
+    result = CliRunner().invoke(cli.main, ["dev", "support-dev"])
 
     assert result.exit_code == 1
     assert requests == [
@@ -2261,14 +2256,14 @@ def test_test_command_debounces_watched_file_change_and_reuploads_project(tmp_pa
     monkeypatch.setattr("signal.signal", lambda *args: None)
     monkeypatch.setitem(sys.modules, "time", FakeTime)
 
-    result = CliRunner().invoke(cli.main, ["test"])
+    result = CliRunner().invoke(cli.main, ["dev"])
 
     assert result.exit_code == 0, result.output
     assert len(uploaded_files) == 2
     assert "Creating ephemeral environment (will be deleted on exit)" in result.output
-    assert "[12:00:00] Detected change: support.yaml" in result.output
-    assert "[12:00:00] Files changed, uploading..." in result.output
-    assert "[12:00:00] Uploaded" in result.output
+    assert "Detected change: support.yaml" in result.output
+    assert "Files changed, uploading" in result.output
+    assert "Uploaded" in result.output
     assert "Session was cleaned up due to inactivity or manual deletion." in result.output
 
 
@@ -2371,13 +2366,13 @@ def test_test_command_stops_when_reupload_reports_session_not_active(tmp_path, m
     monkeypatch.setattr("signal.signal", lambda *args: None)
     monkeypatch.setitem(sys.modules, "time", FakeTime)
 
-    result = CliRunner().invoke(cli.main, ["test"])
+    result = CliRunner().invoke(cli.main, ["dev"])
 
     assert result.exit_code == 0, result.output
     assert FakeClient.upload_count == 2
     assert ("DELETE", "/test-sessions/sess_123", None) not in requests
-    assert "[12:00:00] Files changed, uploading..." in result.output
-    assert "[12:00:00] Session ended" in result.output
+    assert "Files changed, uploading" in result.output
+    assert "Session ended" in result.output
     assert "Session was stopped due to inactivity timeout." in result.output
 
 
@@ -2494,14 +2489,14 @@ def test_test_command_ignores_unwatched_events_and_reports_reupload_validation_e
     monkeypatch.setattr("signal.signal", lambda *args: None)
     monkeypatch.setitem(sys.modules, "time", FakeTime)
 
-    result = CliRunner().invoke(cli.main, ["test"])
+    result = CliRunner().invoke(cli.main, ["dev"])
 
     assert result.exit_code == 0, result.output
     assert FakeClient.upload_count == 2
     assert result.output.count("Detected change: support.yaml") == 1
-    assert "[12:00:00] ⚠ Upload failed: Syntax error in support.yaml" in result.output
-    assert "[12:00:00] Fix the issue and save to retry..." in result.output
-    assert "[12:00:00] Session ended (status: expired)" in result.output
+    assert "Upload failed: Syntax error in support.yaml" in result.output
+    assert "Fix the issue and save to retry..." in result.output
+    assert "Session ended (status: expired)" in result.output
 
 
 def test_test_command_requires_credentials_before_creating_session(tmp_path, monkeypatch):
@@ -2513,11 +2508,11 @@ def test_test_command_requires_credentials_before_creating_session(tmp_path, mon
 
     monkeypatch.setattr(cli.httpx, "Client", fail_if_called)
 
-    result = CliRunner().invoke(cli.main, ["test"])
+    result = CliRunner().invoke(cli.main, ["dev"])
 
     assert result.exit_code == 1
-    assert "Error: API key required. Set CONNIC_API_KEY or use --api-key" in result.output
-    assert "Create an API key in the dashboard: Project Settings → CLI → Create Key" in result.output
+    assert "API key required. Set CONNIC_API_KEY or use --api-key" in result.output
+    assert "Create one in the dashboard: Project Settings → CLI → Create Key" in result.output
 
 
 def test_test_command_requires_project_id_after_reading_saved_credentials(tmp_path, monkeypatch):
@@ -2530,10 +2525,10 @@ def test_test_command_requires_project_id_after_reading_saved_credentials(tmp_pa
 
     monkeypatch.setattr(cli.httpx, "Client", fail_if_called)
 
-    result = CliRunner().invoke(cli.main, ["test"])
+    result = CliRunner().invoke(cli.main, ["dev"])
 
     assert result.exit_code == 1
-    assert "Error: Project ID required. Set CONNIC_PROJECT_ID or use --project-id" in result.output
+    assert "Project ID required. Set CONNIC_PROJECT_ID or use --project-id" in result.output
     assert "Find your Project ID in the dashboard" in result.output
 
 
@@ -2548,10 +2543,10 @@ def test_test_command_rejects_empty_project_before_creating_cloud_session(tmp_pa
 
     monkeypatch.setattr(cli.httpx, "Client", fail_if_called)
 
-    result = CliRunner().invoke(cli.main, ["test"])
+    result = CliRunner().invoke(cli.main, ["dev"])
 
     assert result.exit_code == 1
-    assert "Error: No agents found. Run 'connic init' first." in result.output
+    assert "No agents found. Run `connic init` first." in result.output
 
 
 def test_test_command_cleans_up_session_when_container_fails_to_start(tmp_path, monkeypatch):
@@ -2610,7 +2605,7 @@ def test_test_command_cleans_up_session_when_container_fails_to_start(tmp_path, 
     monkeypatch.setattr("signal.signal", lambda *args: None)
     monkeypatch.setitem(sys.modules, "time", FakeTime)
 
-    result = CliRunner().invoke(cli.main, ["test"])
+    result = CliRunner().invoke(cli.main, ["dev"])
 
     assert result.exit_code == 1
     assert ("DELETE", "/test-sessions/sess_failed", None) in requests

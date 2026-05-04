@@ -1,4 +1,5 @@
 import os
+import re
 import sys
 import tempfile
 import zipfile
@@ -15,6 +16,89 @@ DEFAULT_API_URL = os.environ.get("CONNIC_API_URL", "https://api.connic.co/v1")
 DEFAULT_BASE_URL = os.environ.get("CONNIC_BASE_URL", "https://connic.co")
 TEMPLATES_REPO = "connic-org/connic-awesome-agents"
 TEMPLATES_ZIP_URL = f"https://github.com/{TEMPLATES_REPO}/archive/refs/heads/main.zip"
+
+
+# =============================================================================
+# Output style helpers
+# =============================================================================
+
+def _h1(title: str) -> None:
+    """Top-of-command banner. Same shape across every CLI subcommand."""
+    click.echo()
+    click.secho(f"  Connic {title}", fg="cyan", bold=True)
+    click.echo("  " + "─" * 30)
+    click.echo()
+
+
+def _step(msg: str) -> None:
+    """Announce that a step is starting."""
+    click.echo(f"  → {msg}")
+
+
+def _ok(msg: str) -> None:
+    """Sub-detail under a step: success."""
+    click.secho(f"    ✓ {msg}", fg="green")
+
+
+def _err(msg: str) -> None:
+    """Sub-detail under a step: failure. Always to stderr."""
+    click.secho(f"    ✗ {msg}", fg="red", err=True)
+
+
+def _warn(msg: str) -> None:
+    """Sub-detail under a step: warning."""
+    click.secho(f"    ! {msg}", fg="yellow")
+
+
+def _info(msg: str) -> None:
+    """Sub-detail under a step: neutral info, no glyph."""
+    click.echo(f"    {msg}")
+
+
+def _done(msg: str = "Done.") -> None:
+    """Final line of a successful command."""
+    click.echo()
+    click.secho(f"  ✓ {msg}", fg="green", bold=True)
+    click.echo()
+
+
+def _fail_and_exit(msg: str, code: int = 1) -> None:
+    """Print an error in the standard format and exit."""
+    _err(msg)
+    sys.exit(code)
+
+
+_ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
+
+
+def _visible_len(s: str) -> int:
+    """Length of ``s`` ignoring ANSI color escapes."""
+    return len(_ANSI_RE.sub("", s))
+
+
+def _table(headers: list[str], rows: list[list[str]], indent: int = 4) -> None:
+    """Render a unicode-box table that respects ANSI-colored cells."""
+    if not rows:
+        return
+    pad = " " * indent
+    widths = [_visible_len(h) for h in headers]
+    for row in rows:
+        for i, cell in enumerate(row):
+            widths[i] = max(widths[i], _visible_len(cell))
+
+    def cell(text: str, w: int) -> str:
+        return text + " " * (w - _visible_len(text))
+
+    top = "┬".join("─" * (w + 2) for w in widths)
+    mid = "┼".join("─" * (w + 2) for w in widths)
+    bot = "┴".join("─" * (w + 2) for w in widths)
+    click.echo(f"{pad}┌{top}┐")
+    click.echo(f"{pad}│ " + " │ ".join(cell(h, w) for h, w in zip(headers, widths)) + " │")
+    click.echo(f"{pad}├{mid}┤")
+    for row in rows:
+        click.echo(f"{pad}│ " + " │ ".join(cell(c, w) for c, w in zip(row, widths)) + " │")
+    click.echo(f"{pad}└{bot}┘")
+
 
 # =============================================================================
 # File Validation Constants and Helpers
@@ -50,7 +134,7 @@ def _validate_project_files() -> tuple[bool, str, list[Path]]:
     valid_files = []
     total_size = 0
     
-    dirs_to_check = ["agents", "tools", "middleware", "schemas", "guardrails", "hooks"]
+    dirs_to_check = ["agents", "tools", "middleware", "schemas", "guardrails", "hooks", "tests"]
     
     for dirname in dirs_to_check:
         dirpath = Path(dirname)
@@ -197,15 +281,15 @@ See the [Connic Composer docs]({base_url}/docs/v1/composer/overview) for:
 
     # Output (skip when quiet=True, e.g. when init used templates)
     if not quiet:
-        click.echo(f"\n> Initialized Connic project in {base_path.resolve()}\n")
-        click.echo("Created files:")
-        click.echo("  .gitignore")
-        click.echo("  requirements.txt")
-        click.echo("  README.md")
-        click.echo("\nNext steps:")
-        click.echo("  1. Create your first agent anywhere under agents/")
-        click.echo("  2. Run 'connic lint' to validate your project")
-        click.echo("  3. Push to your connected repository to deploy")
+        _step("Created essential files:")
+        _info(".gitignore")
+        _info("requirements.txt")
+        _info("README.md")
+        _step("Next steps:")
+        _info("1. Create your first agent anywhere under agents/")
+        _info("2. Run `connic lint` to validate your project")
+        _info("3. Push to your connected repository to deploy")
+        _done(f"Initialized Connic project in {base_path.resolve()}")
 
 
 def _get_local_templates_path() -> Path | None:
@@ -333,51 +417,52 @@ def init(name: str, templates: str | None):
         connic init . --templates=invoice  # Project with invoice template
         connic init app --templates=invoice,support
     """
+    _h1("Init")
+
     base_path = Path(name)
 
     if name != ".":
         if base_path.exists():
-            click.echo(f"Error: Directory '{name}' already exists.", err=True)
-            sys.exit(1)
+            _fail_and_exit(f"Directory '{name}' already exists.")
         base_path.mkdir(parents=True)
-        click.echo(f"Created directory: {name}")
+        _step(f"Created directory: {name}")
 
-    # Create directories
+    _step("Creating project structure...")
     (base_path / "agents").mkdir(exist_ok=True)
     (base_path / "tools").mkdir(exist_ok=True)
     (base_path / "middleware").mkdir(exist_ok=True)
     (base_path / "schemas").mkdir(exist_ok=True)
+    _ok("agents/, tools/, middleware/, schemas/")
 
     if templates:
         # Fetch and merge templates
         template_ids = [t.strip().lower() for t in templates.split(",") if t.strip()]
         if not template_ids:
-            click.echo("Error: No valid template names provided.", err=True)
-            sys.exit(1)
+            _fail_and_exit("No valid template names provided.")
 
+        _step("Fetching templates from connic-awesome-agents...")
         extracted = _fetch_templates_from_github()
         if not extracted:
             local_path = _get_local_templates_path()
             if local_path:
                 extracted = local_path
-                click.echo("Using local connic-awesome-agents (GitHub unavailable)")
+                _warn("GitHub unavailable; using local connic-awesome-agents")
             else:
-                click.echo("Error: Could not fetch templates. Try again or use a local connic-awesome-agents folder.", err=True)
-                sys.exit(1)
+                _fail_and_exit("Could not fetch templates. Try again or use a local connic-awesome-agents folder.")
         else:
-            click.echo("Fetched templates from connic-awesome-agents")
+            _ok("Fetched")
 
+        _step("Merging templates...")
         requirements_lines = []
         template_readmes: list[str] = []
         for tid in template_ids:
             template_dir = extracted / tid
             if not template_dir.is_dir():
-                click.echo(f"Error: Template '{tid}' not found in connic-awesome-agents", err=True)
-                sys.exit(1)
+                _fail_and_exit(f"Template '{tid}' not found in connic-awesome-agents")
             readme_content = _merge_template_into_project(template_dir, base_path, requirements_lines, tid)
             if readme_content:
                 template_readmes.append(readme_content)
-            click.echo(f"  Added template: {tid}")
+            _ok(f"Added template: {tid}")
 
         if requirements_lines:
             _write_merged_requirements(base_path, requirements_lines)
@@ -386,12 +471,11 @@ def init(name: str, templates: str | None):
         if template_readmes:
             _append_template_readmes(base_path, template_readmes)
 
-        click.echo(f"\n> Initialized with templates: {', '.join(template_ids)}")
-        click.echo(f"Added agents, tools, middleware, schemas from: {', '.join(template_ids)}")
-        click.echo("Next steps:")
-        click.echo("  1. Run 'connic lint' to validate your project")
-        click.echo("  2. Run 'connic test' to test against Connic cloud")
-        click.echo("  3. Run 'connic deploy' when ready")
+        _step("Next steps:")
+        _info("1. Run `connic lint` to validate your project")
+        _info("2. Run `connic test` to test against Connic cloud")
+        _info("3. Run `connic deploy` when ready")
+        _done(f"Initialized with templates: {', '.join(template_ids)}")
         return
 
     # No templates: create clean project only (no example files)
@@ -405,20 +489,17 @@ def _run_lint(verbose: bool = False, quiet: bool = False, project_root: str = ".
         verbose: Show extra detail per agent.
         quiet:   Suppress per-agent output (used by deploy for a compact pre-flight check).
     """
-    if not quiet:
-        click.echo("Connic Composer SDK - Validation\n")
-
     errors: list[str] = []
 
     try:
         loader = ProjectLoader(project_root)
     except Exception as e:
-        click.echo(f"Error: {e}", err=True)
+        _err(str(e))
         return False
 
     # Discover tools
     if not quiet:
-        click.echo("Discovering tools...")
+        _step("Discovering tools...")
     try:
         tools = loader.discover_tools()
         errors.extend(loader._load_errors)
@@ -426,69 +507,60 @@ def _run_lint(verbose: bool = False, quiet: bool = False, project_root: str = ".
         total_tools = sum(len(funcs) for funcs in tools.values())
         if not quiet:
             if tools:
-                click.echo(f"  Found {total_tools} tools in {len(tools)} modules:")
+                _ok(f"{total_tools} tool(s) in {len(tools)} module(s)")
                 for module, functions in sorted(tools.items()):
                     if verbose:
-                        click.echo(f"    {module}:")
+                        _info(f"{module}:")
                         for func in functions:
-                            click.echo(f"      - {func}")
+                            _info(f"  - {func}")
                     else:
-                        click.echo(f"    {module}: {', '.join(functions)}")
+                        _info(f"{module}: {', '.join(functions)}")
             else:
-                click.echo("  No tools found in tools/ directory")
+                _info("No tools found in tools/ directory")
     except FileNotFoundError:
         if not quiet:
-            click.echo("  No tools/ directory found")
+            _info("No tools/ directory found")
         tools = {}
-
-    if not quiet:
-        click.echo()
 
     # Discover middlewares
     if not quiet:
-        click.echo("Discovering middlewares...")
+        _step("Discovering middlewares...")
     try:
         middlewares = loader.discover_middlewares()
         loader._load_errors.clear()  # middleware errors are non-fatal
         if not quiet:
             if middlewares:
-                click.echo(f"  Found middlewares for {len(middlewares)} agents:")
+                _ok(f"middlewares for {len(middlewares)} agent(s)")
                 for agent_name, hooks in sorted(middlewares.items()):
-                    click.echo(f"    {agent_name}: {', '.join(hooks)}")
+                    _info(f"{agent_name}: {', '.join(hooks)}")
             else:
-                click.echo("  No middlewares found in middleware/ directory")
+                _info("No middlewares found in middleware/ directory")
     except FileNotFoundError:
         if not quiet:
-            click.echo("  No middleware/ directory found")
+            _info("No middleware/ directory found")
         middlewares = {}
-
-    if not quiet:
-        click.echo()
 
     # Discover tool hooks
     if not quiet:
-        click.echo("Discovering tool hooks...")
+        _step("Discovering tool hooks...")
     try:
         tool_hooks = loader.discover_tool_hooks()
         loader._load_errors.clear()  # hook errors are non-fatal
         if not quiet:
             if tool_hooks:
-                click.echo(f"  Found hooks for {len(tool_hooks)} agents:")
+                _ok(f"hooks for {len(tool_hooks)} agent(s)")
                 for agent_name, available in sorted(tool_hooks.items()):
-                    click.echo(f"    {agent_name}: {', '.join(available)}")
+                    _info(f"{agent_name}: {', '.join(available)}")
             else:
-                click.echo("  No hooks found in hooks/ directory")
+                _info("No hooks found in hooks/ directory")
     except FileNotFoundError:
         if not quiet:
-            click.echo("  No hooks/ directory found")
+            _info("No hooks/ directory found")
         tool_hooks = {}
-
-    if not quiet:
-        click.echo()
 
     # Load agents
     if not quiet:
-        click.echo("Loading agents...")
+        _step("Loading agents...")
     try:
         agents = loader.load_agents()
         errors.extend(loader._load_errors)
@@ -496,13 +568,13 @@ def _run_lint(verbose: bool = False, quiet: bool = False, project_root: str = ".
         api_spec_warnings = list(loader._api_spec_warnings)
         loader._api_spec_warnings.clear()
     except FileNotFoundError as e:
-        click.echo(f"  {e}", err=True)
-        click.echo("\nRun 'connic init' to create a sample project.")
+        _err(str(e))
+        _info("Run `connic init` to create a sample project.")
         return False
 
     if not agents and not errors:
-        click.echo("  No agents found in agents/", err=True)
-        click.echo("\nRun 'connic init' to create a sample project.")
+        _err("No agents found in agents/")
+        _info("Run `connic init` to create a sample project.")
         return False
 
     # Validate each agent
@@ -520,16 +592,17 @@ def _run_lint(verbose: bool = False, quiet: bool = False, project_root: str = ".
     if quiet:
         if errors:
             for err in errors:
-                click.echo(f"  ✗ {err}", err=True)
+                _err(err)
             return False
         if api_spec_warnings:
-            click.echo(f"  {len(api_spec_warnings)} API spec tool ref(s) skipped (validated at deploy time)")
+            _info(f"{len(api_spec_warnings)} API spec tool ref(s) skipped (validated at deploy time)")
         agent_names = [a.config.name for a in agents]
-        click.echo(f"  Lint passed: {len(agents)} agent(s) validated ({', '.join(agent_names)})")
+        _ok(f"Lint passed: {len(agents)} agent(s) validated ({', '.join(agent_names)})")
         return True
 
     # Verbose output: print per-agent boxes
-    click.echo(f"  Found {len(agents)} agents:\n")
+    _ok(f"{len(agents)} agent(s) loaded")
+    click.echo()
 
     for agent in agents:
         config = agent.config
@@ -582,19 +655,17 @@ def _run_lint(verbose: bool = False, quiet: bool = False, project_root: str = ".
         click.echo()
 
     if api_spec_warnings:
-        click.echo(f"ℹ {len(api_spec_warnings)} API spec tool ref(s) skipped (validated at deploy time):")
+        _step(f"{len(api_spec_warnings)} API spec tool ref(s) skipped (validated at deploy time):")
         for ref in api_spec_warnings:
-            click.echo(f"  - {ref}")
-        click.echo()
+            _info(f"- {ref}")
 
     if errors:
-        click.echo(f"✗ Validation failed with {len(errors)} error(s):\n", err=True)
+        _step(f"Validation failed with {len(errors)} error(s):")
         for err in errors:
-            click.echo(f"  ✗ {err}", err=True)
+            _err(err)
         return False
 
-    click.echo("✓ Project validation complete")
-    click.echo("\nTo deploy, push to your connected repository or run 'connic deploy'.")
+    _done("Project validation complete. To deploy, push to your repository or run `connic deploy`.")
     return True
 
 
@@ -608,51 +679,41 @@ def lint(verbose: bool):
     Loads all agents and tools, validates configurations,
     and displays a summary of the project.
     """
+    _h1("Lint")
     if not _run_lint(verbose=verbose):
         sys.exit(1)
-
-
-@main.command(hidden=True)
-@click.option("--verbose", "-v", is_flag=True, help="Show detailed output")
-def dev(verbose: bool):
-    """Alias for 'connic lint' (deprecated)."""
-    ctx = click.get_current_context()
-    return ctx.invoke(lint, verbose=verbose)
 
 
 @main.command()
 def tools():
     """List all available tools in the project."""
+    _h1("Tools")
     try:
         loader = ProjectLoader(".")
         discovered = loader.discover_tools()
     except FileNotFoundError:
-        click.echo("No tools/ directory found.", err=True)
-        sys.exit(1)
-    
+        _fail_and_exit("No tools/ directory found.")
+
     if not discovered:
-        click.echo("No tools found in tools/ directory.")
-        click.echo("Create Python files in tools/ with typed functions.")
+        _step("No tools found in tools/ directory.")
+        _info("Create Python files in tools/ with typed functions.")
         sys.exit(0)
-    
-    click.echo("Available tools:\n")
-    
+
+    _step("Available tools:")
     for module, functions in sorted(discovered.items()):
-        click.echo(f"  {module.replace('.', '/')}.py:")
+        _info(f"{module.replace('.', '/')}.py:")
         for func_name in functions:
-            # Load the tool to get description
             try:
                 tool = loader._resolve_tools(f"{module}.{func_name}")[0]
-                # Get first line of description
                 desc = tool.description.split('\n')[0][:60]
                 if len(tool.description.split('\n')[0]) > 60:
                     desc += "..."
-                click.echo(f"    - {func_name}: {desc}")
+                _info(f"  - {func_name}: {desc}")
             except Exception:
-                click.echo(f"    - {func_name}")
-        click.echo()
-    
-    click.echo("Use in agent YAML as the exact module path under tools/, e.g. <module>.<function> or <directory>.<module>.<function>")
+                _info(f"  - {func_name}")
+
+    _step("Reference in agent YAML:")
+    _info("Use the exact module path under tools/, e.g. <module>.<function> or <directory>.<module>.<function>")
 
 
 # =============================================================================
@@ -664,18 +725,18 @@ def tools():
 @click.option("--api-url", envvar="CONNIC_API_URL", default=DEFAULT_API_URL, help="Connic API URL")
 @click.option("--api-key", envvar="CONNIC_API_KEY", default=None, help="Connic API key")
 @click.option("--project-id", envvar="CONNIC_PROJECT_ID", default=None, help="Connic project ID")
-def test(name: str, api_url: str, api_key: str, project_id: str):
+def dev(name: str, api_url: str, api_key: str, project_id: str):
     """
-    Start a test session with hot-reload against Connic cloud.
-    
+    Start a dev session with hot-reload against Connic cloud.
+
     Creates an isolated test environment and syncs your local files
     for rapid development. Changes are reflected in 2-5 seconds.
-    
+
     \b
     Examples:
-        connic test              # Ephemeral test env (auto-deleted on exit)
-        connic test my-feature   # Named test env (persists after exit)
-    
+        connic dev               # Ephemeral test env (auto-deleted on exit)
+        connic dev my-feature    # Named test env (persists after exit)
+
     Environment variables:
         CONNIC_API_URL      - API URL (default: https://api.connic.co/v1)
         CONNIC_API_KEY      - Your API key
@@ -703,72 +764,67 @@ def test(name: str, api_url: str, api_key: str, project_id: str):
         except Exception:
             pass
     
+    _h1("Dev")
+
     if not api_key:
-        click.echo("Error: API key required. Set CONNIC_API_KEY or use --api-key", err=True)
-        click.echo("\nCreate an API key in the dashboard: Project Settings → CLI → Create Key")
-        click.echo("\nOr run: connic login")
+        _err("API key required. Set CONNIC_API_KEY or use --api-key")
+        _info("Create one in the dashboard: Project Settings → CLI → Create Key")
+        _info("Or run: connic login")
         sys.exit(1)
-    
+
     if not project_id:
-        click.echo("Error: Project ID required. Set CONNIC_PROJECT_ID or use --project-id", err=True)
-        click.echo("\nFind your Project ID in the dashboard: Project Settings → CLI")
-        click.echo("\nOr run: connic login")
+        _err("Project ID required. Set CONNIC_PROJECT_ID or use --project-id")
+        _info("Find your Project ID in the dashboard: Project Settings → CLI")
+        _info("Or run: connic login")
         sys.exit(1)
-    
+
     # Validate local project
-    click.echo("Connic Test Mode - Hot Reload Development\n")
-    click.echo("Validating local project...")
-    
+    _step("Validating project files...")
     try:
         loader = ProjectLoader(".")
         agents = loader.load_agents()
         if not agents:
-            click.echo("Error: No agents found. Run 'connic init' first.", err=True)
-            sys.exit(1)
+            _fail_and_exit("No agents found. Run `connic init` first.")
         agent_summaries = [
             f"{a.config.name} ({a.config.source_path})" if a.config.source_path else a.config.name
             for a in agents
         ]
-        click.echo(f"  Found {len(agents)} agents: {agent_summaries}")
+        _ok(f"{len(agents)} agent(s): {', '.join(agent_summaries)}")
     except Exception as e:
-        click.echo(f"Error loading project: {e}", err=True)
-        sys.exit(1)
-    
-    # Create HTTP client with auth
-    # Use longer timeout for session creation (image building can take time)
+        _fail_and_exit(f"Error loading project: {e}")
+
     headers = {
         "Authorization": f"Bearer {api_key}",
     }
     client = httpx.Client(base_url=api_url, headers=headers, timeout=120.0)
-    
-    click.echo(f"  API Key: {api_key[:12]}•••")
     
     session_id = None
     cleaned_up = False
     server_terminated = False  # True if session was already cleaned up by server
     
     def cleanup():
-        """Clean up test session on exit."""
+        """Clean up dev session on exit."""
         nonlocal cleaned_up
         if cleaned_up:
             return
         cleaned_up = True
-        
+
         # Skip cleanup if server already terminated the session
         if session_id and not server_terminated:
-            click.echo("\n\nCleaning up test session...")
+            click.echo()
+            _step("Cleaning up dev session...")
             try:
                 resp = client.delete(f"/test-sessions/{session_id}")
                 if resp.status_code == 200:
                     result = resp.json()
                     if result.get("environment_deleted"):
-                        click.echo("  Ephemeral environment deleted.")
+                        _ok("Ephemeral environment deleted.")
                     else:
-                        click.echo("  Session ended (named environment preserved).")
+                        _ok("Session ended (named environment preserved).")
                 elif resp.status_code != 404:
-                    click.echo(f"  Warning: Cleanup returned {resp.status_code}")
+                    _warn(f"Cleanup returned {resp.status_code}")
             except Exception as e:
-                click.echo(f"  Warning: Cleanup failed: {e}")
+                _warn(f"Cleanup failed: {e}")
         client.close()
     
     # Register cleanup handler
@@ -781,44 +837,42 @@ def test(name: str, api_url: str, api_key: str, project_id: str):
     
     try:
         # Create test session
-        click.echo("\nCreating test session...")
+        _step("Creating dev session...")
         body = {}
         if name:
             body["name"] = name
-            click.echo(f"  Using named environment: {name}")
+            _info(f"Using named environment: {name}")
         else:
-            click.echo("  Creating ephemeral environment (will be deleted on exit)")
-        
+            _info("Creating ephemeral environment (will be deleted on exit)")
+
         resp = client.post(f"/projects/{project_id}/test-sessions", json=body)
-        
+
         if resp.status_code == 409:
-            # Already an active session for this environment
             try:
                 detail = resp.json().get("detail", "")
             except Exception:
                 detail = resp.text
-            click.echo(f"\nError: {detail}", err=True)
-            click.echo("\nTo stop an existing session, press Ctrl+C in the terminal where it's running.", err=True)
+            _err(detail)
+            _info("To stop an existing session, press Ctrl+C in the terminal where it's running.")
             sys.exit(1)
         elif resp.status_code != 200:
-            click.echo(f"Error creating test session: {resp.text}", err=True)
-            sys.exit(1)
-        
+            _fail_and_exit(f"Error creating dev session: {resp.text}")
+
         session_data = resp.json()
         session_id = session_data["id"]
         env_id = session_data["environment_id"]
         env_name = session_data["environment_name"]
-        
-        click.echo(f"  Session ID: {session_id}")
-        click.echo(f"  Environment: {env_name}")
-        
+
+        _ok(f"Session id: {session_id}")
+        _ok(f"Environment: {env_name}")
+
         # Poll for container to be ready
-        click.echo("\n  Waiting for container to start (this can take a few seconds)", nl=False)
+        _step("Starting dev runner container (this can take a minute on first build)...")
         max_wait = 600  # 10 minutes max
         poll_interval = 3
         waited = 0
         container_ready = False
-        
+
         consecutive_errors = 0
         while waited < max_wait:
             try:
@@ -827,36 +881,27 @@ def test(name: str, api_url: str, api_key: str, project_id: str):
                     consecutive_errors = 0
                     status_data = status_resp.json()
                     container_status = status_data.get("container_status", "starting")
-                    
+
                     if container_status == "running":
-                        click.echo(" ✓")
-                        click.echo("  Container: running")
+                        _ok("Container: running")
                         container_ready = True
                         break
                     elif container_status == "failed":
-                        click.echo(" ✗")
-                        click.echo("  Container failed to start", err=True)
+                        _err("Container failed to start")
                         cleanup()
                         sys.exit(1)
-                    else:
-                        click.echo(".", nl=False)
                 else:
                     consecutive_errors += 1
-                    if consecutive_errors >= 3:
-                        click.echo(f" [HTTP {status_resp.status_code}]", nl=False)
-                    else:
-                        click.echo(".", nl=False)
+
             except Exception:
                 consecutive_errors += 1
-                click.echo(".", nl=False)
-            
+
             time.sleep(poll_interval)
             waited += poll_interval
-        
+
         if not container_ready:
-            click.echo(" timeout")
-            click.echo("  Container did not start within 10 minutes", err=True)
-            click.echo("  Check backend logs for details", err=True)
+            _err("Container did not start within 10 minutes")
+            _info("Check backend logs for details")
             cleanup()
             sys.exit(1)
         
@@ -921,29 +966,22 @@ def test(name: str, api_url: str, api_key: str, project_id: str):
                 return None, 0, f"Upload failed: {upload_resp.text}"
         
         # Initial upload
-        click.echo("\nUploading initial files...")
+        _step("Uploading initial files...")
         current_hash, size, error = upload_files()
         if error == "SESSION_ENDED":
-            click.secho("  ✗ Session ended unexpectedly", fg="red", err=True)
+            _err("Session ended unexpectedly")
             cleanup()
             sys.exit(1)
         elif error:
-            click.secho(f"  ⚠ {error}", fg="yellow", err=True)
-            click.echo("  Fix the issue and save to retry...\n")
+            _warn(error)
+            _info("Fix the issue and save to retry...")
             current_hash = None  # Will retry on file change
         elif current_hash:
-            click.echo(f"  Uploaded {size} bytes (hash: {current_hash[:16]}...)")
-        
-        # Set up file watcher
-        click.echo("\nWatching for file changes...")
-        click.echo("  Press Ctrl+C to stop\n")
-        
-        # Display link to test environment
+            _ok(f"Uploaded {size} bytes (hash: {current_hash[:16]}...)")
+
+        _step("Watching for file changes (press Ctrl+C to stop)...")
         dashboard_url = f"{DEFAULT_BASE_URL}/projects/{project_id}/agents?env={env_id}"
-        click.echo("─" * 60)
-        click.secho("  View and trigger your agents: ", fg="cyan", nl=False)
-        click.echo(dashboard_url)
-        click.echo("─" * 60)
+        _info(f"View and trigger your agents: {dashboard_url}")
         click.echo()
         
         last_upload_time = time.time()
@@ -976,7 +1014,7 @@ def test(name: str, api_url: str, api_key: str, project_id: str):
                 if not is_watched and not is_requirements:
                     return
                 
-                click.echo(f"[{time.strftime('%H:%M:%S')}] Detected change: {src_path.name}")
+                click.echo(f"  [{time.strftime('%H:%M:%S')}] → Detected change: {src_path.name}")
                 pending_upload = True
                 last_upload_time = time.time()
         
@@ -1009,8 +1047,8 @@ def test(name: str, api_url: str, api_key: str, project_id: str):
                         status_resp = client.get(f"/test-sessions/{session_id}/status")
                         if status_resp.status_code == 404:
                             click.echo()
-                            click.secho(f"[{time.strftime('%H:%M:%S')}] Session ended (deleted by server)", fg="yellow")
-                            click.echo("Session was cleaned up due to inactivity or manual deletion.")
+                            click.secho(f"  [{time.strftime('%H:%M:%S')}] ! Session ended (deleted by server)", fg="yellow")
+                            click.echo("    Session was cleaned up due to inactivity or manual deletion.")
                             server_terminated = True
                             break
                         elif status_resp.status_code == 200:
@@ -1018,34 +1056,34 @@ def test(name: str, api_url: str, api_key: str, project_id: str):
                             if status_data.get("status") != "active":
                                 click.echo()
                                 status = status_data.get('status')
-                                click.secho(f"[{time.strftime('%H:%M:%S')}] Session ended (status: {status})", fg="yellow")
-                                click.echo("Session was stopped due to inactivity timeout.")
+                                click.secho(f"  [{time.strftime('%H:%M:%S')}] ! Session ended (status: {status})", fg="yellow")
+                                click.echo("    Session was stopped due to inactivity timeout.")
                                 server_terminated = True
                                 break
                     except httpx.RequestError:
                         # Network error - don't break, just skip this check
                         pass
-                
+
                 # Check if we need to upload (with debounce)
                 if pending_upload and (time.time() - last_upload_time) >= DEBOUNCE_SECONDS:
                     pending_upload = False
-                    click.echo(f"[{time.strftime('%H:%M:%S')}] Files changed, uploading...")
-                    
+                    click.echo(f"  [{time.strftime('%H:%M:%S')}] → Files changed, uploading...")
+
                     new_hash, size, error = upload_files()
                     if error == "SESSION_ENDED":
                         click.echo()
-                        click.secho(f"[{time.strftime('%H:%M:%S')}] Session ended", fg="yellow")
-                        click.echo("Session was stopped due to inactivity timeout.")
+                        click.secho(f"  [{time.strftime('%H:%M:%S')}] ! Session ended", fg="yellow")
+                        click.echo("    Session was stopped due to inactivity timeout.")
                         server_terminated = True
                         break
                     elif error:
-                        click.secho(f"[{time.strftime('%H:%M:%S')}] ⚠ {error}", fg="yellow", err=True)
-                        click.echo(f"[{time.strftime('%H:%M:%S')}] Fix the issue and save to retry...")
+                        click.secho(f"  [{time.strftime('%H:%M:%S')}]     ! {error}", fg="yellow", err=True)
+                        click.echo(f"  [{time.strftime('%H:%M:%S')}]     Fix the issue and save to retry...")
                     elif new_hash and new_hash != current_hash:
                         current_hash = new_hash
-                        click.echo(f"[{time.strftime('%H:%M:%S')}] Uploaded {size} bytes")
+                        click.secho(f"  [{time.strftime('%H:%M:%S')}]     ✓ Uploaded {size} bytes", fg="green")
                     elif new_hash == current_hash:
-                        click.echo(f"[{time.strftime('%H:%M:%S')}] No content changes detected")
+                        click.echo(f"  [{time.strftime('%H:%M:%S')}]     No content changes detected")
                     
         except KeyboardInterrupt:
             pass
@@ -1054,11 +1092,238 @@ def test(name: str, api_url: str, api_key: str, project_id: str):
             observer.join()
     
     except Exception as e:
-        click.echo(f"Error: {e}", err=True)
+        _err(str(e))
         import traceback
         traceback.print_exc()
     finally:
         cleanup()
+
+
+@main.command()
+@click.option("--env", help="Environment ID to run tests against (defaults to env's test_environment_id, falling back to itself).")
+@click.option("--filter", "filter_name", help="Run only tests whose name matches this string.")
+@click.option("--json", "as_json", is_flag=True, help="Emit machine-readable JSON for CI.")
+@click.option("--api-url", envvar="CONNIC_API_URL", default=DEFAULT_API_URL, help="Connic API URL")
+@click.option("--api-key", envvar="CONNIC_API_KEY", default=None, help="Connic API key")
+@click.option("--project-id", envvar="CONNIC_PROJECT_ID", default=None, help="Connic project ID")
+def test(env: str | None, filter_name: str | None, as_json: bool, api_url: str, api_key: str | None, project_id: str | None):
+    """
+    Run the test suite from ./tests against a Connic environment.
+
+    Discovers `tests/*.yaml` files (one per agent, mirroring `middleware/`),
+    invokes each agent N times in the chosen environment, and asserts on
+    output and tool-call traces. Exits non-zero if any test fails.
+
+    \b
+    Examples:
+        connic test                       # Run all tests against the default env
+        connic test --env <env-id>        # Run against a specific env
+        connic test --filter login        # Run only tests with "login" in the name
+        connic test --json                # Machine-readable output for CI
+    """
+    import base64
+    import io
+    import json
+    import tarfile
+    import time
+
+    import httpx
+
+    # Load credentials from .connic if available.
+    connic_file = Path(".connic")
+    if connic_file.exists():
+        try:
+            cfg = json.loads(connic_file.read_text())
+            api_key = api_key or cfg.get("api_key")
+            project_id = project_id or cfg.get("project_id")
+        except Exception:
+            pass
+
+    if not api_key or not project_id:
+        if not as_json:
+            _h1("Test")
+        _fail_and_exit("API key and project ID required. Run `connic login`.")
+
+    if not as_json:
+        _h1("Test")
+
+    # Validate and package the project (same dirs as deploy, includes tests/).
+    if not as_json:
+        _step("Validating project files...")
+    is_valid, err, valid_files = _validate_project_files()
+    if not is_valid:
+        _fail_and_exit(f"File validation failed: {err}")
+    if not any(f.parts and f.parts[0] == "tests" for f in valid_files):
+        _fail_and_exit("No tests/ directory found in project — nothing to run.")
+    test_yaml_count = sum(1 for f in valid_files if f.parts and f.parts[0] == "tests")
+    if not as_json:
+        _ok(f"{len(valid_files)} files, {test_yaml_count} test file(s)")
+
+        _step("Packaging upload...")
+    tar_buffer = io.BytesIO()
+    with tarfile.open(fileobj=tar_buffer, mode="w:gz") as tar:
+        for f in valid_files:
+            tar.add(f, arcname=str(f))
+    tar_data = tar_buffer.getvalue()
+    if len(tar_data) > MAX_UPLOAD_SIZE:
+        _fail_and_exit(f"Package size ({len(tar_data):,} bytes) exceeds 1MB limit")
+    if not as_json:
+        _ok(f"{len(tar_data):,} bytes")
+
+    # Map backend phase strings to one-line descriptions; unknown phases
+    # are shown verbatim (forward-compatible with future backend additions).
+    PHASE_LABELS = {
+        "validating": "Validating uploaded files on backend...",
+        "building": "Building agent image (this is the slow step)...",
+        "starting_container": "Starting test runner container...",
+        "running_tests": "Test runner is executing your test cases...",
+        "done": "Test runner finished.",
+        "error": "Backend reported an error.",
+    }
+
+    headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
+    # Long read timeout: image builds can take several minutes.
+    test_timeout = httpx.Timeout(connect=30.0, read=600.0, write=600.0, pool=30.0)
+    with httpx.Client(base_url=api_url, headers=headers, timeout=test_timeout) as client:
+        # Resolve target env. If no --env given, use the default standard env's
+        # test_environment_id, falling back to the env itself.
+        if env is None:
+            if not as_json:
+                _step("Resolving target environment...")
+            envs_resp = client.get(f"/projects/{project_id}/environments/")
+            if envs_resp.status_code != 200:
+                _fail_and_exit(f"Failed to list environments: {envs_resp.text}")
+            envs = envs_resp.json()
+            standard = [e for e in envs if e.get("env_type") != "test"]
+            default_env = next((e for e in standard if e.get("is_default")), None) or (standard[0] if standard else None)
+            if default_env is None:
+                _fail_and_exit("No environments found. Create one in the dashboard first.")
+            env = default_env.get("test_environment_id") or default_env["id"]
+            target_label = default_env.get("name") if env == default_env["id"] else f"{default_env.get('name')}.test_environment_id"
+            if not as_json:
+                _ok(f"{target_label} ({env})")
+        else:
+            if not as_json:
+                _step(f"Target environment: {env}")
+
+        if not as_json:
+            _step("Submitting to backend...")
+        kickoff = client.post(
+            f"/projects/{project_id}/test-runs",
+            json={
+                "files_data": base64.b64encode(tar_data).decode("utf-8"),
+                "environment_id": env,
+            },
+        )
+        if kickoff.status_code == 400:
+            _fail_and_exit(f"Test request rejected: {kickoff.json().get('detail', kickoff.text)}")
+        if kickoff.status_code not in (200, 202):
+            _fail_and_exit(f"Failed to start test run: {kickoff.text}")
+
+        test_run_id = kickoff.json()["id"]
+        poll_url = f"/projects/{project_id}/test-runs/{test_run_id}"
+        if not as_json:
+            _ok(f"Test run id: {test_run_id}")
+
+        printed_case_keys: set[str] = set()
+        last_phase: str | None = None
+        announced_running = False
+        result: dict | None = None
+        consecutive_poll_errors = 0
+
+        while True:
+            try:
+                resp = client.get(poll_url)
+            except (httpx.ReadTimeout, httpx.ConnectError, httpx.RemoteProtocolError) as e:
+                # Transient: backend may be busy with a heavy build step.
+                # Tolerate a handful in a row before giving up so a single
+                # slow request doesn't kill an otherwise-healthy run.
+                consecutive_poll_errors += 1
+                if consecutive_poll_errors >= 5:
+                    _fail_and_exit(f"Lost contact with backend ({e!s}); giving up.")
+                time.sleep(5)
+                continue
+            if resp.status_code != 200:
+                _fail_and_exit(f"Failed to poll test run: {resp.text}")
+            consecutive_poll_errors = 0
+            result = resp.json()
+            status = result["status"]
+            phase = result.get("phase")
+
+            if not as_json:
+                # Phase transitions: each one is a top-level step so the user
+                # sees what the backend is currently doing instead of a
+                # silent multi-minute build.
+                if phase and phase != last_phase:
+                    label = PHASE_LABELS.get(phase, phase)
+                    _step(label)
+                    last_phase = phase
+
+                # First time we see a non-zero total_cases while running,
+                # announce what's coming.
+                if (
+                    not announced_running
+                    and phase == "running_tests"
+                    and result.get("total_cases")
+                ):
+                    _info(f"Running {result['total_cases']} test case(s)...")
+                    announced_running = True
+
+            if status in ("passed", "failed", "error"):
+                break
+            time.sleep(2)
+
+    if result is None:
+        sys.exit(1)
+    cases = result.get("cases", [])
+    if filter_name:
+        cases = [c for c in cases if filter_name in c["test_name"]]
+
+    if result["status"] == "error":
+        _fail_and_exit(f"Test run errored: {result.get('error') or 'unknown error'}", code=2)
+
+    if as_json:
+        click.echo(json.dumps({"status": result["status"], "cases": cases}, indent=2))
+    else:
+        if cases:
+            click.echo()
+            table_rows = []
+            for c in cases:
+                result_cell = (
+                    click.style(" PASS ", fg="green", bold=True)
+                    if c["passed"]
+                    else click.style(" FAIL ", fg="red", bold=True)
+                )
+                test_label = f"{c['agent_name']}::{c['test_name']}"
+                runs_cell = f"{c['successes']}/{c['runs']}"
+                threshold_cell = f"{c['success_threshold']}%"
+                table_rows.append([result_cell, test_label, runs_cell, threshold_cell])
+            _table(["Result", "Test", "Runs", "Threshold"], table_rows)
+
+            failed_with_reason = [
+                c for c in cases if not c["passed"] and c.get("failure_reason")
+            ]
+            if failed_with_reason:
+                click.echo()
+                _step("Failure details:")
+                for c in failed_with_reason:
+                    _err(f"{c['agent_name']}::{c['test_name']}: {c['failure_reason']}")
+
+        passed_n = sum(1 for c in cases if c["passed"])
+        # Dashboard link to the throwaway deployment that backed this run --
+        # opens the per-case results panel + agent_run_id pills the user can
+        # drill into. The link is the same surface real deploys land on, so
+        # the test run feels like a first-class artifact rather than an
+        # ephemeral CLI invocation.
+        if result.get("deployment_id"):
+            click.echo()
+            _step("View detailed results in the dashboard:")
+            _info(
+                f"{DEFAULT_BASE_URL}/projects/{project_id}/deployments/{result['deployment_id']}"
+            )
+        _done(f"{passed_n}/{len(cases)} cases passed.")
+
+    sys.exit(0 if result["status"] == "passed" else 1)
 
 
 @main.command()
@@ -1083,10 +1348,7 @@ def login(token: str | None, api_key: str | None, project_id: str | None, base_u
     import json
     import webbrowser
 
-    click.echo()
-    click.secho("  Connic CLI Login", fg="cyan", bold=True)
-    click.echo("  " + "─" * 30)
-    click.echo()
+    _h1("Login")
 
     if token:
         project_id, api_key = _parse_login_token(token)
@@ -1094,20 +1356,18 @@ def login(token: str | None, api_key: str | None, project_id: str | None, base_u
     if not api_key or not project_id:
         login_url = f"{base_url}/projects?to=/settings/cli?add=1"
 
-        click.echo("  Opening the Connic dashboard to create an API key...")
-        click.echo()
-        click.echo(f"  If the browser doesn't open, visit:")
-        click.secho(f"  {login_url}", fg="cyan", underline=True)
-        click.echo()
+        _step("Opening the Connic dashboard to create an API key...")
+        _info("If the browser doesn't open, visit:")
+        click.secho(f"    {login_url}", fg="cyan", underline=True)
 
         try:
             webbrowser.open(login_url)
         except Exception:
             pass
 
-        click.echo("  After creating a key, copy the login token and paste it below.")
+        _info("After creating a key, copy the login token and paste it below.")
         click.echo()
-        raw_token = click.prompt(click.style("  Login Token", fg="yellow"), hide_input=True)
+        raw_token = click.prompt(click.style("  Login token", fg="yellow"), hide_input=True)
         project_id, api_key = _parse_login_token(raw_token.strip())
 
     config = {
@@ -1118,24 +1378,22 @@ def login(token: str | None, api_key: str | None, project_id: str | None, base_u
     connic_file = Path(".connic")
     connic_file.write_text(json.dumps(config, indent=2))
 
-    click.echo()
-    click.secho("  Credentials saved to .connic", fg="green", bold=True)
-    click.echo()
-    click.echo(f"    API Key:  {api_key[:12]}...")
-    click.echo(f"    Project:  {project_id}")
-    click.echo()
-    click.secho("  Remember to add .connic to your .gitignore!", fg="yellow")
-    click.echo()
+    _step("Credentials saved to .connic")
+    _info(f"API key:  {api_key[:12]}...")
+    _info(f"Project:  {project_id}")
+    _warn("Remember to add .connic to your .gitignore!")
+
+    _done("Logged in.")
 
 
 def _parse_login_token(token: str) -> tuple[str, str]:
     """Parse a login token in the format project_id:api_key."""
     if ":" not in token:
-        click.secho("  Invalid token format. Expected project_id:api_key", fg="red")
+        _err("Invalid token format. Expected project_id:api_key")
         raise SystemExit(1)
     project_id, api_key = token.split(":", 1)
     if not project_id or not api_key:
-        click.secho("  Invalid token format. Expected project_id:api_key", fg="red")
+        _err("Invalid token format. Expected project_id:api_key")
         raise SystemExit(1)
     return project_id, api_key
 
@@ -1149,7 +1407,8 @@ def _parse_login_token(token: str) -> tuple[str, str]:
 @click.option("--api-url", envvar="CONNIC_API_URL", default=DEFAULT_API_URL, help="Connic API URL")
 @click.option("--api-key", envvar="CONNIC_API_KEY", default=None, help="Connic API key")
 @click.option("--project-id", envvar="CONNIC_PROJECT_ID", default=None, help="Connic project ID")
-def deploy(env: str | None, api_url: str, api_key: str | None, project_id: str | None):
+@click.option("--skip-tests", is_flag=True, help="Skip the test phase even if tests/ exists.")
+def deploy(env: str | None, api_url: str, api_key: str | None, project_id: str | None, skip_tests: bool):
     """
     Deploy local agents to Connic cloud.
     
@@ -1192,139 +1451,105 @@ def deploy(env: str | None, api_url: str, api_key: str | None, project_id: str |
         except Exception:
             pass
     
+    _h1("Deploy")
+
     # Validate required config
     if not api_key or not project_id:
         missing = "API key" if not api_key else "Project ID"
-        click.echo(f"Error: {missing} required.", err=True)
-        click.echo("\nRun 'connic login' to save your credentials interactively.")
-        click.echo("\nOr set them manually:")
-        click.echo("  CONNIC_API_KEY    - Your API key (Project Settings → CLI → Create Key)")
-        click.echo("  CONNIC_PROJECT_ID - Your project ID (Project Settings → CLI)")
+        _err(f"{missing} required.")
+        _info("Run `connic login` to save your credentials interactively, or set:")
+        _info("  CONNIC_API_KEY    — Project Settings → CLI → Create Key")
+        _info("  CONNIC_PROJECT_ID — Project Settings → CLI")
         sys.exit(1)
-
-    click.echo()
-    click.secho("  Connic Deploy", fg="cyan", bold=True)
-    click.echo("  " + "─" * 30)
-    click.echo()
 
     # Lint before deploying
-    click.echo("  Running lint...")
+    _step("Validating project files...")
     if not _run_lint(quiet=True):
-        click.echo("  ✗ Lint failed. Fix the errors above before deploying.", err=True)
-        sys.exit(1)
-    click.echo()
-    
-    # Create HTTP client
+        _fail_and_exit("Lint failed. Fix the errors above before deploying.")
+    _ok("Lint passed")
+
     headers = {
         "Authorization": f"Bearer {api_key}",
         "Content-Type": "application/json",
     }
-    
-    # Check project status and get environments
-    click.echo("  🔍 Checking project...")
+
+    # Check project status and resolve environment.
+    _step("Checking project and environment...")
     try:
         with httpx.Client(base_url=api_url, headers=headers, timeout=30.0) as client:
-            # Get project info
             resp = client.get(f"/projects/{project_id}")
             if resp.status_code == 401:
-                click.echo("  ✗ Invalid API key", err=True)
-                sys.exit(1)
+                _fail_and_exit("Invalid API key")
             elif resp.status_code == 404:
-                click.echo("  ✗ Project not found", err=True)
-                sys.exit(1)
+                _fail_and_exit("Project not found")
             elif resp.status_code != 200:
-                click.echo(f"  ✗ Failed to get project: {resp.text}", err=True)
-                sys.exit(1)
-            
+                _fail_and_exit(f"Failed to get project: {resp.text}")
+
             project = resp.json()
-            
-            # Check if project has git connected
+
             if project.get("git_provider"):
-                click.echo()
-                click.secho("  ✗ This project has a git repository connected.", fg="red", bold=True)
-                click.echo()
-                click.echo("     CLI deploy only works for projects without git.")
-                click.echo("     Use git push to deploy, or disconnect git in project settings.")
-                click.echo()
+                _err("This project has a git repository connected.")
+                _info("CLI deploy only works for projects without git.")
+                _info("Use git push to deploy, or disconnect git in project settings.")
                 sys.exit(1)
-            
-            click.echo(f"     Project: {project['name']}")
-            
-            # Get environments
+
+            _ok(f"Project: {project['name']}")
+
             resp = client.get(f"/projects/{project_id}/environments/")
             if resp.status_code != 200:
-                click.echo(f"  ✗ Failed to get environments: {resp.text}", err=True)
-                sys.exit(1)
-            
+                _fail_and_exit(f"Failed to get environments: {resp.text}")
+
             environments = resp.json()
             standard_envs = [e for e in environments if e.get("env_type") != "test"]
-            
             if not standard_envs:
-                click.echo("  ✗ No environments found. Create one in the dashboard first.", err=True)
-                sys.exit(1)
-            
-            # Select target environment
+                _fail_and_exit("No environments found. Create one in the dashboard first.")
+
             target_env = None
             if env:
-                # Find by ID
                 target_env = next((e for e in standard_envs if e["id"] == env), None)
                 if not target_env:
-                    click.echo(f"  ✗ Environment with ID '{env}' not found", err=True)
-                    click.echo()
-                    click.echo("     Available environments:")
+                    _err(f"Environment with ID '{env}' not found")
+                    _info("Available environments:")
                     for e in standard_envs:
                         default_marker = " (default)" if e.get("is_default") else ""
-                        click.echo(f"       {e['name']}: {e['id']}{default_marker}")
-                    click.echo()
-                    click.echo("     Copy the ID from Project Settings → Environments")
+                        _info(f"  {e['name']}: {e['id']}{default_marker}")
+                    _info("Copy the ID from Project Settings → Environments")
                     sys.exit(1)
             else:
-                # Use default environment
-                target_env = next((e for e in standard_envs if e.get("is_default")), None)
-                if not target_env:
-                    target_env = standard_envs[0]
-            
-            click.echo(f"     Environment: {target_env['name']}")
-            
+                target_env = next((e for e in standard_envs if e.get("is_default")), None) or standard_envs[0]
+
+            _ok(f"Environment: {target_env['name']}")
+
     except httpx.ConnectError:
-        click.echo("  ✗ Failed to connect to Connic API", err=True)
-        sys.exit(1)
-    
+        _fail_and_exit("Failed to connect to Connic API")
+
     # Package files into tarball
-    click.echo("  📤 Packaging files...")
-    
+    _step("Packaging upload...")
     try:
-        # Validate files first
         is_valid, error, valid_files = _validate_project_files()
         if not is_valid:
-            click.echo(f"  ✗ File validation failed: {error}", err=True)
-            sys.exit(1)
-        
+            _fail_and_exit(f"File validation failed: {error}")
+
         tar_buffer = io.BytesIO()
         with tarfile.open(fileobj=tar_buffer, mode='w:gz') as tar:
-            # Add only validated files
             for f in valid_files:
                 tar.add(f, arcname=str(f))
-        
+
         tar_data = tar_buffer.getvalue()
-        
-        # Check final package size
+
         if len(tar_data) > MAX_UPLOAD_SIZE:
-            click.echo(f"  ✗ Package size ({len(tar_data):,} bytes) exceeds 1MB limit", err=True)
-            sys.exit(1)
-        
+            _fail_and_exit(f"Package size ({len(tar_data):,} bytes) exceeds 1MB limit")
+
         files_b64 = base64.b64encode(tar_data).decode('utf-8')
         files_hash = hashlib.sha256(tar_data).hexdigest()[:12]
-        
-        click.echo(f"     Package size: {len(tar_data) / 1024:.1f} KB")
-        
+
+        _ok(f"{len(valid_files)} files, {len(tar_data):,} bytes")
+
     except Exception as e:
-        click.echo(f"  ✗ Failed to package files: {e}", err=True)
-        sys.exit(1)
-    
+        _fail_and_exit(f"Failed to package files: {e}")
+
     # Upload and create deployment
-    click.echo("  🚀 Deploying...")
-    
+    _step("Submitting to backend...")
     try:
         with httpx.Client(base_url=api_url, headers=headers, timeout=120.0) as client:
             resp = client.post(
@@ -1333,35 +1558,33 @@ def deploy(env: str | None, api_url: str, api_key: str | None, project_id: str |
                 json={
                     "files_data": files_b64,
                     "files_hash": files_hash,
+                    "skip_tests": skip_tests,
                 },
             )
-            
+
             if resp.status_code == 400:
                 error = resp.json().get("detail", resp.text)
-                click.echo(f"  ✗ {error}", err=True)
-                sys.exit(1)
+                _fail_and_exit(error)
             elif resp.status_code != 200:
-                click.echo(f"  ✗ Failed to create deployment: {resp.text}", err=True)
-                sys.exit(1)
-            
+                _fail_and_exit(f"Failed to create deployment: {resp.text}")
+
             deployment = resp.json()
             deployment_id = deployment["id"]
             queued = resp.headers.get("x-deployment-queued", "").lower() == "true"
 
-            click.echo()
-            click.secho("  ✓ Deployment created!", fg="green", bold=True)
+            _ok(f"Deployment id: {deployment_id}")
             if queued:
-                click.echo()
-                click.echo("     Another deployment is currently building.")
-                click.echo("     Yours will start automatically when a slot is available.")
-            click.echo()
-            click.echo("     Track your deployment:")
-            click.echo(f"     {DEFAULT_BASE_URL}/projects/{project_id}/deployments/{deployment_id}")
-            click.echo()
-            
+                _info("Another deployment is currently building; yours will start when a slot is available.")
+            if skip_tests:
+                _info("--skip-tests was set; the test phase will be skipped server-side.")
+
+            _step("Track your deployment:")
+            _info(f"{DEFAULT_BASE_URL}/projects/{project_id}/deployments/{deployment_id}")
+
+            _done("Deployment created.")
+
     except Exception as e:
-        click.echo(f"  ✗ Failed to upload: {e}", err=True)
-        sys.exit(1)
+        _fail_and_exit(f"Failed to upload: {e}")
 
 
 if __name__ == "__main__":
