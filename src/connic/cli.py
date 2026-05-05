@@ -720,6 +720,189 @@ def tools():
 # Test Command - Cloud Dev Mode with Hot Reload
 # =============================================================================
 
+
+# Backend `phase` strings → one-line user-facing labels. Unknown phases are
+# shown verbatim so the CLI is forward-compatible with new backend additions.
+_TEST_PHASE_LABELS = {
+    "validating": "Validating uploaded files on backend...",
+    "building": "Building tests...",
+    "starting_container": "Starting test runner container...",
+    "running_tests": "Test runner is executing your test cases...",
+    "done": "Test runner finished.",
+    "error": "Backend reported an error.",
+}
+
+
+def _package_project_for_tests(*, quiet: bool = False) -> tuple[bytes, list[Path], int]:
+    """Validate project files and build the gzip tarball used by `/test-runs`.
+
+    Returns ``(tar_data, valid_files, n_test_files)``. Raises ``ValueError``
+    on validation or size errors. Whether ``n_test_files == 0`` is fatal is
+    up to the caller.
+    """
+    import io
+    import tarfile
+
+    if not quiet:
+        _step("Validating project files...")
+    is_valid, err, valid_files = _validate_project_files()
+    if not is_valid:
+        raise ValueError(f"File validation failed: {err}")
+    test_files = [f for f in valid_files if f.parts and f.parts[0] == "tests"]
+    if not quiet:
+        _ok(f"{len(valid_files)} files, {len(test_files)} test file(s)")
+        _step("Packaging upload...")
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w:gz") as tar:
+        for f in valid_files:
+            tar.add(f, arcname=str(f))
+    tar_data = buf.getvalue()
+    if len(tar_data) > MAX_UPLOAD_SIZE:
+        raise ValueError(f"Package size ({len(tar_data):,} bytes) exceeds 1MB limit")
+    if not quiet:
+        _ok(f"{len(tar_data):,} bytes")
+    return tar_data, valid_files, len(test_files)
+
+
+def _kickoff_test_run(client: "httpx.Client", project_id: str, env_id: str, tar_data: bytes) -> str:
+    """POST a tarball as a test run. Returns the new ``test_run_id``.
+
+    Raises ``RuntimeError`` with a user-facing message on any non-2xx response.
+    """
+    import base64
+
+    resp = client.post(
+        f"/projects/{project_id}/test-runs",
+        json={
+            "files_data": base64.b64encode(tar_data).decode("utf-8"),
+            "environment_id": env_id,
+        },
+    )
+    if resp.status_code == 400:
+        raise RuntimeError(f"Test request rejected: {resp.json().get('detail', resp.text)}")
+    if resp.status_code not in (200, 202):
+        raise RuntimeError(f"Failed to start test run: {resp.text}")
+    return resp.json()["id"]
+
+
+def _poll_test_run(client: "httpx.Client", poll_url: str, *, quiet: bool = False) -> dict:
+    """Poll a test run until it reaches a terminal status. Returns the result dict.
+
+    Prints phase transitions and the "running N cases" announcement unless
+    ``quiet``. Tolerates a handful of consecutive transient network errors
+    before giving up (raises ``RuntimeError``).
+    """
+    import time
+
+    last_phase: str | None = None
+    announced_running = False
+    consecutive_poll_errors = 0
+    while True:
+        try:
+            resp = client.get(poll_url)
+        except (httpx.ReadTimeout, httpx.ConnectError, httpx.RemoteProtocolError) as e:
+            consecutive_poll_errors += 1
+            if consecutive_poll_errors >= 5:
+                raise RuntimeError(f"Lost contact with backend ({e!s})")
+            time.sleep(5)
+            continue
+        if resp.status_code != 200:
+            raise RuntimeError(f"Failed to poll test run: {resp.text}")
+        consecutive_poll_errors = 0
+        result = resp.json()
+        phase = result.get("phase")
+        if not quiet:
+            if phase and phase != last_phase:
+                _step(_TEST_PHASE_LABELS.get(phase, phase))
+                last_phase = phase
+            if not announced_running and phase == "running_tests" and result.get("total_cases"):
+                _info(f"Running {result['total_cases']} test case(s)...")
+                announced_running = True
+        if result["status"] in ("passed", "failed", "error"):
+            return result
+        time.sleep(2)
+
+
+def _render_test_cases(cases: list[dict]) -> None:
+    """Render the per-case result table and the failure-detail block (if any)."""
+    if not cases:
+        return
+    click.echo()
+    rows = []
+    for c in cases:
+        cell = (
+            click.style(" PASS ", fg="green", bold=True)
+            if c["passed"]
+            else click.style(" FAIL ", fg="red", bold=True)
+        )
+        rows.append([
+            cell,
+            f"{c['agent_name']}::{c['test_name']}",
+            f"{c['successes']}/{c['runs']}",
+            f"{c['success_threshold']}%",
+        ])
+    _table(["Result", "Test", "Runs", "Threshold"], rows)
+
+    failed = [c for c in cases if not c["passed"] and c.get("failure_reason")]
+    if failed:
+        click.echo()
+        _step("Failure details:")
+        for c in failed:
+            _err(f"{c['agent_name']}::{c['test_name']}: {c['failure_reason']}")
+
+
+def _render_dashboard_link(project_id: str, deployment_id: str) -> None:
+    """Print the dashboard link to the deployment that backed a test run."""
+    click.echo()
+    _step("View detailed results in the dashboard:")
+    _info(f"{DEFAULT_BASE_URL}/projects/{project_id}/deployments/{deployment_id}")
+
+
+def _run_tests_in_dev_session(client: "httpx.Client", project_id: str, env_id: str) -> None:
+    """Run ./tests against the dev session's env. Never calls sys.exit."""
+    click.echo()
+    try:
+        tar_data, _, n_tests = _package_project_for_tests()
+    except ValueError as e:
+        _err(str(e))
+        return
+    if n_tests == 0:
+        _warn("No tests/ directory found — nothing to run.")
+        return
+
+    _step("Submitting tests to backend (target: dev session env)...")
+    try:
+        test_run_id = _kickoff_test_run(client, project_id, env_id, tar_data)
+    except (RuntimeError, httpx.RequestError) as e:
+        _err(str(e))
+        return
+    _ok(f"Test run id: {test_run_id}")
+
+    try:
+        result = _poll_test_run(client, f"/projects/{project_id}/test-runs/{test_run_id}")
+    except RuntimeError as e:
+        _err(f"{e}; giving up on this run.")
+        return
+
+    if result["status"] == "error":
+        _err(f"Test run errored: {result.get('error') or 'unknown error'}")
+        return
+
+    cases = result.get("cases", [])
+    _render_test_cases(cases)
+    if result.get("deployment_id"):
+        _render_dashboard_link(project_id, result["deployment_id"])
+
+    click.echo()
+    passed_n = sum(1 for c in cases if c["passed"])
+    summary = f"{passed_n}/{len(cases)} cases passed."
+    if result["status"] == "passed":
+        click.secho(f"  ✓ {summary}", fg="green", bold=True)
+    else:
+        click.secho(f"  ✗ {summary}", fg="red", bold=True)
+    click.echo()
+
+
 @main.command()
 @click.argument("name", required=False, default=None)
 @click.option("--api-url", envvar="CONNIC_API_URL", default=DEFAULT_API_URL, help="Connic API URL")
@@ -744,13 +927,27 @@ def dev(name: str, api_url: str, api_key: str, project_id: str):
     """
     import hashlib
     import io
+    import queue
     import signal
     import tarfile
+    import threading
     import time
 
     import httpx
     from watchdog.events import FileSystemEventHandler
     from watchdog.observers import Observer
+
+    # Raw-mode keypress reading is Unix-only; on Windows we fall back to Ctrl+C.
+    try:
+        import select as _select_mod
+        import termios as _termios_mod
+        import tty as _tty_mod
+        _KEYS_SUPPORTED = True
+    except ImportError:
+        _select_mod = None
+        _termios_mod = None
+        _tty_mod = None
+        _KEYS_SUPPORTED = False
     
     # Validate required config
     # Try to read from .connic file
@@ -979,14 +1176,60 @@ def dev(name: str, api_url: str, api_key: str, project_id: str):
         elif current_hash:
             _ok(f"Uploaded {size} bytes (hash: {current_hash[:16]}...)")
 
-        _step("Watching for file changes (press Ctrl+C to stop)...")
+        keys_active = _KEYS_SUPPORTED and sys.stdin.isatty()
+
+        _step("Watching for file changes...")
         dashboard_url = f"{DEFAULT_BASE_URL}/projects/{project_id}/agents?env={env_id}"
         _info(f"View and trigger your agents: {dashboard_url}")
+        if keys_active:
+            _info("Keys: [r] refresh  [t] run tests  [q] quit  (or Ctrl+C)")
+        else:
+            _info("Press Ctrl+C to stop.")
         click.echo()
-        
+
         last_upload_time = time.time()
         pending_upload = False
+        next_upload_label: str | None = None
         DEBOUNCE_SECONDS = 1.0  # Wait for changes to settle
+
+        # Keypress reader: daemon thread pushes intents onto a queue drained by the main loop.
+        key_queue: "queue.Queue[str]" = queue.Queue()
+        key_stop = threading.Event()
+        key_old_termios = None
+        key_thread = None
+
+        def _key_reader_loop():
+            assert _select_mod is not None
+            while not key_stop.is_set():
+                try:
+                    r, _, _ = _select_mod.select([sys.stdin], [], [], 0.2)
+                except (OSError, ValueError):
+                    return
+                if not r:
+                    continue
+                try:
+                    ch = sys.stdin.read(1)
+                except (OSError, ValueError):
+                    return
+                if not ch:
+                    return
+                low = ch.lower()
+                if low == "r":
+                    key_queue.put("refresh")
+                elif low == "t":
+                    key_queue.put("test")
+                elif low == "q":
+                    key_queue.put("quit")
+
+        if keys_active:
+            try:
+                key_old_termios = _termios_mod.tcgetattr(sys.stdin.fileno())
+                _tty_mod.setcbreak(sys.stdin.fileno())
+                key_thread = threading.Thread(target=_key_reader_loop, daemon=True)
+                key_thread.start()
+            except OSError:
+                keys_active = False
+                key_old_termios = None
         
         class FileChangeHandler(FileSystemEventHandler):
             def on_any_event(self, event):
@@ -1039,7 +1282,32 @@ def dev(name: str, api_url: str, api_key: str, project_id: str):
         try:
             while True:
                 time.sleep(0.5)
-                
+
+                if keys_active:
+                    try:
+                        intent = key_queue.get_nowait()
+                    except queue.Empty:
+                        intent = None
+                    if intent == "quit":
+                        click.echo()
+                        click.echo(f"  [{time.strftime('%H:%M:%S')}] → Quit requested")
+                        break
+                    elif intent == "refresh":
+                        if not pending_upload:
+                            next_upload_label = "Manual refresh — uploading"
+                        pending_upload = True
+                        last_upload_time = time.time() - DEBOUNCE_SECONDS
+                    elif intent == "test":
+                        _run_tests_in_dev_session(client, project_id, env_id)
+                        # Drop any keypresses queued while tests were running.
+                        while True:
+                            try:
+                                key_queue.get_nowait()
+                            except queue.Empty:
+                                break
+                        last_status_check = time.time()
+                        click.echo(f"  [{time.strftime('%H:%M:%S')}] → Back to watching. Keys: [r] refresh  [t] run tests  [q] quit")
+
                 # Periodically check if session is still active
                 if (time.time() - last_status_check) >= STATUS_CHECK_INTERVAL:
                     last_status_check = time.time()
@@ -1067,7 +1335,9 @@ def dev(name: str, api_url: str, api_key: str, project_id: str):
                 # Check if we need to upload (with debounce)
                 if pending_upload and (time.time() - last_upload_time) >= DEBOUNCE_SECONDS:
                     pending_upload = False
-                    click.echo(f"  [{time.strftime('%H:%M:%S')}] → Files changed, uploading...")
+                    label = next_upload_label or "Files changed, uploading..."
+                    next_upload_label = None
+                    click.echo(f"  [{time.strftime('%H:%M:%S')}] → {label}")
 
                     new_hash, size, error = upload_files()
                     if error == "SESSION_ENDED":
@@ -1090,6 +1360,15 @@ def dev(name: str, api_url: str, api_key: str, project_id: str):
         finally:
             observer.stop()
             observer.join()
+            key_stop.set()
+            if key_thread is not None:
+                key_thread.join(timeout=1.0)
+            if key_old_termios is not None and _termios_mod is not None:
+                _termios_mod.tcsetattr(
+                    sys.stdin.fileno(),
+                    _termios_mod.TCSADRAIN,
+                    key_old_termios,
+                )
     
     except Exception as e:
         _err(str(e))
@@ -1121,11 +1400,7 @@ def test(env: str | None, filter_name: str | None, as_json: bool, api_url: str, 
         connic test --filter login        # Run only tests with "login" in the name
         connic test --json                # Machine-readable output for CI
     """
-    import base64
-    import io
     import json
-    import tarfile
-    import time
 
     import httpx
 
@@ -1147,39 +1422,12 @@ def test(env: str | None, filter_name: str | None, as_json: bool, api_url: str, 
     if not as_json:
         _h1("Test")
 
-    # Validate and package the project (same dirs as deploy, includes tests/).
-    if not as_json:
-        _step("Validating project files...")
-    is_valid, err, valid_files = _validate_project_files()
-    if not is_valid:
-        _fail_and_exit(f"File validation failed: {err}")
-    if not any(f.parts and f.parts[0] == "tests" for f in valid_files):
+    try:
+        tar_data, _, n_tests = _package_project_for_tests(quiet=as_json)
+    except ValueError as e:
+        _fail_and_exit(str(e))
+    if n_tests == 0:
         _fail_and_exit("No tests/ directory found in project — nothing to run.")
-    test_yaml_count = sum(1 for f in valid_files if f.parts and f.parts[0] == "tests")
-    if not as_json:
-        _ok(f"{len(valid_files)} files, {test_yaml_count} test file(s)")
-
-        _step("Packaging upload...")
-    tar_buffer = io.BytesIO()
-    with tarfile.open(fileobj=tar_buffer, mode="w:gz") as tar:
-        for f in valid_files:
-            tar.add(f, arcname=str(f))
-    tar_data = tar_buffer.getvalue()
-    if len(tar_data) > MAX_UPLOAD_SIZE:
-        _fail_and_exit(f"Package size ({len(tar_data):,} bytes) exceeds 1MB limit")
-    if not as_json:
-        _ok(f"{len(tar_data):,} bytes")
-
-    # Map backend phase strings to one-line descriptions; unknown phases
-    # are shown verbatim (forward-compatible with future backend additions).
-    PHASE_LABELS = {
-        "validating": "Validating uploaded files on backend...",
-        "building": "Building agent image (this is the slow step)...",
-        "starting_container": "Starting test runner container...",
-        "running_tests": "Test runner is executing your test cases...",
-        "done": "Test runner finished.",
-        "error": "Backend reported an error.",
-    }
 
     headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
     # Long read timeout: image builds can take several minutes.
@@ -1208,73 +1456,22 @@ def test(env: str | None, filter_name: str | None, as_json: bool, api_url: str, 
 
         if not as_json:
             _step("Submitting to backend...")
-        kickoff = client.post(
-            f"/projects/{project_id}/test-runs",
-            json={
-                "files_data": base64.b64encode(tar_data).decode("utf-8"),
-                "environment_id": env,
-            },
-        )
-        if kickoff.status_code == 400:
-            _fail_and_exit(f"Test request rejected: {kickoff.json().get('detail', kickoff.text)}")
-        if kickoff.status_code not in (200, 202):
-            _fail_and_exit(f"Failed to start test run: {kickoff.text}")
-
-        test_run_id = kickoff.json()["id"]
-        poll_url = f"/projects/{project_id}/test-runs/{test_run_id}"
+        try:
+            test_run_id = _kickoff_test_run(client, project_id, env, tar_data)
+        except RuntimeError as e:
+            _fail_and_exit(str(e))
         if not as_json:
             _ok(f"Test run id: {test_run_id}")
 
-        printed_case_keys: set[str] = set()
-        last_phase: str | None = None
-        announced_running = False
-        result: dict | None = None
-        consecutive_poll_errors = 0
+        try:
+            result = _poll_test_run(
+                client,
+                f"/projects/{project_id}/test-runs/{test_run_id}",
+                quiet=as_json,
+            )
+        except RuntimeError as e:
+            _fail_and_exit(f"{e}; giving up.")
 
-        while True:
-            try:
-                resp = client.get(poll_url)
-            except (httpx.ReadTimeout, httpx.ConnectError, httpx.RemoteProtocolError) as e:
-                # Transient: backend may be busy with a heavy build step.
-                # Tolerate a handful in a row before giving up so a single
-                # slow request doesn't kill an otherwise-healthy run.
-                consecutive_poll_errors += 1
-                if consecutive_poll_errors >= 5:
-                    _fail_and_exit(f"Lost contact with backend ({e!s}); giving up.")
-                time.sleep(5)
-                continue
-            if resp.status_code != 200:
-                _fail_and_exit(f"Failed to poll test run: {resp.text}")
-            consecutive_poll_errors = 0
-            result = resp.json()
-            status = result["status"]
-            phase = result.get("phase")
-
-            if not as_json:
-                # Phase transitions: each one is a top-level step so the user
-                # sees what the backend is currently doing instead of a
-                # silent multi-minute build.
-                if phase and phase != last_phase:
-                    label = PHASE_LABELS.get(phase, phase)
-                    _step(label)
-                    last_phase = phase
-
-                # First time we see a non-zero total_cases while running,
-                # announce what's coming.
-                if (
-                    not announced_running
-                    and phase == "running_tests"
-                    and result.get("total_cases")
-                ):
-                    _info(f"Running {result['total_cases']} test case(s)...")
-                    announced_running = True
-
-            if status in ("passed", "failed", "error"):
-                break
-            time.sleep(2)
-
-    if result is None:
-        sys.exit(1)
     cases = result.get("cases", [])
     if filter_name:
         cases = [c for c in cases if filter_name in c["test_name"]]
@@ -1285,42 +1482,10 @@ def test(env: str | None, filter_name: str | None, as_json: bool, api_url: str, 
     if as_json:
         click.echo(json.dumps({"status": result["status"], "cases": cases}, indent=2))
     else:
-        if cases:
-            click.echo()
-            table_rows = []
-            for c in cases:
-                result_cell = (
-                    click.style(" PASS ", fg="green", bold=True)
-                    if c["passed"]
-                    else click.style(" FAIL ", fg="red", bold=True)
-                )
-                test_label = f"{c['agent_name']}::{c['test_name']}"
-                runs_cell = f"{c['successes']}/{c['runs']}"
-                threshold_cell = f"{c['success_threshold']}%"
-                table_rows.append([result_cell, test_label, runs_cell, threshold_cell])
-            _table(["Result", "Test", "Runs", "Threshold"], table_rows)
-
-            failed_with_reason = [
-                c for c in cases if not c["passed"] and c.get("failure_reason")
-            ]
-            if failed_with_reason:
-                click.echo()
-                _step("Failure details:")
-                for c in failed_with_reason:
-                    _err(f"{c['agent_name']}::{c['test_name']}: {c['failure_reason']}")
-
+        _render_test_cases(cases)
         passed_n = sum(1 for c in cases if c["passed"])
-        # Dashboard link to the throwaway deployment that backed this run --
-        # opens the per-case results panel + agent_run_id pills the user can
-        # drill into. The link is the same surface real deploys land on, so
-        # the test run feels like a first-class artifact rather than an
-        # ephemeral CLI invocation.
         if result.get("deployment_id"):
-            click.echo()
-            _step("View detailed results in the dashboard:")
-            _info(
-                f"{DEFAULT_BASE_URL}/projects/{project_id}/deployments/{result['deployment_id']}"
-            )
+            _render_dashboard_link(project_id, result["deployment_id"])
         _done(f"{passed_n}/{len(cases)} cases passed.")
 
     sys.exit(0 if result["status"] == "passed" else 1)
