@@ -43,6 +43,9 @@ def test_test_file_parses_realistic_yaml_and_resolves_defaults():
     assert first == {
         "name": "adds_two_numbers",
         "payload": '{"message": "add 4 and 6", "a": 4, "b": 6}',
+        "files": [],
+        "builder": None,
+        "builder_args": None,
         "runs": 5,
         "success_threshold": 80,
         "timeout_s": 60,
@@ -76,6 +79,9 @@ def test_test_file_uses_schema_defaults_for_minimal_suite():
     assert test_file.resolved(test_file.tests[0]) == {
         "name": "plain_message_no_tools",
         "payload": "say hello",
+        "files": [],
+        "builder": None,
+        "builder_args": None,
         "runs": 1,
         "success_threshold": 100,
         "timeout_s": 120,
@@ -101,7 +107,7 @@ def test_test_file_rejects_duplicate_case_names():
     ("field", "value"),
     [
         ("runs", 0),
-        ("runs", 1001),
+        ("runs", 101),
         ("success_threshold", 0),
         ("success_threshold", 101),
         ("timeout_s", 0),
@@ -140,3 +146,126 @@ def test_expected_tool_calls_reject_invalid_entries(expected_tool_calls):
 def test_tests_list_must_not_be_empty():
     with pytest.raises(ValidationError):
         ConnicTestFile.model_validate({"tests": []})
+
+
+def test_test_case_accepts_files_list_alongside_payload():
+    test_file = ConnicTestFile.model_validate(
+        {
+            "tests": [
+                {
+                    "name": "extracts_invoice_total",
+                    "payload": "extract the total",
+                    "files": ["invoice_a.pdf", "invoice_b.png"],
+                }
+            ]
+        }
+    )
+
+    resolved = test_file.resolved(test_file.tests[0])
+    assert resolved["files"] == ["invoice_a.pdf", "invoice_b.png"]
+    assert resolved["builder"] is None
+    assert resolved["builder_args"] is None
+    assert resolved["payload"] == "extract the total"
+
+
+def test_test_case_accepts_builder_without_payload():
+    test_file = ConnicTestFile.model_validate(
+        {
+            "tests": [
+                {
+                    "name": "uses_builder",
+                    "builder": "create_scenario",
+                    "builder_args": {"amount_cents": 4200, "currency": "eur"},
+                }
+            ]
+        }
+    )
+
+    resolved = test_file.resolved(test_file.tests[0])
+    assert resolved["payload"] is None
+    assert resolved["builder"] == "create_scenario"
+    assert resolved["builder_args"] == {"amount_cents": 4200, "currency": "eur"}
+
+
+def test_builder_strips_trailing_py_suffix():
+    test_file = ConnicTestFile.model_validate(
+        {"tests": [{"name": "t", "builder": "make_payload.py"}]}
+    )
+    assert test_file.tests[0].builder == "make_payload"
+
+
+def test_test_case_requires_payload_or_builder():
+    with pytest.raises(ValidationError, match="must specify either `payload` or `builder`"):
+        ConnicTestFile.model_validate({"tests": [{"name": "empty"}]})
+
+
+@pytest.mark.parametrize(
+    "bad_filename",
+    [
+        "../escape.pdf",
+        "subdir/file.pdf",
+        "back\\slash.pdf",
+        "..hidden.pdf",
+        "with space.pdf",
+        "weird?char.pdf",
+    ],
+)
+def test_files_entries_reject_unsafe_names(bad_filename):
+    with pytest.raises(ValidationError):
+        ConnicTestFile.model_validate(
+            {
+                "tests": [
+                    {"name": "t", "payload": "p", "files": [bad_filename]},
+                ]
+            }
+        )
+
+
+def test_files_entries_reject_duplicates():
+    with pytest.raises(ValidationError, match="duplicate file"):
+        ConnicTestFile.model_validate(
+            {
+                "tests": [
+                    {
+                        "name": "t",
+                        "payload": "p",
+                        "files": ["a.pdf", "a.pdf"],
+                    }
+                ]
+            }
+        )
+
+
+@pytest.mark.parametrize(
+    "bad_builder",
+    [
+        "../escape",
+        "subdir/builder",
+        "back\\slash",
+        "with space",
+    ],
+)
+def test_builder_rejects_unsafe_names(bad_builder):
+    with pytest.raises(ValidationError):
+        ConnicTestFile.model_validate(
+            {"tests": [{"name": "t", "builder": bad_builder}]}
+        )
+
+
+def test_resolved_isolates_builder_args_from_caller():
+    test_file = ConnicTestFile.model_validate(
+        {
+            "tests": [
+                {
+                    "name": "t",
+                    "builder": "b",
+                    "builder_args": {"k": "v"},
+                }
+            ]
+        }
+    )
+
+    resolved = test_file.resolved(test_file.tests[0])
+    resolved["builder_args"]["k"] = "mutated"
+    # Original case is untouched -- resolved() returns a copy.
+    assert test_file.tests[0].builder_args == {"k": "v"}

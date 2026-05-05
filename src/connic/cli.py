@@ -117,56 +117,98 @@ ALLOWED_EXTENSIONS = {
     ".jsonl",   # JSON Lines data
 }
 
-# Maximum total upload size: 1MB
-MAX_UPLOAD_SIZE = 1024 * 1024  # 1,048,576 bytes
+# Maximum total upload size: 25MB (covers tests/files/ fixtures).
+# Code/config (everything outside tests/files/) is held to a 1MB sub-cap.
+MAX_UPLOAD_SIZE = 25 * 1024 * 1024  # 26,214,400 bytes
+MAX_CODE_SIZE = 1024 * 1024  # legacy 1MB cap, applied to non-fixture content
+
+# Paths under tests/files/ are treated as opaque fixture content: any
+# extension, binary OK, larger size budget. tests/builders/ accepts only .py.
+TEST_FILES_PREFIX = "tests/files"
+TEST_BUILDERS_PREFIX = "tests/builders"
+
+
+def _is_under(path: Path, prefix: str) -> bool:
+    """True if `path` is at or beneath the slash-joined `prefix`."""
+    parts = path.parts
+    prefix_parts = tuple(prefix.split("/"))
+    return parts[: len(prefix_parts)] == prefix_parts
 
 
 def _validate_project_files() -> tuple[bool, str, list[Path]]:
     """
     Validate all project files before packaging.
-    
+
     Performs basic validation (extension and size checks).
     Full content validation is done server-side.
-    
+
     Returns:
         Tuple of (is_valid, error_message, list_of_valid_files).
     """
     valid_files = []
     total_size = 0
-    
+    code_size = 0
+
     dirs_to_check = ["agents", "tools", "middleware", "schemas", "guardrails", "hooks", "tests"]
-    
+
     for dirname in dirs_to_check:
         dirpath = Path(dirname)
         if not dirpath.exists():
             continue
-        
+
         for filepath in dirpath.rglob("*"):
             if not filepath.is_file():
                 continue
-            
+
             # Skip hidden files and __pycache__
             if any(part.startswith(".") for part in filepath.parts):
                 continue
             if "__pycache__" in str(filepath) or filepath.suffix == ".pyc":
                 continue
-            
-            # Check extension
-            ext = filepath.suffix.lower()
-            if ext not in ALLOWED_EXTENSIONS:
-                return False, f"{filepath}: File type '{ext}' not allowed. Allowed: {', '.join(sorted(ALLOWED_EXTENSIONS))}", []
-            
+
             try:
                 content = filepath.read_bytes()
             except IOError as e:
                 return False, f"Could not read {filepath}: {e}", []
-            
+
             total_size += len(content)
             if total_size > MAX_UPLOAD_SIZE:
-                return False, f"Total file size exceeds 1MB limit ({total_size:,} bytes)", []
-            
+                return False, f"Total file size exceeds {MAX_UPLOAD_SIZE:,} byte limit", []
+
+            # tests/files/<...>: opaque test fixture, any extension/binary.
+            if _is_under(filepath, TEST_FILES_PREFIX):
+                valid_files.append(filepath)
+                continue
+
+            # tests/builders/<...>: must be Python source.
+            if _is_under(filepath, TEST_BUILDERS_PREFIX):
+                if filepath.suffix != ".py":
+                    return False, (
+                        f"{filepath}: only .py files are allowed under "
+                        f"{TEST_BUILDERS_PREFIX}/"
+                    ), []
+                code_size += len(content)
+                if code_size > MAX_CODE_SIZE:
+                    return False, (
+                        f"Code/config size exceeds {MAX_CODE_SIZE:,} byte limit. "
+                        "Move large fixtures into tests/files/."
+                    ), []
+                valid_files.append(filepath)
+                continue
+
+            ext = filepath.suffix.lower()
+            if ext not in ALLOWED_EXTENSIONS:
+                return False, f"{filepath}: File type '{ext}' not allowed. Allowed: {', '.join(sorted(ALLOWED_EXTENSIONS))}", []
+
+            code_size += len(content)
+            if code_size > MAX_CODE_SIZE:
+                return False, (
+                    f"Code/config size exceeds {MAX_CODE_SIZE:,} byte limit. "
+                    "Move large fixtures into tests/files/."
+                ), []
+
             valid_files.append(filepath)
-    
+
     # Check requirements.txt
     req_file = Path("requirements.txt")
     if req_file.exists():
@@ -174,11 +216,11 @@ def _validate_project_files() -> tuple[bool, str, list[Path]]:
             content = req_file.read_bytes()
             total_size += len(content)
             if total_size > MAX_UPLOAD_SIZE:
-                return False, f"Total file size exceeds 1MB limit ({total_size:,} bytes)", []
+                return False, f"Total file size exceeds {MAX_UPLOAD_SIZE:,} byte limit", []
             valid_files.append(req_file)
         except IOError as e:
             return False, f"Could not read requirements.txt: {e}", []
-    
+
     return True, "", valid_files
 
 
@@ -758,7 +800,7 @@ def _package_project_for_tests(*, quiet: bool = False) -> tuple[bytes, list[Path
             tar.add(f, arcname=str(f))
     tar_data = buf.getvalue()
     if len(tar_data) > MAX_UPLOAD_SIZE:
-        raise ValueError(f"Package size ({len(tar_data):,} bytes) exceeds 1MB limit")
+        raise ValueError(f"Package size ({len(tar_data):,} bytes) exceeds {MAX_UPLOAD_SIZE:,} byte limit")
     if not quiet:
         _ok(f"{len(tar_data):,} bytes")
     return tar_data, valid_files, len(test_files)
