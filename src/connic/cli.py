@@ -851,11 +851,11 @@ def _render_test_cases(cases: list[dict]) -> None:
             _err(f"{c['agent_name']}::{c['test_name']}: {c['failure_reason']}")
 
 
-def _render_dashboard_link(project_id: str, deployment_id: str) -> None:
+def _render_dashboard_link(project_id: str, deployment_id: str, env_id: str) -> None:
     """Print the dashboard link to the deployment that backed a test run."""
     click.echo()
     _step("View detailed results in the dashboard:")
-    _info(f"{DEFAULT_BASE_URL}/projects/{project_id}/deployments/{deployment_id}")
+    _info(f"{DEFAULT_BASE_URL}/projects/{project_id}/deployments/{deployment_id}?env={env_id}")
 
 
 def _run_tests_in_dev_session(client: "httpx.Client", project_id: str, env_id: str) -> None:
@@ -891,7 +891,7 @@ def _run_tests_in_dev_session(client: "httpx.Client", project_id: str, env_id: s
     cases = result.get("cases", [])
     _render_test_cases(cases)
     if result.get("deployment_id"):
-        _render_dashboard_link(project_id, result["deployment_id"])
+        _render_dashboard_link(project_id, result["deployment_id"], env_id)
 
     click.echo()
     passed_n = sum(1 for c in cases if c["passed"])
@@ -1485,7 +1485,7 @@ def test(env: str | None, filter_name: str | None, as_json: bool, api_url: str, 
         _render_test_cases(cases)
         passed_n = sum(1 for c in cases if c["passed"])
         if result.get("deployment_id"):
-            _render_dashboard_link(project_id, result["deployment_id"])
+            _render_dashboard_link(project_id, result["deployment_id"], env)
         _done(f"{passed_n}/{len(cases)} cases passed.")
 
     sys.exit(0 if result["status"] == "passed" else 1)
