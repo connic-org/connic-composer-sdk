@@ -70,7 +70,21 @@ def test_validate_project_files_rejects_projects_over_upload_limit(tmp_path, mon
     is_valid, error, files = cli._validate_project_files()
 
     assert is_valid is False
-    assert "Total file size exceeds 1MB limit" in error
+    assert f"Total file size exceeds {cli.MAX_UPLOAD_SIZE:,} byte limit" in error
+    assert files == []
+
+
+def test_validate_project_files_counts_requirements_toward_code_size_cap(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "requirements.txt").write_text(
+        "\n".join(["httpx>=0.27"] * (cli.MAX_CODE_SIZE // 11 + 100))
+    )
+
+    is_valid, error, files = cli._validate_project_files()
+
+    assert is_valid is False
+    assert "Code/config size exceeds" in error
+    assert "Move large fixtures into tests/files/" in error
     assert files == []
 
 

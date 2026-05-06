@@ -217,6 +217,12 @@ def _validate_project_files() -> tuple[bool, str, list[Path]]:
             total_size += len(content)
             if total_size > MAX_UPLOAD_SIZE:
                 return False, f"Total file size exceeds {MAX_UPLOAD_SIZE:,} byte limit", []
+            code_size += len(content)
+            if code_size > MAX_CODE_SIZE:
+                return False, (
+                    f"Code/config size exceeds {MAX_CODE_SIZE:,} byte limit. "
+                    "Move large fixtures into tests/files/."
+                ), []
             valid_files.append(req_file)
         except IOError as e:
             return False, f"Could not read requirements.txt: {e}", []
@@ -1163,7 +1169,7 @@ def dev(name: str, api_url: str, api_key: str, project_id: str):
             
             # Final size check on compressed tarball
             if len(content) > MAX_UPLOAD_SIZE:
-                raise ValueError(f"Package size ({len(content):,} bytes) exceeds 1MB limit")
+                raise ValueError(f"Package size ({len(content):,} bytes) exceeds {MAX_UPLOAD_SIZE:,} byte limit")
             
             content_hash = hashlib.sha256(content).hexdigest()
             return content, content_hash
@@ -1292,7 +1298,7 @@ def dev(name: str, api_url: str, api_key: str, project_id: str):
                     return
                 
                 # Check if file is in a watched directory or is requirements.txt
-                watched_dirs = ["agents", "tools", "middleware", "schemas", "guardrails", "hooks"]
+                watched_dirs = ["agents", "tools", "middleware", "schemas", "guardrails", "hooks", "tests"]
                 is_watched = any(d in src_path.parts for d in watched_dirs)
                 is_requirements = src_path.name == "requirements.txt"
                 
@@ -1307,7 +1313,7 @@ def dev(name: str, api_url: str, api_key: str, project_id: str):
         handler = FileChangeHandler()
         
         # Watch the project directories
-        for dirname in ["agents", "tools", "middleware", "schemas", "guardrails", "hooks"]:
+        for dirname in ["agents", "tools", "middleware", "schemas", "guardrails", "hooks", "tests"]:
             dirpath = Path(dirname)
             if dirpath.exists():
                 observer.schedule(handler, str(dirpath), recursive=True)
