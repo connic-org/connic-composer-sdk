@@ -51,7 +51,10 @@ connic login
 # Validate the project locally
 connic lint
 
-# Start a hot-reload test session in Connic cloud
+# Start a hot-reload dev session in Connic cloud
+connic dev
+
+# Run declarative test suites against an environment
 connic test
 ```
 
@@ -198,7 +201,8 @@ Related docs:
 | `connic login`                       | Save project credentials in `.connic`                           |
 | `connic lint`                        | Validate agents, tools, middleware, and schemas locally         |
 | `connic tools`                       | List discovered tools and signatures                            |
-| `connic test [name]`                 | Start an isolated cloud test environment with hot reload        |
+| `connic dev [name]`                  | Start an isolated cloud dev environment with hot reload         |
+| `connic test`                        | Run declarative test suites from `tests/` against an environment |
 | `connic deploy`                      | Deploy from the CLI to a Connic environment for projects without a connected Git repository |
 | `connic migrate`                     | Migrate a LangChain or Google ADK project into a Connic project |
 
@@ -218,9 +222,11 @@ Run `connic <command> --help` for flags and examples.
 
 ### Hot-Reload Testing
 
-`connic test` creates an isolated development environment in Connic cloud, uploads your local files, and re-syncs changes in a few seconds while you iterate.
+`connic dev` creates an isolated development environment in Connic cloud, uploads your local files, and re-syncs changes in a few seconds while you iterate.
 
 This is the main development loop when you need real connectors, predefined tools, and environment-scoped services.
+
+Use `connic test` for one-shot declarative test suites from `tests/`, including CI runs and deploy-gate parity.
 
 ### Deployment
 
