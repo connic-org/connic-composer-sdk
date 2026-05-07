@@ -2096,6 +2096,122 @@ def test_test_command_renders_failed_case_and_dashboard_link_for_explicit_enviro
     assert "0/1 cases passed." in result.output
 
 
+def test_dev_session_test_runner_submits_project_tests_to_active_environment(tmp_path, monkeypatch, capsys):
+    monkeypatch.chdir(tmp_path)
+    write_minimal_test_project(tmp_path)
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "tests" / "support.yaml").write_text(
+        "agent: support\n"
+        "tests:\n"
+        "  - name: handles_priority_refund\n"
+        "    payload: '{\"message\":\"refund my priority shipment\"}'\n"
+        "    expected_result: output.category == \"refund\"\n"
+    )
+    requests = []
+
+    class Response:
+        def __init__(self, status_code, payload=None, text=""):
+            self.status_code = status_code
+            self._payload = payload
+            self.text = text
+
+        def json(self):
+            return self._payload
+
+    class FakeClient:
+        def post(self, path, json=None):
+            requests.append(("POST", path, json))
+            assert path == "/projects/proj_123/test-runs"
+            assert json["environment_id"] == "env_active_dev"
+            tar_data = base64.b64decode(json["files_data"])
+            with tarfile.open(fileobj=io.BytesIO(tar_data), mode="r:gz") as tar:
+                assert sorted(tar.getnames()) == ["agents/support.yaml", "tests/support.yaml"]
+            return Response(202, {"id": "run_dev_123"})
+
+        def get(self, path):
+            requests.append(("GET", path, None))
+            assert path == "/projects/proj_123/test-runs/run_dev_123"
+            return Response(
+                200,
+                {
+                    "status": "failed",
+                    "phase": "running_tests",
+                    "total_cases": 1,
+                    "deployment_id": "dep_dev_456",
+                    "cases": [
+                        {
+                            "agent_name": "support",
+                            "test_name": "handles_priority_refund",
+                            "passed": False,
+                            "successes": 1,
+                            "runs": 3,
+                            "success_threshold": 100,
+                            "failure_reason": "Refund intent was routed to shipping.",
+                        }
+                    ],
+                },
+            )
+
+    cli._run_tests_in_dev_session(FakeClient(), "proj_123", "env_active_dev")
+
+    captured = capsys.readouterr()
+    output = captured.out + captured.err
+    assert requests[0][0:2] == ("POST", "/projects/proj_123/test-runs")
+    assert requests[1] == ("GET", "/projects/proj_123/test-runs/run_dev_123", None)
+    assert "Submitting tests to backend (target: dev session env)..." in output
+    assert "Running 1 test case(s)..." in output
+    assert "support::handles_priority_refund" in output
+    assert "Refund intent was routed to shipping." in output
+    assert "https://connic.co/projects/proj_123/deployments/dep_dev_456?env=env_active_dev" in output
+    assert "0/1 cases passed." in output
+
+
+def test_dev_session_test_runner_reports_validation_error_without_backend_call(tmp_path, monkeypatch, capsys):
+    monkeypatch.chdir(tmp_path)
+    write_minimal_test_project(tmp_path)
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "tests" / "support.yaml").write_text(
+        "agent: support\n"
+        "tests:\n"
+        "  - name: handles_refund\n"
+        "    payload: '{\"message\":\"refund order 123\"}'\n"
+        "    expected_result: status == \"completed\"\n"
+    )
+    (tmp_path / "agents" / "secret.env").write_text("TOKEN=should-not-upload\n")
+
+    class FailingClient:
+        def post(self, path, json=None):
+            raise AssertionError("invalid project files should not be submitted")
+
+        def get(self, path):
+            raise AssertionError("invalid project files should not be polled")
+
+    cli._run_tests_in_dev_session(FailingClient(), "proj_123", "env_active_dev")
+
+    captured = capsys.readouterr()
+    output = captured.out + captured.err
+    assert "File validation failed" in output
+    assert "File type '.env' not allowed" in output
+
+
+def test_dev_session_test_runner_warns_when_no_test_files_exist(tmp_path, monkeypatch, capsys):
+    monkeypatch.chdir(tmp_path)
+    write_minimal_test_project(tmp_path)
+
+    class FailingClient:
+        def post(self, path, json=None):
+            raise AssertionError("projects without tests should not be submitted")
+
+        def get(self, path):
+            raise AssertionError("projects without tests should not be polled")
+
+    cli._run_tests_in_dev_session(FailingClient(), "proj_123", "env_active_dev")
+
+    output = capsys.readouterr().out
+    assert "1 files, 0 test file(s)" in output
+    assert "No tests/ directory found" in output
+
+
 def test_test_command_starts_session_uploads_files_and_stops_when_server_ends_session(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(cli, "print_update_hint", lambda: None)
