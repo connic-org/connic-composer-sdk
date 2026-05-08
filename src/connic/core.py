@@ -422,10 +422,10 @@ class ApprovalConfig(BaseModel):
 class McpServerConfig(BaseModel):
     """
     Configuration for an MCP (Model Context Protocol) server connection.
-    
+
     MCP servers provide external tools that agents can use. The connection
     is established from within the deployed agent container via HTTP/SSE.
-    
+
     Example YAML:
         mcp_servers:
           - name: filesystem
@@ -435,11 +435,16 @@ class McpServerConfig(BaseModel):
               - write_file
             headers:
               Authorization: "Bearer ${API_TOKEN}"
+
+        # MCP server reachable only inside a private network, routed via a Connic Bridge:
+          - name: internal-mcp
+            url: http://mcp.internal:8080/mcp
+            bridge: ${INTERNAL_BRIDGE_ID}
     """
     name: str = Field(..., description="Unique identifier for this MCP server connection")
     url: str = Field(..., description="URL of the MCP server endpoint")
     tools: Optional[List[str]] = Field(
-        default=None, 
+        default=None,
         description="Optional list of tool names to include. If omitted, all tools from the server are available."
     )
     headers: Optional[Dict[str, str]] = Field(
@@ -449,6 +454,14 @@ class McpServerConfig(BaseModel):
     discoverable: bool = Field(
         default=False,
         description="When true, tools from this MCP server are indexed for on-demand discovery via search_tools instead of being loaded into the LLM context upfront."
+    )
+    bridge: Optional[str] = Field(
+        default=None,
+        description=(
+            "Optional Connic Bridge ID. When set, the MCP server's URL is "
+            "tunneled through that bridge so private/on-prem MCP servers can be "
+            "reached without exposing them publicly. Supports ${VAR} substitution."
+        ),
     )
 
 

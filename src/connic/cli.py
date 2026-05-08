@@ -231,7 +231,7 @@ def _validate_project_files() -> tuple[bool, str, list[Path]]:
 
 
 @click.group()
-@click.version_option(version="0.1.17", prog_name="connic")
+@click.version_option(version="0.1.18", prog_name="connic")
 def main():
     """Connic Composer SDK - Build agents with code."""
     print_update_hint()
@@ -692,7 +692,10 @@ def _run_lint(verbose: bool = False, quiet: bool = False, project_root: str = ".
 
             if config.mcp_servers:
                 for mcp_server in config.mcp_servers:
-                    click.echo(f"  │  MCP Server: {mcp_server.name} ({mcp_server.url})")
+                    bridge_suffix = f" via bridge {mcp_server.bridge}" if mcp_server.bridge else ""
+                    click.echo(
+                        f"  │  MCP Server: {mcp_server.name} ({mcp_server.url}){bridge_suffix}"
+                    )
 
         if agent_type == "sequential":
             for ref in config.agents:

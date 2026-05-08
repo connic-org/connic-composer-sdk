@@ -214,6 +214,32 @@ def test_loads_realistic_support_agent_config(tmp_path):
     assert agent.discoverable_tools[0].parameters["required"] == ["query"]
 
 
+def test_loads_mcp_server_with_bridge(tmp_path):
+    write_file(
+        tmp_path / "agents" / "internal-mcp-agent.yaml",
+        """
+        version: "1.0"
+        name: internal-mcp-agent
+        type: llm
+        model: openai/gpt-5.2
+        description: "Agent that talks to a private MCP server via bridge"
+        system_prompt: "Use the internal MCP tools to answer."
+        mcp_servers:
+          - name: internal-mcp
+            url: http://mcp.internal:8080/mcp
+            bridge: ${INTERNAL_BRIDGE_ID}
+          - name: public-mcp
+            url: https://mcp.example.com/mcp
+        """,
+    )
+
+    agent = ProjectLoader(str(tmp_path)).load_agent("internal-mcp-agent")
+
+    servers_by_name = {s.name: s for s in agent.config.mcp_servers}
+    assert servers_by_name["internal-mcp"].bridge == "${INTERNAL_BRIDGE_ID}"
+    assert servers_by_name["public-mcp"].bridge is None
+
+
 def test_validation_only_builds_tool_schema_without_importing_module(tmp_path):
     write_file(
         tmp_path / "tools" / "inventory.py",

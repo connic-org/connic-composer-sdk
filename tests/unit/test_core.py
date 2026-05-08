@@ -217,6 +217,31 @@ def test_agent_config_mcp_servers_limit():
         ))
 
 
+def test_mcp_server_config_bridge_default_none():
+    cfg = McpServerConfig(name="srv", url="https://mcp.example.com/mcp")
+    assert cfg.bridge is None
+
+
+def test_mcp_server_config_bridge_field():
+    cfg = McpServerConfig(
+        name="internal",
+        url="http://mcp.internal:8080/mcp",
+        bridge="abc123",
+    )
+    assert cfg.bridge == "abc123"
+
+
+def test_mcp_server_config_bridge_supports_var_placeholder():
+    # Substitution itself happens at runtime in the runner, but the schema
+    # must accept a ${VAR} string verbatim (the same shape used for headers/url).
+    cfg = McpServerConfig(
+        name="internal",
+        url="http://mcp.internal:8080/mcp",
+        bridge="${INTERNAL_BRIDGE_ID}",
+    )
+    assert cfg.bridge == "${INTERNAL_BRIDGE_ID}"
+
+
 # ---------------------------------------------------------------------------
 # Tool.execute / execute_sync
 # ---------------------------------------------------------------------------
