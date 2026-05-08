@@ -40,21 +40,30 @@ Example::
       #     -> str | dict                                     (required)
       #   cleanup(run, context, builder_args) -> bool | None  (optional)
       # build() produces the agent input and may stash state in
-      # ``context`` for cleanup() to read back. cleanup() receives
-      # ``run`` -- a dict with ``input``, ``output``, and ``context``
-      # (the real run_context the runner produced, the same dict
-      # middleware/hooks see) -- and runs after the agent finishes
-      # (pass or fail) so fixtures get torn down. May return False to
-      # mark the case as failed in addition to the yaml-defined checks.
+      # ``context`` for cleanup() to read back. The same ``context``
+      # dict is also bound as ``context`` in ``expected_result`` and
+      # ``expected_tool_calls`` expressions, so a builder can stash a
+      # freshly minted uuid (or any other fixture id) and the
+      # assertions can compare agent output / tool params against it.
+      # cleanup() additionally receives ``run`` -- a dict with
+      # ``input``, ``output``, and ``context`` (the real run_context
+      # the runner produced, the same dict middleware/hooks see) --
+      # and runs after the agent finishes (pass or fail) so fixtures
+      # get torn down. May return False to mark the case as failed in
+      # addition to the yaml-defined checks.
       - name: refunds_a_real_charge
         builder: create_charge_then_refund
         builder_args:
           amount_cents: 4200
         expected_result: output.status == "refunded"
+        expected_tool_calls:
+          - billing.refund: params.charge_id == context.charge_id
 
 The ``expected_result`` and ``expected_tool_calls`` mapping expressions are
-evaluated by ``shared.expression_filter.safe_eval`` server-side, with
-bindings ``output``, ``error``, ``status``, ``invocations``.
+evaluated server-side with bindings ``output``, ``error``, ``status``,
+``context`` (in ``expected_result``) and ``params``, ``invocations``,
+``context`` (in ``expected_tool_calls``). ``context`` is the builder's
+mutable dict; for tests with no builder it is empty.
 """
 
 from __future__ import annotations
@@ -150,7 +159,10 @@ class TestCase(BaseModel):
     expected_result: Optional[str] = Field(
         default=None,
         description=(
-            "Expression evaluated against bindings: output, error, status. "
+            "Expression evaluated against bindings: output, error, status, "
+            "context. ``context`` is the builder's mutable dict (empty when "
+            "no builder is set), so assertions can reference fixture state "
+            "stashed by ``build()`` (e.g. ``output.id == context.row_uuid``). "
             "If omitted, only the run's terminal status (`completed`) is "
             "checked."
         ),

@@ -902,6 +902,143 @@ def _render_test_cases(cases: list[dict]) -> None:
             _err(f"{c['agent_name']}::{c['test_name']}: {c['failure_reason']}")
 
 
+def _compute_local_coverage(project_root: Path) -> dict:
+    """Static, offline test-coverage report.
+
+    Each agent contributes equally to the overall percentage. Per agent:
+      - covered / total tools, where a tool counts as covered if it appears
+        at least once across that agent's `expected_tool_calls`.
+      - Agents with no tools (e.g. sequential): 100% if a test file exists, else 0%.
+      - Agents with no test file: 0%.
+
+    Auto-injected discovery markers (`search_tools`, `use_tool`) are excluded
+    so users don't get penalised for plumbing they didn't author.
+    """
+    import yaml as _yaml
+
+    from .core import AgentType
+    from .test_schema import TestFile
+
+    loader = ProjectLoader(str(project_root), validation_only=True)
+    try:
+        agents = loader.load_agents()
+    except FileNotFoundError as e:
+        return {"agents": [], "overall": 0.0, "error": str(e)}
+
+    tests_dir = project_root / "tests"
+    DISCOVERY_MARKERS = {"search_tools", "use_tool"}
+
+    rows: list[dict] = []
+    for agent in agents:
+        if getattr(agent.config, "is_test_variant", False):
+            continue
+
+        agent_name = agent.config.name
+        agent_tools: set[str] = set()
+        for tool in list(agent.tools) + list(agent.discoverable_tools):
+            if tool.is_predefined and tool.name in DISCOVERY_MARKERS:
+                continue
+            agent_tools.add(tool.ref or tool.name)
+
+        test_file_path: Path | None = None
+        for ext in (".yaml", ".yml"):
+            candidate = tests_dir / f"{agent_name}{ext}"
+            if candidate.exists():
+                test_file_path = candidate
+                break
+
+        covered: set[str] = set()
+        parse_error: str | None = None
+        if test_file_path is not None:
+            try:
+                with open(test_file_path) as f:
+                    parsed = TestFile(**(_yaml.safe_load(f) or {}))
+                for case in parsed.tests:
+                    for entry in case.expected_tool_calls:
+                        ref = entry if isinstance(entry, str) else next(iter(entry.keys()))
+                        if ref in agent_tools:
+                            covered.add(ref)
+                            continue
+                        # Fallback: match by short function name (last segment).
+                        for at in agent_tools:
+                            if at.split(".")[-1] == ref.split(".")[-1]:
+                                covered.add(at)
+                                break
+            except Exception as e:
+                parse_error = str(e)
+
+        if agent_tools:
+            pct = 100.0 * len(covered) / len(agent_tools)
+        else:
+            pct = 100.0 if test_file_path is not None else 0.0
+
+        rows.append({
+            "name": agent_name,
+            "type": agent.config.type.value if isinstance(agent.config.type, AgentType) else str(agent.config.type),
+            "has_tests": test_file_path is not None,
+            "tools_total": len(agent_tools),
+            "tools_covered": len(covered),
+            "uncovered_tools": sorted(agent_tools - covered),
+            "percent": pct,
+            "parse_error": parse_error,
+        })
+
+    overall = sum(r["percent"] for r in rows) / len(rows) if rows else 0.0
+    return {"agents": rows, "overall": overall}
+
+
+def _coverage_color(pct: float) -> str:
+    if pct >= 80.0:
+        return "green"
+    if pct >= 40.0:
+        return "yellow"
+    return "red"
+
+
+def _render_coverage(report: dict) -> None:
+    """Pretty-print the local coverage report."""
+    rows = report["agents"]
+    if not rows:
+        _warn("No agents found.")
+        return
+
+    table_rows: list[list[str]] = []
+    for r in rows:
+        if not r["has_tests"]:
+            tools_cell = click.style("no tests", fg="red")
+        elif r["tools_total"] == 0:
+            tools_cell = "—"
+        else:
+            tools_cell = f"{r['tools_covered']}/{r['tools_total']}"
+        pct_cell = click.style(f"{r['percent']:5.1f}%", fg=_coverage_color(r["percent"]), bold=True)
+        table_rows.append([r["name"], r["type"], tools_cell, pct_cell])
+
+    _table(["Agent", "Type", "Tools covered", "Coverage"], table_rows)
+
+    gaps = [r for r in rows if r["has_tests"] and r["uncovered_tools"]]
+    if gaps:
+        click.echo()
+        _step("Uncovered tools:")
+        for r in gaps:
+            _info(f"{r['name']}: {', '.join(r['uncovered_tools'])}")
+
+    parse_errors = [r for r in rows if r.get("parse_error")]
+    if parse_errors:
+        click.echo()
+        _step("Test files that failed to parse (counted as 0%):")
+        for r in parse_errors:
+            _err(f"{r['name']}: {r['parse_error']}")
+
+    click.echo()
+    overall = report["overall"]
+    click.secho(
+        f"  Overall coverage: {overall:.1f}%  ({len(rows)} agent{'s' if len(rows) != 1 else ''})",
+        fg=_coverage_color(overall),
+        bold=True,
+    )
+    click.echo()
+
+
 def _render_dashboard_link(project_id: str, deployment_id: str, env_id: str) -> None:
     """Print the dashboard link to the deployment that backed a test run."""
     click.echo()
@@ -1432,11 +1569,12 @@ def dev(name: str, api_url: str, api_key: str, project_id: str):
 @main.command()
 @click.option("--env", help="Environment ID to run tests against (defaults to env's test_environment_id, falling back to itself).")
 @click.option("--filter", "filter_name", help="Run only tests whose name matches this string.")
+@click.option("--coverage", is_flag=True, help="Print local test coverage per agent and exit (no backend call, no credentials needed).")
 @click.option("--json", "as_json", is_flag=True, help="Emit machine-readable JSON for CI.")
 @click.option("--api-url", envvar="CONNIC_API_URL", default=DEFAULT_API_URL, help="Connic API URL")
 @click.option("--api-key", envvar="CONNIC_API_KEY", default=None, help="Connic API key")
 @click.option("--project-id", envvar="CONNIC_PROJECT_ID", default=None, help="Connic project ID")
-def test(env: str | None, filter_name: str | None, as_json: bool, api_url: str, api_key: str | None, project_id: str | None):
+def test(env: str | None, filter_name: str | None, coverage: bool, as_json: bool, api_url: str, api_key: str | None, project_id: str | None):
     """
     Run the test suite from ./tests against a Connic environment.
 
@@ -1444,14 +1582,32 @@ def test(env: str | None, filter_name: str | None, as_json: bool, api_url: str, 
     invokes each agent N times in the chosen environment, and asserts on
     output and tool-call traces. Exits non-zero if any test fails.
 
+    With ``--coverage`` runs purely locally: discovers agents, scans their
+    test files, and reports the share of each agent's tools that appear in
+    ``expected_tool_calls``. Each agent counts equally toward the overall
+    percentage; agents without a test file score 0%.
+
     \b
     Examples:
         connic test                       # Run all tests against the default env
         connic test --env <env-id>        # Run against a specific env
         connic test --filter login        # Run only tests with "login" in the name
         connic test --json                # Machine-readable output for CI
+        connic test --coverage            # Static per-agent coverage report
     """
     import json
+
+    if coverage:
+        report = _compute_local_coverage(Path("."))
+        if as_json:
+            click.echo(json.dumps(report, indent=2))
+        else:
+            _h1("Test Coverage")
+            if report.get("error"):
+                _fail_and_exit(report["error"])
+            _render_coverage(report)
+        sys.exit(0)
+
 
     import httpx
 
