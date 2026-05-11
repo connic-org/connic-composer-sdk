@@ -435,6 +435,7 @@ class McpServerConfig(BaseModel):
               - write_file
             headers:
               Authorization: "Bearer ${API_TOKEN}"
+              X-User-Id: "${context.user_id}"
 
         # MCP server reachable only inside a private network, routed via a Connic Bridge:
           - name: internal-mcp
@@ -449,7 +450,10 @@ class McpServerConfig(BaseModel):
     )
     headers: Optional[Dict[str, str]] = Field(
         default=None,
-        description="Optional HTTP headers for authentication (supports ${VAR} substitution)"
+        description=(
+            "Optional HTTP headers for authentication. Supports ${VAR} environment "
+            "substitution and ${context.*} per-run context substitution."
+        )
     )
     discoverable: bool = Field(
         default=False,

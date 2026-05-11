@@ -242,6 +242,16 @@ def test_mcp_server_config_bridge_supports_var_placeholder():
     assert cfg.bridge == "${INTERNAL_BRIDGE_ID}"
 
 
+def test_mcp_server_config_headers_support_context_placeholder():
+    cfg = McpServerConfig(
+        name="compliance",
+        url="https://mcp.example.com/mcp",
+        headers={"Authorization": "Bearer ${MCP_TOKEN}", "X-User-Id": "${context.user_id}"},
+    )
+
+    assert cfg.headers == {"Authorization": "Bearer ${MCP_TOKEN}", "X-User-Id": "${context.user_id}"}
+
+
 # ---------------------------------------------------------------------------
 # Tool.execute / execute_sync
 # ---------------------------------------------------------------------------
