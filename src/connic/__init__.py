@@ -33,7 +33,7 @@ from .bridge import bridge_host
 from .core import AbortTool, Agent, AgentConfig, GuardrailResult, Middleware, RetryOptions, StopProcessing, Tool, ToolHook
 from .loader import ProjectLoader
 
-__version__ = "0.1.18"
+__version__ = "0.1.19"
 
 __all__ = [
     "AbortTool",
