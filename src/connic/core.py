@@ -204,7 +204,7 @@ class CollectionPermissions(BaseModel):
     )
     prevent_write: Optional[bool] = Field(
         default=None,
-        description="If true, db_insert and db_update are blocked for this collection. Inherits global setting if None."
+        description="If true, db_insert, db_update, and db_upsert are blocked for this collection. Inherits global setting if None."
     )
 
 
@@ -240,7 +240,7 @@ class DatabaseAccessConfig(BaseModel):
     )
     prevent_write: bool = Field(
         default=False,
-        description="If true, db_insert and db_update are blocked for all collections (can be overridden per collection)."
+        description="If true, db_insert, db_update, and db_upsert are blocked for all collections (can be overridden per collection)."
     )
 
 

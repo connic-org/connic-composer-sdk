@@ -440,6 +440,48 @@ async def db_update(
     )
 
 
+async def db_upsert(
+    collection: str,
+    filter: Dict[str, Any],
+    update: Dict[str, Any],
+    insert_only: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """
+    Update the first document matching ``filter``, or insert a new one if no
+    document matches.
+
+    The inserted document is built from (later wins): top-level equality keys
+    of ``filter``, then ``update``, then ``insert_only``. Operator constructs
+    in ``filter`` (``{"$gt": ...}``, ``$and``/``$or``, dot-notation keys) are
+    NOT auto-extracted — put anything else that should land on a newly inserted
+    document in ``insert_only``.
+
+    Args:
+        collection: Collection name. Auto-created on first write.
+        filter: Non-empty JSON filter identifying the target row.
+        update: Fields applied on both branches (partial merge; ``None`` removes
+                a field on the update path). Cannot be empty.
+        insert_only: Optional fields written ONLY when a new document is
+                     inserted; ignored on the update path.
+
+    Returns:
+        {"upserted_id": "<uuid>", "operation": "inserted" | "updated"}
+
+    Example:
+        # Natural-key upsert
+        await db_upsert(
+            "orders",
+            filter={"order_id": "ORD-001"},
+            update={"status": "shipped"},
+            insert_only={"source": "etl"},
+        )
+    """
+    raise RuntimeError(
+        "db_upsert will be auto-injected when testing using the connic CLI or deploying. "
+        "Run 'connic test' to test your agents with predefined tools."
+    )
+
+
 async def db_delete(
     collection: str,
     filter: Dict[str, Any],
@@ -521,6 +563,7 @@ __all__ = [
     "db_find",
     "db_insert",
     "db_update",
+    "db_upsert",
     "db_delete",
     "db_count",
     "db_list_collections",

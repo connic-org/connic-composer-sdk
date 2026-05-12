@@ -35,6 +35,11 @@ async def _expect_stub(coro):
         (tools.db_find, ("orders",), {}),
         (tools.db_insert, ("orders", {"a": 1}), {}),
         (tools.db_update, ("orders", {"id": 1}, {"ok": True}), {}),
+        (
+            tools.db_upsert,
+            ("orders", {"order_id": "ORD-1"}, {"status": "shipped"}),
+            {"insert_only": {"source": "etl"}},
+        ),
         (tools.db_delete, ("orders", {"id": 1}), {}),
         (tools.db_count, ("orders",), {}),
         (tools.db_list_collections, (), {}),

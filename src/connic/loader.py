@@ -45,6 +45,7 @@ PREDEFINED_TOOL_NAMES = {
     "db_find",              # Query documents with JSON filters
     "db_insert",            # Insert documents into a collection (auto-creates collection)
     "db_update",            # Update documents matching a filter
+    "db_upsert",            # Update first matching document, or insert if none matches
     "db_delete",            # Delete documents matching a filter
     "db_count",             # Count documents matching a filter
     "db_list_collections",  # List all collections in the environment
