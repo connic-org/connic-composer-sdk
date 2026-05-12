@@ -90,14 +90,15 @@ async def query_knowledge(
     query: str,
     namespace: Optional[str] = None,
     min_score: float = 0.7,
-    max_results: int = 3
+    max_results: int = 3,
+    metadata_filter: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """
     Query the knowledge base for relevant information using semantic search.
-    
+
     This tool searches the environment's knowledge base and returns the most
     relevant text chunks based on semantic similarity to your query.
-    
+
     Args:
         query: The search query - describe what information you're looking for.
                Be specific and descriptive for better results.
@@ -108,7 +109,20 @@ async def query_knowledge(
                    Only results with score >= min_score are returned.
                    Range is 0.0 to 1.0 where 1.0 is a perfect match.
         max_results: Maximum number of results to return (default: 3).
-    
+        metadata_filter: Optional MongoDB-style filter applied to entry
+                   metadata. Shorthand `{"field": value}` is equality; use
+                   operators for anything else.
+
+                   Supported operators (same set as db_find):
+                     $eq, $ne, $gt, $gte, $lt, $lte, $in, $nin, $exists,
+                     $regex, $contains, $elemMatch, $and, $or, $nor, $not.
+                   Dot-notation works for nested keys.
+
+                   Examples:
+                     {"product_id": "X"}
+                     {"status": {"$in": ["active", "pending"]}}
+                     {"run_id": {"$ne": current_run_id}}
+
     Returns:
         A dictionary containing:
         - results: List of matching chunks, each with:
@@ -116,7 +130,8 @@ async def query_knowledge(
             - entry_id: The ID of the source entry
             - namespace: The namespace (if any)
             - score: Similarity score (higher is better, max 1.0)
-    
+            - metadata: The entry's metadata dict
+
     Example:
         result = await query_knowledge("What is the refund policy?")
         for chunk in result["results"]:
@@ -171,26 +186,55 @@ async def store_knowledge(
 
 
 async def delete_knowledge(
-    entry_id: str,
-    namespace: Optional[str] = None
+    entry_id: Optional[str] = None,
+    namespace: Optional[str] = None,
+    metadata_filter: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """
-    Delete a specific knowledge entry from the knowledge base.
-    
+    Delete knowledge from the knowledge base.
+
+    Two deletion modes are supported:
+
+    1. By entry_id (optionally scoped to a namespace) — deletes one entry.
+    2. By namespace + optional metadata_filter — bulk-deletes every entry
+       within the namespace (and its sub-namespaces) matching the filter.
+       Without a filter, the entire namespace subtree is deleted.
+
     Args:
-        entry_id: The identifier of the knowledge entry to delete.
-        namespace: Optional namespace to scope the deletion.
-    
+        entry_id: ID of a single entry to delete. Omit when bulk-deleting by
+                  namespace/metadata_filter.
+        namespace: Namespace to scope the deletion. Required when using
+                   metadata_filter; optional with entry_id. Sub-namespaces are
+                   always included.
+        metadata_filter: MongoDB-style filter applied to entry metadata. Only
+                   entries matching the filter are deleted. Requires
+                   `namespace`.
+
+                   Supported operators (same set as db_find):
+                     $eq, $ne, $gt, $gte, $lt, $lte, $in, $nin, $exists,
+                     $regex, $contains, $elemMatch, $and, $or, $nor, $not.
+                   Dot-notation works for nested keys.
+
     Returns:
         A dictionary containing:
         - ok: True if deletion was successful
-        - deleted_chunks: Number of chunks deleted
-    
+        - deleted_chunks: Number of underlying chunks deleted
+
     Example:
-        result = await delete_knowledge(
-            entry_id="outdated-info",
-            namespace="products"
+        # Delete one entry
+        await delete_knowledge(entry_id="outdated-info", namespace="products")
+
+        # Orphan cleanup: keep current run's writes, delete the rest in scope
+        await delete_knowledge(
+            namespace="confluence",
+            metadata_filter={
+                "root_page_id": page_id,
+                "run_id": {"$ne": current_run_id},
+            },
         )
+
+        # Wipe an entire namespace subtree
+        await delete_knowledge(namespace="meetings")
     """
     raise RuntimeError(
         "delete_knowledge will be auto-injected when testing using the connic CLI or deploying. "
