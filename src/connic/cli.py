@@ -815,19 +815,28 @@ def _package_project_for_tests(*, quiet: bool = False) -> tuple[bytes, list[Path
     return tar_data, valid_files, len(test_files)
 
 
-def _kickoff_test_run(client: "httpx.Client", project_id: str, env_id: str, tar_data: bytes) -> str:
+def _kickoff_test_run(
+    client: "httpx.Client",
+    project_id: str,
+    env_id: str,
+    tar_data: bytes,
+    test_filter: str | None = None,
+) -> str:
     """POST a tarball as a test run. Returns the new ``test_run_id``.
 
     Raises ``RuntimeError`` with a user-facing message on any non-2xx response.
     """
     import base64
 
+    body: dict = {
+        "files_data": base64.b64encode(tar_data).decode("utf-8"),
+        "environment_id": env_id,
+    }
+    if test_filter:
+        body["test_filter"] = test_filter
     resp = client.post(
         f"/projects/{project_id}/test-runs",
-        json={
-            "files_data": base64.b64encode(tar_data).decode("utf-8"),
-            "environment_id": env_id,
-        },
+        json=body,
     )
     if resp.status_code == 400:
         raise RuntimeError(f"Test request rejected: {resp.json().get('detail', resp.text)}")
@@ -1664,7 +1673,7 @@ def test(env: str | None, filter_name: str | None, coverage: bool, as_json: bool
         if not as_json:
             _step("Submitting to backend...")
         try:
-            test_run_id = _kickoff_test_run(client, project_id, env, tar_data)
+            test_run_id = _kickoff_test_run(client, project_id, env, tar_data, test_filter=filter_name)
         except RuntimeError as e:
             _fail_and_exit(str(e))
         if not as_json:
@@ -1680,8 +1689,6 @@ def test(env: str | None, filter_name: str | None, coverage: bool, as_json: bool
             _fail_and_exit(f"{e}; giving up.")
 
     cases = result.get("cases", [])
-    if filter_name:
-        cases = [c for c in cases if filter_name in c["test_name"]]
 
     if result["status"] == "error":
         _fail_and_exit(f"Test run errored: {result.get('error') or 'unknown error'}", code=2)
