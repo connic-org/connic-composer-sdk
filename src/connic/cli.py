@@ -231,7 +231,7 @@ def _validate_project_files() -> tuple[bool, str, list[Path]]:
 
 
 @click.group()
-@click.version_option(version="0.1.22", prog_name="connic")
+@click.version_option(version="0.1.23", prog_name="connic")
 def main():
     """Connic Composer SDK - Build agents with code."""
     print_update_hint()
@@ -962,6 +962,10 @@ def _compute_local_coverage(project_root: Path) -> dict:
             try:
                 with open(test_file_path) as f:
                     parsed = TestFile(**(_yaml.safe_load(f) or {}))
+                # Tool-agents ARE their body tool: any test run invokes it,
+                # so the agent's tool is covered whenever the file has tests.
+                if agent.config.type == AgentType.TOOL and parsed.tests:
+                    covered |= agent_tools
                 for case in parsed.tests:
                     for entry in case.expected_tool_calls:
                         ref = entry if isinstance(entry, str) else next(iter(entry.keys()))

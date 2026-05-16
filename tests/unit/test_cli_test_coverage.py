@@ -256,6 +256,56 @@ def test_ab_test_variant_agents_are_excluded_from_coverage(tmp_path):
     assert report["overall"] == 100.0
 
 
+def test_tool_agent_body_tool_is_covered_when_test_file_exists(tmp_path):
+    """A `type: tool` agent IS its body tool — any test run invokes it,
+    so the body tool counts as covered without needing expected_tool_calls."""
+    _write_calculator_tool(tmp_path)
+    _write(
+        tmp_path / "agents" / "adder.yaml",
+        dedent(
+            """
+            version: "1.0"
+            name: adder
+            type: tool
+            description: "Adds two numbers directly."
+            tool_name: calculator.add
+            """
+        ).strip()
+        + "\n",
+    )
+    # No expected_tool_calls — just invoking the agent runs the tool.
+    _write_test_file(tmp_path, "adder", [[]])
+
+    [agent] = cli._compute_local_coverage(tmp_path)["agents"]
+    assert agent["tools_total"] == 1
+    assert agent["tools_covered"] == 1
+    assert agent["percent"] == 100.0
+    assert agent["uncovered_tools"] == []
+
+
+def test_tool_agent_without_test_file_is_zero_coverage(tmp_path):
+    _write_calculator_tool(tmp_path)
+    _write(
+        tmp_path / "agents" / "adder.yaml",
+        dedent(
+            """
+            version: "1.0"
+            name: adder
+            type: tool
+            description: "Adds two numbers directly."
+            tool_name: calculator.add
+            """
+        ).strip()
+        + "\n",
+    )
+
+    [agent] = cli._compute_local_coverage(tmp_path)["agents"]
+    assert agent["has_tests"] is False
+    assert agent["tools_total"] == 1
+    assert agent["tools_covered"] == 0
+    assert agent["percent"] == 0.0
+
+
 def test_unparseable_test_file_is_recorded_as_zero_coverage_with_error(tmp_path):
     _write_calculator_tool(tmp_path)
     _write_llm_agent(tmp_path, "math-agent", tools=["calculator.add"])
