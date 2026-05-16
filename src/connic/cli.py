@@ -118,9 +118,9 @@ ALLOWED_EXTENSIONS = {
 }
 
 # Maximum total upload size: 25MB (covers tests/files/ fixtures).
-# Code/config (everything outside tests/files/) is held to a 1MB sub-cap.
+# Code/config (everything outside tests/files/) is held to a 5MB sub-cap.
 MAX_UPLOAD_SIZE = 25 * 1024 * 1024  # 26,214,400 bytes
-MAX_CODE_SIZE = 1024 * 1024  # legacy 1MB cap, applied to non-fixture content
+MAX_CODE_SIZE = 5 * 1024 * 1024  # 5MB cap, applied to non-fixture content
 
 # Paths under tests/files/ are treated as opaque fixture content: any
 # extension, binary OK, larger size budget. tests/builders/ accepts only .py.
@@ -1921,7 +1921,10 @@ def deploy(env: str | None, api_url: str, api_key: str | None, project_id: str |
         tar_data = tar_buffer.getvalue()
 
         if len(tar_data) > MAX_UPLOAD_SIZE:
-            _fail_and_exit(f"Package size ({len(tar_data):,} bytes) exceeds 1MB limit")
+            _fail_and_exit(
+                f"Package size ({len(tar_data):,} bytes) exceeds "
+                f"{MAX_UPLOAD_SIZE:,} byte limit (25MB)"
+            )
 
         files_b64 = base64.b64encode(tar_data).decode('utf-8')
         files_hash = hashlib.sha256(tar_data).hexdigest()[:12]
