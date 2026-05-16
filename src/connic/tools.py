@@ -328,6 +328,7 @@ async def web_search(
 
 async def web_read_page(
     url: str,
+    follow_redirects: bool = True,
 ) -> Dict[str, Any]:
     """
     Fetch a web page and return its content as markdown.
@@ -338,11 +339,16 @@ async def web_read_page(
 
     Args:
         url: The URL of the page to fetch
+        follow_redirects: When True (default), follow redirects and read the
+            final page. Set to False to return an error with the redirect
+            target in the `redirect_url` field instead.
 
     Returns:
         A dictionary containing:
         - markdown: The page content as markdown
         - url: The URL that was fetched
+        - error: Present when the fetch failed or the URL redirected
+        - redirect_url: When the URL redirected, the target URL
 
     Example:
         result = await web_read_page("https://example.com/article")
