@@ -133,9 +133,11 @@ class TestCase(BaseModel):
         default_factory=list,
         description=(
             "Filenames (no path separators) located in ``tests/files/``. "
-            "The runner reads each file, base64-encodes it, and sends the "
-            "agent a multimodal payload of the form "
-            "``{message: <payload-or-builder-output>, files: [{name, mime_type, data}]}``."
+            "The runner reads each file, base64-encodes it, and attaches it "
+            "under ``files``. If ``payload`` is a JSON object (or comes from "
+            "a ``builder`` returning a dict), its keys sit at the top level "
+            "of ``context['payload']`` next to ``files``; otherwise the "
+            "string is delivered as ``{message: <payload>}``."
         ),
     )
     builder: Optional[str] = Field(

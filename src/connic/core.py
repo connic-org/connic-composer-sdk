@@ -597,7 +597,7 @@ class AgentConfig(BaseModel):
         description="Include the model's reasoning/thinking in the response. When enabled, reasoning content is captured in run traces. Defaults to true."
     )
     reasoning_budget: Optional[int] = Field(
-        default=None, ge=0,
+        default=None, ge=-1,
         description="Maximum number of tokens the model may use for reasoning. 0 disables reasoning, -1 lets the model decide automatically."
     )
     
