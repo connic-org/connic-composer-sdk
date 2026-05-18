@@ -52,6 +52,7 @@ def test_test_file_parses_realistic_yaml_and_resolves_defaults():
         "expected_result": 'status == "completed" and output.id == 10',
         "expected_tool_calls": ["math.calculator.add", {"math.calculator.add": "invocations >= 1"}],
         "expected_no_tool_calls": ["email.send"],
+        "expected_child_agents": None,
     }
 
     second = test_file.resolved(test_file.tests[1])
@@ -88,6 +89,7 @@ def test_test_file_uses_schema_defaults_for_minimal_suite():
         "expected_result": None,
         "expected_tool_calls": [],
         "expected_no_tool_calls": [],
+        "expected_child_agents": None,
     }
 
 

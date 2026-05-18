@@ -59,6 +59,27 @@ Example::
         expected_tool_calls:
           - billing.refund: params.charge_id == context.charge_id
 
+      # Assert on agents triggered via the ``trigger_agent`` tool. In the
+      # deploy-gate test container, ``trigger_agent`` runs the child agent
+      # in-process, so its output and tool calls are captured for assertions.
+      # The map is keyed by triggered agent name and stacks recursively for
+      # deeper trigger chains (parent → child → grandchild → …).
+      - name: dispatches_summarizer_then_publisher
+        payload: '{"text": "..."}'
+        expected_child_agents:
+          summarizer:
+            expected_result: output.summary != ""
+            expected_tool_calls:
+              - llm.complete
+            expected_child_agents:
+              publisher:
+                expected_tool_calls:
+                  - kafka.publish: params.topic == "summaries"
+          # Fire-and-forget trigger (wait_for_response=False): assert only
+          # that the call happened, optionally with a minimum count.
+          telemetry:
+            expected_triggered: 1
+
 The ``expected_result`` and ``expected_tool_calls`` mapping expressions are
 evaluated server-side with bindings ``output``, ``error``, ``status``,
 ``context`` (in ``expected_result``) and ``params``, ``invocations``,
@@ -117,6 +138,107 @@ class TestDefaults(BaseModel):
     )
 
 
+class ChildAgentExpectation(BaseModel):
+    """Assertions for an agent triggered via the ``trigger_agent`` tool.
+
+    Use under ``expected_child_agents`` (a map keyed by triggered agent name)
+    on either a top-level test case or another ``ChildAgentExpectation``
+    (assertions stack to whatever depth ``trigger_agent`` chains build).
+
+    Two evaluation paths, matching ``trigger_agent``'s call modes:
+
+    * ``wait_for_response=True``: the test container runs the child agent
+      in-process, so ``expected_result``, ``expected_tool_calls``,
+      ``expected_no_tool_calls`` and nested ``expected_child_agents`` apply
+      to the child's captured output and tool calls.
+    * ``wait_for_response=False`` (fire-and-forget): the framework can only
+      assert that the trigger happened. Use ``expected_triggered`` to assert
+      the count. If you set any deeper assertion the test fails with a clear
+      reason -- you have to ``wait_for_response=True`` for them.
+    """
+
+    expected_triggered: int = Field(
+        default=1,
+        ge=1,
+        description=(
+            "Minimum number of times the named agent must be triggered "
+            "(across both wait_for_response modes)."
+        ),
+    )
+    expected_payload: Optional[str] = Field(
+        default=None,
+        description=(
+            "Expression evaluated against the payload the parent passed to "
+            "``trigger_agent``. Bindings: ``payload`` (JSON-parsed when the "
+            "parent supplied a JSON string, else the raw value -- so both "
+            "``payload.charge_id == context.charge_id`` and "
+            "``\"refund\" in payload_raw`` work depending on shape), "
+            "``payload_raw`` (the string form when applicable, else \"\"), "
+            "and ``context`` (same builder dict as other assertions). Unlike "
+            "``expected_result``, this works for fire-and-forget triggers "
+            "too, since the payload is captured at call time."
+        ),
+    )
+    expected_result: Optional[str] = Field(
+        default=None,
+        description=(
+            "Expression evaluated against the child run's output/error/status/"
+            "context bindings. Requires at least one wait_for_response=True "
+            "trigger; same expression grammar as TestCase.expected_result."
+        ),
+    )
+    expected_tool_calls: List[ToolCallExpectation] = Field(default_factory=list)
+    expected_no_tool_calls: List[str] = Field(
+        default_factory=list,
+        description="Tools the child agent must NOT call.",
+    )
+    expected_child_agents: Optional[Dict[str, "ChildAgentExpectation"]] = Field(
+        default=None,
+        description=(
+            "Recursive: assertions for agents that this child triggers in "
+            "turn. Same shape as the parent ``expected_child_agents`` field."
+        ),
+    )
+
+    @field_validator("expected_tool_calls")
+    @classmethod
+    def _validate_tool_call_mappings(
+        cls, v: List[ToolCallExpectation]
+    ) -> List[ToolCallExpectation]:
+        for entry in v:
+            if isinstance(entry, dict):
+                if len(entry) != 1:
+                    raise ValueError(
+                        "expected_tool_calls mapping entries must have exactly "
+                        f"one key, got {len(entry)}: {list(entry.keys())}"
+                    )
+                ((tool_name, expr),) = entry.items()
+                if not isinstance(tool_name, str) or not tool_name:
+                    raise ValueError("Tool name must be a non-empty string.")
+                if not isinstance(expr, str) or not expr.strip():
+                    raise ValueError(
+                        f"Expression for '{tool_name}' must be a non-empty string."
+                    )
+            elif not isinstance(entry, str) or not entry:
+                raise ValueError(
+                    "expected_tool_calls entries must be a string or a single-key mapping."
+                )
+        return v
+
+
+ChildAgentExpectation.model_rebuild()
+
+
+def _dump_child_agents(
+    spec: Optional[Dict[str, "ChildAgentExpectation"]],
+) -> Optional[Dict[str, Any]]:
+    """Convert a ``Dict[str, ChildAgentExpectation]`` into the plain-dict wire
+    form the in-container runner consumes via the deploy-gate plan."""
+    if not spec:
+        return None
+    return {name: child.model_dump(exclude_none=False) for name, child in spec.items()}
+
+
 class TestCase(BaseModel):
     """A single test case."""
 
@@ -173,6 +295,15 @@ class TestCase(BaseModel):
     expected_no_tool_calls: List[str] = Field(
         default_factory=list,
         description="Tools that must NOT be called during the run.",
+    )
+    expected_child_agents: Optional[Dict[str, ChildAgentExpectation]] = Field(
+        default=None,
+        description=(
+            "Map of triggered agent name → assertions for that child run. "
+            "Each entry is a ``ChildAgentExpectation`` and nests its own "
+            "``expected_child_agents`` for deeper trigger chains. See the "
+            "``ChildAgentExpectation`` docstring for the two evaluation paths."
+        ),
     )
 
     @field_validator("expected_tool_calls")
@@ -259,4 +390,5 @@ class TestFile(BaseModel):
             "expected_result": case.expected_result,
             "expected_tool_calls": case.expected_tool_calls,
             "expected_no_tool_calls": case.expected_no_tool_calls,
+            "expected_child_agents": _dump_child_agents(case.expected_child_agents),
         }
