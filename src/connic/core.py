@@ -592,13 +592,19 @@ class AgentConfig(BaseModel):
     )
     
     # Reasoning configuration (LLM agents only)
-    reasoning: Optional[bool] = Field(
-        default=True,
-        description="Include the model's reasoning/thinking in the response. When enabled, reasoning content is captured in run traces. Defaults to true."
+    reasoning_effort: Optional[Literal["minimal", "low", "medium", "high", "xhigh", "off", "auto"]] = Field(
+        default=None,
+        description="How hard the model should think. `auto` (default) uses the provider's own default; `off` disables reasoning where the model allows it; `minimal`/`low`/`medium`/`high`/`xhigh` map to the provider's effort levels. Captured reasoning is always shown in run traces when the provider returns it."
     )
     reasoning_budget: Optional[int] = Field(
-        default=None, ge=-1,
-        description="Maximum number of tokens the model may use for reasoning. 0 disables reasoning, -1 lets the model decide automatically."
+        default=None, ge=1,
+        description="Explicit token budget for reasoning. Only honored by providers that accept a raw budget (e.g. Anthropic Claude 3.7/Sonnet 4, Gemini 2.5). Providers that only accept effort levels will reject this — handle the resulting error by switching to `reasoning_effort` instead."
+    )
+
+    # Deprecated — kept for one minor version to ease migration. Use reasoning_effort instead.
+    reasoning: Optional[bool] = Field(
+        default=None,
+        description="Deprecated. Use `reasoning_effort` ('auto' or 'off') instead."
     )
     
     # Common optional fields
@@ -661,6 +667,22 @@ class AgentConfig(BaseModel):
             )
         return v
     
+    @model_validator(mode='after')
+    def _migrate_legacy_reasoning_fields(self):
+        # Translate the legacy `reasoning: bool` flag into the new
+        # `reasoning_effort` enum so the rest of the pipeline only reads one field.
+        if self.reasoning is not None and self.reasoning_effort is None:
+            import warnings
+            warnings.warn(
+                "AgentConfig.reasoning is deprecated; use reasoning_effort "
+                "('auto' or 'off') instead.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+            self.reasoning_effort = "off" if self.reasoning is False else "auto"
+        self.reasoning = None
+        return self
+
     @model_validator(mode='after')
     def validate_type_requirements(self):
         """Validate that required fields are present based on agent type."""
