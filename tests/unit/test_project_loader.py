@@ -1690,3 +1690,347 @@ def test_parse_tool_entry_invalid_type_raises(tmp_path):
     loader = ProjectLoader(str(tmp_path))
     with pytest.raises(ValueError, match="Invalid"):
         loader._parse_tool_entry(42, "tool")
+
+
+# ---------------------------------------------------------------------------
+# Cascading _defaults.yaml
+# ---------------------------------------------------------------------------
+
+def test_root_defaults_apply_to_flat_agent(tmp_path):
+    write_file(
+        tmp_path / "agents" / "_defaults.yaml",
+        """
+        version: "1.0"
+        type: llm
+        model: openai/gpt-5.2
+        temperature: 0.4
+        system_prompt: "Default prompt."
+        """,
+    )
+    write_file(
+        tmp_path / "agents" / "assistant.yaml",
+        """
+        version: "1.0"
+        name: assistant
+        description: "Inherits model and temperature from root defaults."
+        """,
+    )
+
+    agent = ProjectLoader(str(tmp_path)).load_agent("assistant")
+
+    assert agent.config.model == "openai/gpt-5.2"
+    assert agent.config.temperature == 0.4
+    assert agent.config.system_prompt == "Default prompt."
+
+
+def test_deeper_defaults_override_shallower_scalars(tmp_path):
+    write_file(
+        tmp_path / "agents" / "_defaults.yaml",
+        """
+        version: "1.0"
+        type: llm
+        model: openai/gpt-5.2
+        temperature: 0.4
+        system_prompt: "Inherited prompt."
+        """,
+    )
+    write_file(
+        tmp_path / "agents" / "process" / "_defaults.yaml",
+        """
+        version: "1.0"
+        model: anthropic/claude-sonnet-4-6
+        """,
+    )
+    write_file(
+        tmp_path / "agents" / "process" / "ingest" / "loader.yaml",
+        """
+        version: "1.0"
+        name: loader
+        description: "Inherits root temperature and process model."
+        """,
+    )
+
+    agent = ProjectLoader(str(tmp_path)).load_agent("loader")
+
+    assert agent.config.model == "anthropic/claude-sonnet-4-6"
+    assert agent.config.temperature == 0.4
+
+
+def test_agent_overrides_inherited_scalar(tmp_path):
+    write_file(
+        tmp_path / "agents" / "_defaults.yaml",
+        """
+        version: "1.0"
+        type: llm
+        model: openai/gpt-5.2
+        temperature: 0.4
+        system_prompt: "Default prompt."
+        """,
+    )
+    write_file(
+        tmp_path / "agents" / "assistant.yaml",
+        """
+        version: "1.0"
+        name: assistant
+        description: "Overrides model."
+        model: anthropic/claude-haiku-4-5
+        """,
+    )
+
+    agent = ProjectLoader(str(tmp_path)).load_agent("assistant")
+
+    assert agent.config.model == "anthropic/claude-haiku-4-5"
+    assert agent.config.temperature == 0.4
+
+
+def test_tool_list_concat_with_dedup_by_ref(tmp_path):
+    write_file(
+        tmp_path / "agents" / "_defaults.yaml",
+        """
+        version: "1.0"
+        type: llm
+        model: openai/gpt-5.2
+        system_prompt: "Default prompt."
+        tools:
+          - web_search
+          - db_find
+        """,
+    )
+    write_file(
+        tmp_path / "agents" / "assistant.yaml",
+        """
+        version: "1.0"
+        name: assistant
+        description: "Adds and re-declares tools."
+        tools:
+          - db_insert
+          - db_find: param.collection == "public"
+        """,
+    )
+
+    agent = ProjectLoader(str(tmp_path)).load_agent("assistant")
+
+    tool_names = [t.name for t in agent.tools]
+    # web_search inherited; db_find re-declared (so dropped from base, added by overlay with condition);
+    # db_insert added by overlay.
+    assert tool_names == ["web_search", "db_insert", "db_find"]
+    db_find = next(t for t in agent.tools if t.name == "db_find")
+    assert db_find.condition == 'param.collection == "public"'
+
+
+def test_mcp_servers_dedup_by_name(tmp_path):
+    write_file(
+        tmp_path / "agents" / "_defaults.yaml",
+        """
+        version: "1.0"
+        type: llm
+        model: openai/gpt-5.2
+        system_prompt: "Default prompt."
+        mcp_servers:
+          - name: shared
+            url: https://mcp.example.com/shared
+          - name: kept
+            url: https://mcp.example.com/kept
+        """,
+    )
+    write_file(
+        tmp_path / "agents" / "assistant.yaml",
+        """
+        version: "1.0"
+        name: assistant
+        description: "Overrides shared MCP server URL."
+        mcp_servers:
+          - name: shared
+            url: https://mcp.example.com/shared-override
+          - name: extra
+            url: https://mcp.example.com/extra
+        """,
+    )
+
+    agent = ProjectLoader(str(tmp_path)).load_agent("assistant")
+
+    by_name = {s.name: s for s in agent.config.mcp_servers}
+    assert set(by_name) == {"shared", "kept", "extra"}
+    assert by_name["shared"].url == "https://mcp.example.com/shared-override"
+
+
+def test_database_collections_dict_deep_merge(tmp_path):
+    write_file(
+        tmp_path / "agents" / "_defaults.yaml",
+        """
+        version: "1.0"
+        type: llm
+        model: openai/gpt-5.2
+        system_prompt: "Default prompt."
+        database:
+          collections:
+            audit_log:
+              prevent_delete: true
+              prevent_write: false
+        """,
+    )
+    write_file(
+        tmp_path / "agents" / "assistant.yaml",
+        """
+        version: "1.0"
+        name: assistant
+        description: "Adds its own collection."
+        database:
+          collections:
+            orders:
+              prevent_write: true
+        """,
+    )
+
+    agent = ProjectLoader(str(tmp_path)).load_agent("assistant")
+
+    collections = agent.config.database.collections
+    assert set(collections) == {"audit_log", "orders"}
+    assert collections["audit_log"].prevent_delete is True
+    assert collections["audit_log"].prevent_write is False
+    assert collections["orders"].prevent_write is True
+
+
+def test_defaults_file_is_not_loaded_as_agent(tmp_path):
+    write_file(
+        tmp_path / "agents" / "_defaults.yaml",
+        """
+        version: "1.0"
+        type: llm
+        model: openai/gpt-5.2
+        system_prompt: "Default prompt."
+        """,
+    )
+    write_file(
+        tmp_path / "agents" / "assistant.yaml",
+        """
+        version: "1.0"
+        name: assistant
+        description: "Only real agent."
+        """,
+    )
+
+    loader = ProjectLoader(str(tmp_path))
+    agents = loader.load_agents()
+
+    assert [a.config.name for a in agents] == ["assistant"]
+    assert loader._load_errors == []
+
+
+def test_defaults_with_agent_identity_fields_is_load_error(tmp_path):
+    write_file(
+        tmp_path / "agents" / "_defaults.yaml",
+        """
+        version: "1.0"
+        name: should-not-be-here
+        type: llm
+        model: openai/gpt-5.2
+        """,
+    )
+    write_file(
+        tmp_path / "agents" / "assistant.yaml",
+        """
+        version: "1.0"
+        name: assistant
+        description: "Defaults file is broken."
+        """,
+    )
+
+    loader = ProjectLoader(str(tmp_path))
+    agents = loader.load_agents()
+
+    assert agents == []
+    assert len(loader._load_errors) == 1
+    err = loader._load_errors[0]
+    assert "agents/_defaults.yaml" in err
+    assert "agent-identity fields" in err
+    assert "name" in err
+
+
+def test_agent_missing_required_fields_errors_even_when_defaults_supply_them(tmp_path):
+    write_file(
+        tmp_path / "agents" / "_defaults.yaml",
+        """
+        version: "1.0"
+        type: llm
+        model: openai/gpt-5.2
+        """,
+    )
+    write_file(
+        tmp_path / "agents" / "broken.yaml",
+        """
+        version: "1.0"
+        description: "Missing name."
+        """,
+    )
+
+    loader = ProjectLoader(str(tmp_path))
+    agents = loader.load_agents()
+
+    assert agents == []
+    assert len(loader._load_errors) == 1
+    assert "missing required field" in loader._load_errors[0]
+    assert "name" in loader._load_errors[0]
+
+
+def test_defaults_apply_across_multiple_agents_in_same_dir(tmp_path):
+    write_file(
+        tmp_path / "agents" / "process" / "_defaults.yaml",
+        """
+        version: "1.0"
+        type: llm
+        model: openai/gpt-5.2
+        system_prompt: "Default prompt."
+        """,
+    )
+    write_file(
+        tmp_path / "agents" / "process" / "a.yaml",
+        """
+        version: "1.0"
+        name: process-a
+        description: "Agent A."
+        """,
+    )
+    write_file(
+        tmp_path / "agents" / "process" / "b.yaml",
+        """
+        version: "1.0"
+        name: process-b
+        description: "Agent B."
+        """,
+    )
+
+    loader = ProjectLoader(str(tmp_path))
+    agents = {a.config.name: a for a in loader.load_agents()}
+
+    assert agents["process-a"].config.model == "openai/gpt-5.2"
+    assert agents["process-b"].config.model == "openai/gpt-5.2"
+    assert loader._load_errors == []
+
+
+def test_sequential_agents_list_concat_dedup(tmp_path):
+    write_file(
+        tmp_path / "agents" / "_defaults.yaml",
+        """
+        version: "1.0"
+        type: sequential
+        agents:
+          - first
+          - shared
+        """,
+    )
+    write_file(
+        tmp_path / "agents" / "pipeline.yaml",
+        """
+        version: "1.0"
+        name: pipeline
+        description: "Pipeline appends to defaults."
+        agents:
+          - shared
+          - last
+        """,
+    )
+
+    agent = ProjectLoader(str(tmp_path)).load_agent("pipeline")
+
+    assert agent.config.agents == ["first", "shared", "last"]

@@ -71,6 +71,7 @@ Browse available templates at [connic.co/agents](https://connic.co/agents).
 ```text
 my-agents/
 ├── agents/
+│   ├── _defaults.yaml          # optional — shared defaults for every agent
 │   └── support-assistant.yaml
 ├── tools/
 │   └── billing.py
@@ -79,6 +80,8 @@ my-agents/
 ├── schemas/
 └── requirements.txt
 ```
+
+`_defaults.yaml` is optional and can live at any depth under `agents/`. Its values are merged into every agent at that directory level and below (deeper layers and the agent file itself override earlier ones). Lists like `tools`, `mcp_servers`, and `guardrails.input/output` concat with dedup-by-ref so children add to inherited entries. `name` and `description` are not allowed in defaults.
 
 ### `agents/support-assistant.yaml`
 

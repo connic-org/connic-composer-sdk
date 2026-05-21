@@ -1917,6 +1917,7 @@ def test_test_command_runs_suite_against_default_test_environment_and_filters_js
         "    expected_result: status == \"completed\"\n"
     )
     requests = []
+    requested_filter = None
 
     class Response:
         def __init__(self, status_code, payload=None, text=""):
@@ -1940,6 +1941,7 @@ def test_test_command_runs_suite_against_default_test_environment_and_filters_js
             return False
 
         def get(self, path):
+            nonlocal requested_filter
             requests.append(("GET", path, None))
             if path == "/projects/proj_123/environments/":
                 return Response(
@@ -1963,31 +1965,38 @@ def test_test_command_runs_suite_against_default_test_environment_and_filters_js
                         "status": "passed",
                         "phase": "done",
                         "cases": [
-                            {
-                                "agent_name": "support",
-                                "test_name": "handles_refund_request",
-                                "passed": True,
-                                "successes": 3,
-                                "runs": 3,
-                                "success_threshold": 100,
-                            },
-                            {
-                                "agent_name": "support",
-                                "test_name": "handles_shipping_question",
-                                "passed": True,
-                                "successes": 3,
-                                "runs": 3,
-                                "success_threshold": 100,
-                            },
+                            case
+                            for case in [
+                                {
+                                    "agent_name": "support",
+                                    "test_name": "handles_refund_request",
+                                    "passed": True,
+                                    "successes": 3,
+                                    "runs": 3,
+                                    "success_threshold": 100,
+                                },
+                                {
+                                    "agent_name": "support",
+                                    "test_name": "handles_shipping_question",
+                                    "passed": True,
+                                    "successes": 3,
+                                    "runs": 3,
+                                    "success_threshold": 100,
+                                },
+                            ]
+                            if requested_filter in case["test_name"]
                         ],
                     },
                 )
             raise AssertionError(f"Unexpected GET {path}")
 
         def post(self, path, json=None):
+            nonlocal requested_filter
             requests.append(("POST", path, json))
             assert path == "/projects/proj_123/test-runs"
             assert json["environment_id"] == "env_staging_test"
+            assert json["test_filter"] == "refund"
+            requested_filter = json["test_filter"]
             tar_data = base64.b64decode(json["files_data"])
             with tarfile.open(fileobj=io.BytesIO(tar_data), mode="r:gz") as tar:
                 assert sorted(tar.getnames()) == ["agents/support.yaml", "tests/support.yaml"]

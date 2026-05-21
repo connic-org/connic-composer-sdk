@@ -80,6 +80,9 @@ class ProjectLoader:
         self._loaded_guardrails: Dict[str, Optional[CustomGuardrail]] = {}
         # Cache for loaded tool hooks
         self._loaded_tool_hooks: Dict[str, Optional[ToolHook]] = {}
+        # Cache for parsed _defaults.yaml files, keyed by their containing directory.
+        # None means we've checked and the directory has no defaults file.
+        self._defaults_cache: Dict[Path, Optional[Dict[str, Any]]] = {}
         # Errors accumulated during loading (checked by linter)
         self._load_errors: List[str] = []
         # Warnings for api: refs that can't be validated locally (no registry)
@@ -100,6 +103,10 @@ class ProjectLoader:
             for agent_file in self.agents_dir.rglob(pattern):
                 relative_parts = agent_file.relative_to(self.agents_dir).parts
                 if any(part.startswith(".") for part in relative_parts):
+                    continue
+
+                # _defaults.yaml files provide cascading defaults, not agents.
+                if agent_file.stem == "_defaults":
                     continue
 
                 resolved_path = agent_file.resolve()
@@ -234,14 +241,168 @@ class ProjectLoader:
 
         return resolved_tools
 
+    # Keys that must be set on each agent file itself.
+    _AGENT_REQUIRED_KEYS = ("name", "description", "version")
+    # Keys that may not appear in _defaults.yaml because they are per-agent identity
+    # (allowing them would let multiple agents inherit the same name or description).
+    # `version` is permitted in defaults so projects can pin a schema version once.
+    _DEFAULTS_FORBIDDEN_KEYS = ("name", "description")
+
+    def _load_defaults_for_directory(self, directory: Path) -> Optional[Dict[str, Any]]:
+        """Load the _defaults.yaml (or .yml) for one directory, if present. Cached per-loader."""
+        if directory in self._defaults_cache:
+            return self._defaults_cache[directory]
+
+        defaults_path: Optional[Path] = None
+        for candidate in (directory / "_defaults.yaml", directory / "_defaults.yml"):
+            if candidate.is_file():
+                defaults_path = candidate
+                break
+
+        if defaults_path is None:
+            self._defaults_cache[directory] = None
+            return None
+
+        with open(defaults_path, "r") as f:
+            raw = yaml.safe_load(f)
+
+        if raw is None:
+            raw = {}
+
+        rel = defaults_path.relative_to(self.project_root).as_posix()
+
+        if not isinstance(raw, dict):
+            raise ValueError(
+                f"{rel}: defaults file must be a YAML mapping, got {type(raw).__name__}"
+            )
+
+        forbidden = sorted(k for k in self._DEFAULTS_FORBIDDEN_KEYS if k in raw)
+        if forbidden:
+            raise ValueError(
+                f"{rel}: _defaults.yaml may not contain agent-identity fields "
+                f"({', '.join(forbidden)}). These must be set on each agent file."
+            )
+
+        self._defaults_cache[directory] = raw
+        return raw
+
+    def _load_defaults_chain(self, agent_file: Path) -> List[Dict[str, Any]]:
+        """Return the chain of _defaults dicts from agents_dir down to the agent file's parent."""
+        rel_parent_parts = agent_file.parent.relative_to(self.agents_dir).parts
+        directories = [self.agents_dir]
+        current = self.agents_dir
+        for part in rel_parent_parts:
+            current = current / part
+            directories.append(current)
+
+        chain: List[Dict[str, Any]] = []
+        for directory in directories:
+            defaults = self._load_defaults_for_directory(directory)
+            if defaults:
+                chain.append(defaults)
+        return chain
+
+    def _merge_agent_dict(self, base: Dict[str, Any], overlay: Dict[str, Any], path: str = "") -> Dict[str, Any]:
+        """Deep-merge two raw agent config dicts. Overlay wins on scalar collisions."""
+        result: Dict[str, Any] = dict(base)
+        for key, overlay_value in overlay.items():
+            if key not in result:
+                result[key] = overlay_value
+                continue
+            base_value = result[key]
+            current_path = f"{path}.{key}" if path else key
+            result[key] = self._merge_values(base_value, overlay_value, current_path)
+        return result
+
+    def _merge_values(self, base: Any, overlay: Any, path: str) -> Any:
+        if isinstance(base, list) and isinstance(overlay, list):
+            return self._merge_list(base, overlay, path)
+        if isinstance(base, dict) and isinstance(overlay, dict):
+            return self._merge_agent_dict(base, overlay, path)
+        return overlay
+
+    def _merge_list(self, base: List[Any], overlay: List[Any], path: str) -> List[Any]:
+        if path in ("tools", "discoverable_tools", "approval.tools"):
+            return self._merge_tool_list(base, overlay)
+        if path == "mcp_servers":
+            return self._merge_keyed_list(base, overlay, key="name")
+        if path in ("guardrails.input", "guardrails.output"):
+            return self._merge_keyed_list(base, overlay, key="name")
+        if path == "agents":
+            # Sequential agents list of strings: dedup by string, preserving order.
+            seen: List[Any] = []
+            for item in list(base) + list(overlay):
+                if item not in seen:
+                    seen.append(item)
+            return seen
+        return list(overlay)
+
+    @staticmethod
+    def _tool_entry_ref(entry: Any) -> Optional[str]:
+        if isinstance(entry, str):
+            return entry
+        if isinstance(entry, dict) and len(entry) == 1:
+            return next(iter(entry.keys()))
+        return None
+
+    def _merge_tool_list(self, base: List[Any], overlay: List[Any]) -> List[Any]:
+        overlay_refs = {self._tool_entry_ref(e) for e in overlay if self._tool_entry_ref(e) is not None}
+        merged: List[Any] = []
+        for entry in base:
+            ref = self._tool_entry_ref(entry)
+            if ref is not None and ref in overlay_refs:
+                continue
+            merged.append(entry)
+        merged.extend(overlay)
+        return merged
+
+    @staticmethod
+    def _merge_keyed_list(base: List[Any], overlay: List[Any], key: str) -> List[Any]:
+        def name_of(entry: Any) -> Optional[str]:
+            if isinstance(entry, dict):
+                value = entry.get(key)
+                return value if isinstance(value, str) else None
+            return None
+
+        overlay_names = {name_of(e) for e in overlay if name_of(e) is not None}
+        merged: List[Any] = []
+        for entry in base:
+            n = name_of(entry)
+            if n is not None and n in overlay_names:
+                continue
+            merged.append(entry)
+        merged.extend(overlay)
+        return merged
+
     def _load_single_agent(self, agent_file: Path) -> Agent:
         """Load a single agent from a YAML file."""
         with open(agent_file, "r") as f:
             config_data = yaml.safe_load(f)
-        
+
         if not config_data:
             raise ValueError(f"Empty configuration in {agent_file.name}")
-        
+
+        if not isinstance(config_data, dict):
+            raise ValueError(f"Agent configuration must be a YAML mapping, got {type(config_data).__name__}")
+
+        # Identity fields must be present in the agent file itself — they cannot
+        # be inherited from a _defaults.yaml.
+        missing_identity = [k for k in self._AGENT_REQUIRED_KEYS if k not in config_data]
+        if missing_identity:
+            raise ValueError(
+                f"Agent file is missing required field(s): {', '.join(missing_identity)}. "
+                "These must be set on the agent itself and cannot come from _defaults.yaml."
+            )
+
+        # Apply cascading _defaults.yaml files (root → deepest), then the agent's
+        # own values on top.
+        defaults_chain = self._load_defaults_chain(agent_file)
+        if defaults_chain:
+            merged: Dict[str, Any] = {}
+            for defaults in defaults_chain:
+                merged = self._merge_agent_dict(merged, defaults)
+            config_data = self._merge_agent_dict(merged, config_data)
+
         # Handle retry_options as nested object
         if "retry_options" in config_data and config_data["retry_options"]:
             config_data["retry_options"] = RetryOptions(**config_data["retry_options"])
