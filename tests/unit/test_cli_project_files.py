@@ -2237,7 +2237,11 @@ def test_test_command_starts_session_uploads_files_and_stops_when_server_ends_se
         "tools:\n"
         "  - tickets.lookup_ticket\n"
     )
-    (tmp_path / "tools" / "tickets.py").write_text("def lookup_ticket(ticket_id: str) -> dict:\n    return {'id': ticket_id}\n")
+    (tmp_path / "tools" / "tickets.py").write_text(
+        "import definitely_missing_runtime_dependency\n\n"
+        "def lookup_ticket(ticket_id: str) -> dict:\n"
+        "    return {'id': ticket_id}\n"
+    )
     (tmp_path / "requirements.txt").write_text("httpx>=0.25\n")
 
     requests = []

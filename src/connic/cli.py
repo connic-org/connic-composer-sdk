@@ -980,7 +980,9 @@ def _compute_local_coverage(project_root: Path) -> dict:
             except Exception as e:
                 parse_error = str(e)
 
-        if agent_tools:
+        if parse_error is not None:
+            pct = None
+        elif agent_tools:
             pct = 100.0 * len(covered) / len(agent_tools)
         else:
             pct = 100.0 if test_file_path is not None else 0.0
@@ -996,7 +998,8 @@ def _compute_local_coverage(project_root: Path) -> dict:
             "parse_error": parse_error,
         })
 
-    overall = sum(r["percent"] for r in rows) / len(rows) if rows else 0.0
+    valid_rows = [r for r in rows if r.get("parse_error") is None]
+    overall = sum(r["percent"] for r in valid_rows) / len(valid_rows) if valid_rows else 0.0
     return {"agents": rows, "overall": overall}
 
 
@@ -1014,6 +1017,11 @@ def _render_coverage(report: dict) -> None:
     if not rows:
         _warn("No agents found.")
         return
+
+    parse_errors = [r for r in rows if r.get("parse_error")]
+    if parse_errors:
+        details = "; ".join(f"{r['name']}: {r['parse_error']}" for r in parse_errors)
+        _fail_and_exit(f"Test files failed to parse: {details}")
 
     table_rows: list[list[str]] = []
     for r in rows:
@@ -1034,13 +1042,6 @@ def _render_coverage(report: dict) -> None:
         _step("Uncovered tools:")
         for r in gaps:
             _info(f"{r['name']}: {', '.join(r['uncovered_tools'])}")
-
-    parse_errors = [r for r in rows if r.get("parse_error")]
-    if parse_errors:
-        click.echo()
-        _step("Test files that failed to parse (counted as 0%):")
-        for r in parse_errors:
-            _err(f"{r['name']}: {r['parse_error']}")
 
     click.echo()
     overall = report["overall"]
@@ -1179,7 +1180,7 @@ def dev(name: str, api_url: str, api_key: str, project_id: str):
     # Validate local project
     _step("Validating project files...")
     try:
-        loader = ProjectLoader(".")
+        loader = ProjectLoader(".", validation_only=True)
         agents = loader.load_agents()
         if not agents:
             _fail_and_exit("No agents found. Run `connic init` first.")
@@ -1786,7 +1787,7 @@ def _parse_login_token(token: str) -> tuple[str, str]:
 # =============================================================================
 
 @main.command()
-@click.option("--env", help="Target environment ID (get from Project Settings → Environments)")
+@click.option("--env", help="Target environment ID (get from Project Settings → Git & Environments)")
 @click.option("--api-url", envvar="CONNIC_API_URL", default=DEFAULT_API_URL, help="Connic API URL")
 @click.option("--api-key", envvar="CONNIC_API_KEY", default=None, help="Connic API key")
 @click.option("--project-id", envvar="CONNIC_PROJECT_ID", default=None, help="Connic project ID")
@@ -1807,7 +1808,7 @@ def deploy(env: str | None, api_url: str, api_key: str | None, project_id: str |
     
     \b
     Get your Environment ID from:
-        Project Settings → Environments → Copy ID button
+        Project Settings → Git & Environments → Copy ID button
     
     \b
     Environment variables:
@@ -1873,7 +1874,7 @@ def deploy(env: str | None, api_url: str, api_key: str | None, project_id: str |
             if project.get("git_provider"):
                 _err("This project has a git repository connected.")
                 _info("CLI deploy only works for projects without git.")
-                _info("Use git push to deploy, or disconnect git in project settings.")
+                _info("Use git push to deploy, or disconnect git in Project Settings → Git & Environments.")
                 sys.exit(1)
 
             _ok(f"Project: {project['name']}")
@@ -1896,7 +1897,7 @@ def deploy(env: str | None, api_url: str, api_key: str | None, project_id: str |
                     for e in standard_envs:
                         default_marker = " (default)" if e.get("is_default") else ""
                         _info(f"  {e['name']}: {e['id']}{default_marker}")
-                    _info("Copy the ID from Project Settings → Environments")
+                    _info("Copy the ID from Project Settings → Git & Environments")
                     sys.exit(1)
             else:
                 target_env = next((e for e in standard_envs if e.get("is_default")), None) or standard_envs[0]

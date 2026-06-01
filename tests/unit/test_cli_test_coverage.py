@@ -306,14 +306,39 @@ def test_tool_agent_without_test_file_is_zero_coverage(tmp_path):
     assert agent["percent"] == 0.0
 
 
-def test_unparseable_test_file_is_recorded_as_zero_coverage_with_error(tmp_path):
+def test_unparseable_test_file_is_recorded_without_counting_in_overall(tmp_path):
     _write_calculator_tool(tmp_path)
+    _write_llm_agent(tmp_path, "covered-agent", tools=["calculator.subtract"])
+    _write_test_file(tmp_path, "covered-agent", [["calculator.subtract"]])
     _write_llm_agent(tmp_path, "math-agent", tools=["calculator.add"])
     _write(tmp_path / "tests" / "math-agent.yaml", "this: is: not: valid: yaml: at all")
 
+    report = cli._compute_local_coverage(tmp_path)
+    by_name = {r["name"]: r for r in report["agents"]}
+    assert by_name["math-agent"]["has_tests"] is True
+    assert by_name["math-agent"]["percent"] is None
+    assert by_name["math-agent"]["parse_error"] is not None
+    assert report["overall"] == 100.0
+
+
+def test_unparseable_test_file_for_agent_without_tools_is_not_counted(tmp_path):
+    _write(
+        tmp_path / "agents" / "noop.yaml",
+        """
+        version: "1.0"
+        name: noop
+        type: llm
+        model: openai/gpt-5.2
+        description: ""
+        system_prompt: "Just respond."
+        """,
+    )
+    _write(tmp_path / "tests" / "noop.yaml", "this: is: not: valid: yaml: at all")
+
     [agent] = cli._compute_local_coverage(tmp_path)["agents"]
     assert agent["has_tests"] is True
-    assert agent["percent"] == 0.0
+    assert agent["tools_total"] == 0
+    assert agent["percent"] is None
     assert agent["parse_error"] is not None
 
 
@@ -345,6 +370,22 @@ def test_test_command_with_coverage_flag_runs_offline_without_credentials(tmp_pa
     assert "math-agent" in result.output
     assert "100.0%" in result.output
     assert "Overall coverage" in result.output
+
+
+def test_test_command_with_coverage_stops_on_unparseable_test_file(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    _write_calculator_tool(tmp_path)
+    _write_llm_agent(tmp_path, "math-agent", tools=["calculator.add"])
+    _write(tmp_path / "tests" / "math-agent.yaml", "this: is: not: valid: yaml: at all")
+    monkeypatch.delenv("CONNIC_API_KEY", raising=False)
+    monkeypatch.delenv("CONNIC_PROJECT_ID", raising=False)
+
+    result = CliRunner().invoke(cli.main, ["test", "--coverage"])
+
+    assert result.exit_code != 0
+    assert "Test files failed to parse" in result.output
+    assert "math-agent" in result.output
+    assert "Overall coverage" not in result.output
 
 
 def test_test_command_with_coverage_and_json_emits_machine_readable_report(tmp_path, monkeypatch):

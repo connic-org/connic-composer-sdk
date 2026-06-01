@@ -1,5 +1,6 @@
 """Tests for connic.core – models, validators, and tool execution."""
 import asyncio
+import warnings
 
 import pytest
 
@@ -215,6 +216,25 @@ def test_agent_config_mcp_servers_limit():
                 for i in range(51)
             ],
         ))
+
+
+@pytest.mark.parametrize(("reasoning", "expected_effort"), [(True, "auto"), (False, "off")])
+def test_agent_config_migrates_legacy_reasoning_flag(reasoning, expected_effort):
+    with pytest.warns(DeprecationWarning, match="AgentConfig.reasoning is deprecated"):
+        cfg = AgentConfig(**_llm_agent(reasoning=reasoning))
+
+    assert cfg.reasoning_effort == expected_effort
+    assert cfg.reasoning is None
+
+
+def test_agent_config_reasoning_effort_takes_precedence_over_legacy_reasoning():
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        cfg = AgentConfig(**_llm_agent(reasoning=False, reasoning_effort="high"))
+
+    assert caught == []
+    assert cfg.reasoning_effort == "high"
+    assert cfg.reasoning is None
 
 
 def test_mcp_server_config_bridge_default_none():

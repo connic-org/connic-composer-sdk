@@ -63,6 +63,70 @@ def test_test_file_parses_realistic_yaml_and_resolves_defaults():
     assert second["expected_no_tool_calls"] == []
 
 
+def test_test_file_resolves_nested_child_agent_expectations():
+    doc = yaml.safe_load(
+        """
+        tests:
+          - name: routes_refund_to_child_agents
+            builder: create_refund_case
+            builder_args:
+              amount_cents: 4200
+            expected_child_agents:
+              refund-specialist:
+                expected_triggered: 2
+                expected_payload: payload.charge_id == context.charge_id
+                expected_result: output.status == "refunded"
+                expected_tool_calls:
+                  - billing.refund
+                  - billing.refund: params.charge_id == context.charge_id
+                expected_no_tool_calls:
+                  - email.send
+                expected_child_agents:
+                  ledger-writer:
+                    expected_payload: payload.refund_id == output.refund_id
+                    expected_tool_calls:
+                      - ledger.record_refund
+              telemetry:
+                expected_triggered: 1
+                expected_payload: payload.event == "refund"
+        """
+    )
+
+    test_file = ConnicTestFile.model_validate(doc)
+
+    resolved = test_file.resolved(test_file.tests[0])
+    assert resolved["expected_child_agents"] == {
+        "refund-specialist": {
+            "expected_triggered": 2,
+            "expected_payload": "payload.charge_id == context.charge_id",
+            "expected_result": 'output.status == "refunded"',
+            "expected_tool_calls": [
+                "billing.refund",
+                {"billing.refund": "params.charge_id == context.charge_id"},
+            ],
+            "expected_no_tool_calls": ["email.send"],
+            "expected_child_agents": {
+                "ledger-writer": {
+                    "expected_triggered": 1,
+                    "expected_payload": "payload.refund_id == output.refund_id",
+                    "expected_result": None,
+                    "expected_tool_calls": ["ledger.record_refund"],
+                    "expected_no_tool_calls": [],
+                    "expected_child_agents": None,
+                }
+            },
+        },
+        "telemetry": {
+            "expected_triggered": 1,
+            "expected_payload": 'payload.event == "refund"',
+            "expected_result": None,
+            "expected_tool_calls": [],
+            "expected_no_tool_calls": [],
+            "expected_child_agents": None,
+        },
+    }
+
+
 def test_test_file_uses_schema_defaults_for_minimal_suite():
     test_file = ConnicTestFile.model_validate(
         {
@@ -145,6 +209,34 @@ def test_expected_tool_calls_reject_invalid_entries(expected_tool_calls):
         )
 
 
+@pytest.mark.parametrize(
+    "expected_tool_calls",
+    [
+        [{"billing.refund": "invocations >= 1", "ledger.record": "invocations >= 1"}],
+        [{"": "invocations >= 1"}],
+        [{"billing.refund": "   "}],
+        [""],
+    ],
+)
+def test_child_agent_expected_tool_calls_reject_invalid_entries(expected_tool_calls):
+    with pytest.raises(ValidationError):
+        ConnicTestFile.model_validate(
+            {
+                "tests": [
+                    {
+                        "name": "routes_refund",
+                        "payload": '{"charge_id": "ch_123"}',
+                        "expected_child_agents": {
+                            "refund-specialist": {
+                                "expected_tool_calls": expected_tool_calls,
+                            }
+                        },
+                    }
+                ]
+            }
+        )
+
+
 def test_tests_list_must_not_be_empty():
     with pytest.raises(ValidationError):
         ConnicTestFile.model_validate({"tests": []})
@@ -194,6 +286,13 @@ def test_builder_strips_trailing_py_suffix():
         {"tests": [{"name": "t", "builder": "make_payload.py"}]}
     )
     assert test_file.tests[0].builder == "make_payload"
+
+
+def test_explicit_null_builder_is_allowed_with_payload():
+    test_file = ConnicTestFile.model_validate(
+        {"tests": [{"name": "t", "payload": "classify this", "builder": None}]}
+    )
+    assert test_file.tests[0].builder is None
 
 
 def test_test_case_requires_payload_or_builder():
