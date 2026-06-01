@@ -59,6 +59,29 @@ Example::
         expected_tool_calls:
           - billing.refund: params.charge_id == context.charge_id
 
+      # Mock custom file tools instead of letting them really run.
+      # tests/mocks/<name>.py exposes hierarchical mock_* functions; the
+      # runner substitutes the most specific match for each tool the agent
+      # calls. For the ref data.customer.add_customer it tries, in order:
+      #   mock_data_customer_add_customer  (exact function)
+      #   mock_data_customer              (everything in data/customer.py)
+      #   mock_data                       (everything under data/)
+      #   mock                            (every custom file tool)
+      # Each is called as mock(tool_name, params, context) and its return
+      # value replaces the real tool result. The call is still recorded, so
+      # expected_tool_calls assertions keep working against mocked tools.
+      # Predefined tools (db_find, web_search, trigger_agent, ...) and api:
+      # tools always run for real and are never mocked. Set strict_mocks
+      # (here, or in defaults) to fail the case if the agent calls any tool
+      # that wasn't served by a mock -- a guarantee the run never touched a
+      # real tool.
+      - name: handles_add_without_touching_the_db
+        payload: '{"name": "Ada"}'
+        mocks: customer_mocks
+        strict_mocks: true
+        expected_tool_calls:
+          - data.customer.add_customer
+
       # Assert on agents triggered via the ``trigger_agent`` tool. In the
       # deploy-gate test container, ``trigger_agent`` runs the child agent
       # in-process, so its output and tool calls are captured for assertions.
@@ -135,6 +158,15 @@ class TestDefaults(BaseModel):
         ge=1,
         le=3600,
         description="Per-run wall-clock timeout in seconds.",
+    )
+    strict_mocks: bool = Field(
+        default=False,
+        description=(
+            "When true, a case fails if the agent calls any tool that was not "
+            "served by a mock (see the case-level ``mocks`` field). Use it to "
+            "guarantee a run touched only mocked tools and never executed a "
+            "real one. Per-case ``strict_mocks`` overrides this default."
+        ),
     )
 
 
@@ -276,6 +308,29 @@ class TestCase(BaseModel):
         default=None,
         description="Arbitrary kwargs forwarded to the builder via ``test_details['builder_args']``.",
     )
+    mocks: Optional[str] = Field(
+        default=None,
+        description=(
+            "Name of a Python module under ``tests/mocks/`` (with or without "
+            "the ``.py`` suffix) holding ``mock_*`` functions that stand in for "
+            "custom file tools during the run. For a tool ref like "
+            "``data.customer.add_customer`` the runner picks the most specific "
+            "function defined, trying ``mock_data_customer_add_customer``, then "
+            "``mock_data_customer``, ``mock_data``, and finally ``mock``. Each is "
+            "called as ``mock(tool_name, params, context)`` and its return value "
+            "is substituted for the real tool result. Mocked calls are still "
+            "validated against the real tool's signature (required args, types, "
+            "unknown args), so a malformed call fails the case. Predefined and "
+            "``api:`` tools always run for real."
+        ),
+    )
+    strict_mocks: Optional[bool] = Field(
+        default=None,
+        description=(
+            "Per-case override for ``defaults.strict_mocks``. When true, the "
+            "case fails if the agent calls any tool not served by a mock."
+        ),
+    )
     runs: Optional[int] = Field(default=None, ge=1, le=100)
     success_threshold: Optional[int] = Field(default=None, ge=1, le=100)
     timeout_s: Optional[int] = Field(default=None, ge=1, le=3600)
@@ -345,6 +400,14 @@ class TestCase(BaseModel):
         # Strip a trailing .py so the runner can look up the module name.
         return v[:-3] if v.endswith(".py") else v
 
+    @field_validator("mocks")
+    @classmethod
+    def _validate_mocks(cls, v: Optional[str]) -> Optional[str]:
+        if v is None:
+            return v
+        _validate_safe_ref(v, "mocks")
+        return v[:-3] if v.endswith(".py") else v
+
     @model_validator(mode="after")
     def _payload_or_builder(self) -> "TestCase":
         if self.payload is None and self.builder is None:
@@ -382,6 +445,10 @@ class TestFile(BaseModel):
             "files": list(case.files),
             "builder": case.builder,
             "builder_args": dict(case.builder_args) if case.builder_args else None,
+            "mocks": case.mocks,
+            "strict_mocks": (
+                case.strict_mocks if case.strict_mocks is not None else self.defaults.strict_mocks
+            ),
             "runs": case.runs if case.runs is not None else self.defaults.runs,
             "success_threshold": (
                 case.success_threshold if case.success_threshold is not None else self.defaults.success_threshold

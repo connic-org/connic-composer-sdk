@@ -46,6 +46,8 @@ def test_test_file_parses_realistic_yaml_and_resolves_defaults():
         "files": [],
         "builder": None,
         "builder_args": None,
+        "mocks": None,
+        "strict_mocks": False,
         "runs": 5,
         "success_threshold": 80,
         "timeout_s": 60,
@@ -147,6 +149,8 @@ def test_test_file_uses_schema_defaults_for_minimal_suite():
         "files": [],
         "builder": None,
         "builder_args": None,
+        "mocks": None,
+        "strict_mocks": False,
         "runs": 1,
         "success_threshold": 100,
         "timeout_s": 120,
@@ -351,6 +355,52 @@ def test_builder_rejects_unsafe_names(bad_builder):
         ConnicTestFile.model_validate(
             {"tests": [{"name": "t", "builder": bad_builder}]}
         )
+
+
+def test_mocks_parses_and_strips_trailing_py_suffix():
+    test_file = ConnicTestFile.model_validate(
+        {"tests": [{"name": "t", "payload": "p", "mocks": "customer_mocks.py"}]}
+    )
+    assert test_file.tests[0].mocks == "customer_mocks"
+    assert test_file.resolved(test_file.tests[0])["mocks"] == "customer_mocks"
+
+
+@pytest.mark.parametrize(
+    "bad_mocks",
+    [
+        "../escape",
+        "subdir/mocks",
+        "back\\slash",
+        "with space",
+    ],
+)
+def test_mocks_rejects_unsafe_names(bad_mocks):
+    with pytest.raises(ValidationError):
+        ConnicTestFile.model_validate(
+            {"tests": [{"name": "t", "payload": "p", "mocks": bad_mocks}]}
+        )
+
+
+def test_strict_mocks_defaults_to_false():
+    test_file = ConnicTestFile.model_validate(
+        {"tests": [{"name": "t", "payload": "p"}]}
+    )
+    assert test_file.resolved(test_file.tests[0])["strict_mocks"] is False
+
+
+def test_strict_mocks_inherits_from_defaults():
+    test_file = ConnicTestFile.model_validate(
+        {
+            "defaults": {"strict_mocks": True},
+            "tests": [
+                {"name": "inherits", "payload": "p"},
+                {"name": "opts_out", "payload": "p", "strict_mocks": False},
+            ],
+        }
+    )
+    by_name = {c.name: test_file.resolved(c) for c in test_file.tests}
+    assert by_name["inherits"]["strict_mocks"] is True
+    assert by_name["opts_out"]["strict_mocks"] is False
 
 
 def test_resolved_isolates_builder_args_from_caller():
