@@ -100,6 +100,97 @@ def test_langchain_migration_generates_agent_yaml_and_extracted_tools(tmp_path):
     assert any("Custom guardrails are not migrated automatically" in note for note in report_notes)
 
 
+def test_langchain_migration_resolves_chat_model_assignment_keyword(tmp_path):
+    source = tmp_path / "langchain-chat-model"
+    destination = tmp_path / "connic-app"
+    write(
+        source / "agent.py",
+        '''
+        from langchain.agents import create_agent
+        from langchain_openai import ChatOpenAI
+
+
+        llm = ChatOpenAI(model="gpt-4.1-mini", temperature=0)
+
+
+        def lookup_invoice(invoice_id: str) -> dict:
+            return {"invoice_id": invoice_id, "status": "paid"}
+
+
+        support_agent = create_agent(
+            model=llm,
+            tools=[lookup_invoice],
+            prompt="Resolve invoice questions with billing context.",
+            name="Billing Support",
+        )
+        ''',
+    )
+
+    framework, detection_notes, agents, module_infos = migrate._build_migration_candidates(source)
+    migrate._generate_migrated_project(
+        source,
+        destination,
+        framework,
+        detection_notes,
+        agents,
+        module_infos,
+        no_scaffold,
+    )
+
+    agent_yaml = yaml.safe_load((destination / "agents" / "billing-support.yaml").read_text())
+
+    assert framework == "langchain"
+    assert agent_yaml["model"] == "openai/gpt-4.1-mini"
+    assert agent_yaml["system_prompt"] == "Resolve invoice questions with billing context."
+    assert agent_yaml["tools"] == ["agent.lookup_invoice"]
+
+
+def test_langchain_migration_reports_wildcard_imported_tools_without_crashing(tmp_path):
+    source = tmp_path / "langchain-wildcard-import"
+    destination = tmp_path / "connic-app"
+    write(
+        source / "tools.py",
+        '''
+        def lookup_invoice(invoice_id: str) -> dict:
+            return {"invoice_id": invoice_id, "status": "paid"}
+        ''',
+    )
+    agent_source = dedent(
+        '''
+        from langchain.agents import create_agent
+        from tools import *
+
+
+        support_agent = create_agent(
+            model="openai:gpt-4o-mini",
+            tools=[lookup_invoice],
+            prompt="Resolve invoice questions with billing context.",
+            name="Billing Support",
+        )
+        '''
+    ).strip().encode() + b"\n# copied from legacy editor: \xff\n"
+    (source / "agent.py").write_bytes(agent_source)
+
+    framework, detection_notes, agents, module_infos = migrate._build_migration_candidates(source)
+    migrate._generate_migrated_project(
+        source,
+        destination,
+        framework,
+        detection_notes,
+        agents,
+        module_infos,
+        no_scaffold,
+    )
+
+    agent_yaml = yaml.safe_load((destination / "agents" / "billing-support.yaml").read_text())
+    report = (destination / "MIGRATION_REPORT.md").read_text()
+
+    assert framework == "langchain"
+    assert agent_yaml["model"] == "openai/gpt-4o-mini"
+    assert "tools" not in agent_yaml
+    assert "Could not resolve tool reference 'lookup_invoice' in agent.py." in report
+
+
 def test_migrate_command_rejects_destination_inside_source_project(tmp_path):
     source = tmp_path / "langchain-app"
     source.mkdir()

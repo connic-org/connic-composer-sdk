@@ -365,6 +365,14 @@ def test_mocks_parses_and_strips_trailing_py_suffix():
     assert test_file.resolved(test_file.tests[0])["mocks"] == "customer_mocks"
 
 
+def test_explicit_null_mocks_is_allowed_with_payload():
+    test_file = ConnicTestFile.model_validate(
+        {"tests": [{"name": "t", "payload": "p", "mocks": None}]}
+    )
+    assert test_file.tests[0].mocks is None
+    assert test_file.resolved(test_file.tests[0])["mocks"] is None
+
+
 @pytest.mark.parametrize(
     "bad_mocks",
     [
