@@ -537,6 +537,57 @@ def test_adk_migration_maps_agent_tool_and_reports_remaining_wrappers(tmp_path):
     assert "Could not safely migrate dynamic tool expression 'build_dynamic_tool()'." in report
 
 
+def test_adk_agent_tool_with_dynamic_target_still_maps_to_trigger_agent_with_review_note(tmp_path):
+    source = tmp_path / "adk-dynamic-agent-tool"
+    destination = tmp_path / "connic-app"
+    write(
+        source / "root_agent.py",
+        '''
+        from google.adk.agents import Agent
+        from google.adk.tools import AgentTool
+
+
+        def get_escalation_agent():
+            return Agent(
+                name="Escalation Specialist",
+                model="gemini-2.0-flash",
+                instruction="Handle escalations.",
+            )
+
+
+        triage_agent = Agent(
+            name="Triage Agent",
+            model="gemini-2.0-flash",
+            instruction="Triage support requests.",
+            tools=[
+                AgentTool(get_escalation_agent()),
+            ],
+        )
+        ''',
+    )
+
+    framework, detection_notes, agents, module_infos = migrate._build_migration_candidates(source)
+    migrate._generate_migrated_project(
+        source,
+        destination,
+        framework,
+        detection_notes,
+        agents,
+        module_infos,
+        no_scaffold,
+    )
+
+    triage_yaml = yaml.safe_load((destination / "agents" / "triage-agent.yaml").read_text())
+    report = (destination / "MIGRATION_REPORT.md").read_text()
+
+    assert framework == "adk"
+    assert triage_yaml["tools"] == ["trigger_agent"]
+    assert (
+        "Mapped ADK AgentTool wrapper to Connic trigger_agent. "
+        "Review calls to make sure they pass the intended agent_name."
+    ) in report
+
+
 def test_adk_llm_agent_with_sub_agents_gets_trigger_agent(tmp_path):
     source = tmp_path / "adk-router"
     destination = tmp_path / "connic-app"
@@ -665,6 +716,92 @@ def test_adk_yaml_migration_reports_unresolved_tool_references(tmp_path):
     assert agents[0].model == "anthropic/claude-3-5-sonnet"
     assert [tool.ref for tool in agents[0].tool_candidates] == ["query_knowledge"]
     assert agents[0].notes == ["Could not migrate YAML tool reference 'private_tool_name'."]
+
+
+def test_adk_yaml_workflow_migration_links_child_agents(tmp_path):
+    source = tmp_path / "adk-yaml-workflow"
+    destination = tmp_path / "connic-app"
+    write(
+        source / "root_agent.yaml",
+        '''
+        name: Support Flow
+        description: Route support tickets before escalation.
+        sub_agents:
+          - triage_agent
+          - escalation_agent
+        ''',
+    )
+    write(
+        source / "triage_agent.yaml",
+        '''
+        name: Triage Agent
+        model: gemini-2.5-flash
+        instruction: Classify the ticket and decide whether escalation is needed.
+        tools:
+          - query_knowledge
+        ''',
+    )
+    write(
+        source / "escalation_agent.yaml",
+        '''
+        name: Escalation Agent
+        model: claude-3-5-sonnet
+        system_instruction: Resolve high-priority customer escalations.
+        ''',
+    )
+    write(
+        source / "settings.yaml",
+        '''
+        project: customer-support
+        environment: staging
+        ''',
+    )
+    write(
+        source / "draft_agent.yaml",
+        '''
+        name: Draft Agent
+        ''',
+    )
+    write(
+        source / "dependencies.yaml",
+        '''
+        - google-adk
+        - langchain
+        ''',
+    )
+    (source / "broken_agent.yaml").write_text("name: [unterminated\n")
+
+    framework, detection_notes, agents, module_infos = migrate._build_migration_candidates(source)
+    migrate._generate_migrated_project(
+        source,
+        destination,
+        framework,
+        detection_notes,
+        agents,
+        module_infos,
+        no_scaffold,
+    )
+
+    workflow_yaml = yaml.safe_load((destination / "agents" / "support-flow.yaml").read_text())
+    triage_yaml = yaml.safe_load((destination / "agents" / "triage-agent.yaml").read_text())
+    escalation_yaml = yaml.safe_load((destination / "agents" / "escalation-agent.yaml").read_text())
+    report = (destination / "MIGRATION_REPORT.md").read_text()
+
+    assert framework == "adk"
+    assert workflow_yaml == {
+        "version": "1.0",
+        "name": "support-flow",
+        "type": "sequential",
+        "description": "Route support tickets before escalation.",
+        "agents": ["triage-agent", "escalation-agent"],
+    }
+    assert triage_yaml["model"] == "gemini/gemini-2.5-flash"
+    assert triage_yaml["system_prompt"] == "Classify the ticket and decide whether escalation is needed."
+    assert triage_yaml["tools"] == ["query_knowledge"]
+    assert escalation_yaml["model"] == "anthropic/claude-3-5-sonnet"
+    assert escalation_yaml["system_prompt"] == "Resolve high-priority customer escalations."
+    assert "- `support-flow` (sequential)" in report
+    assert "Agent refs: triage-agent, escalation-agent" in report
 
 
 def test_adk_yaml_workflow_with_missing_agent_refs_becomes_review_placeholder(tmp_path):

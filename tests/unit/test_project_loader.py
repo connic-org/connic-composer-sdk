@@ -508,6 +508,55 @@ def test_api_spec_tools_without_local_registry_are_recorded_as_warnings(tmp_path
     ]
 
 
+@pytest.mark.parametrize(
+    ("tool_ref", "expected_error"),
+    [
+        ("api:*", "Invalid API spec wildcard 'api:*'"),
+        ("api:missing.users_*", "API spec 'missing' not found in registry"),
+        ("api:stripe.refunds_*", "Wildcard 'api:stripe.refunds_*' matched no tools"),
+        ("api:stripe", "Invalid API spec tool reference 'api:stripe'"),
+        ("api:missing.customers_get", "API spec 'missing' not found in registry"),
+        ("api:stripe.refunds_create", "Tool 'refunds_create' not found in API spec 'stripe'"),
+    ],
+)
+def test_api_spec_tool_reference_errors_are_reported_with_actionable_messages(tmp_path, tool_ref, expected_error):
+    write_file(
+        tmp_path / "agents" / "billing-assistant.yaml",
+        f"""
+        version: "1.0"
+        name: billing-assistant
+        type: llm
+        model: openai/gpt-5.2
+        description: "Uses generated API tools for billing support."
+        system_prompt: "Use the billing API when customer context is available."
+        tools:
+          - {tool_ref}
+        """,
+    )
+    api_spec_tools = {
+        "stripe": {
+            "customers_get": {
+                "method": "GET",
+                "path": "/v1/customers/{{customer_id}}",
+            },
+            "invoices_get": {
+                "method": "GET",
+                "path": "/v1/invoices/{{invoice_id}}",
+            },
+        }
+    }
+
+    loader = ProjectLoader(str(tmp_path), api_spec_tools=api_spec_tools)
+    agents = loader.load_agents()
+
+    assert len(agents) == 1
+    assert agents[0].config.name == "billing-assistant"
+    assert agents[0].tools == []
+    assert len(loader._load_errors) == 1
+    assert expected_error in loader._load_errors[0]
+    assert "billing-assistant" in loader._load_errors[0]
+
+
 def test_guardrail_config_loads_documented_support_baseline(tmp_path):
     write_file(
         tmp_path / "agents" / "support-agent.yaml",
