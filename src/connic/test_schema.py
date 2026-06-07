@@ -159,6 +159,13 @@ class TestDefaults(BaseModel):
         le=3600,
         description="Per-run wall-clock timeout in seconds.",
     )
+    mocks: Optional[str] = Field(
+        default=None,
+        description=(
+            "Default mocks module for every case in the file (same meaning as "
+            "the case-level ``mocks`` field). Per-case ``mocks`` overrides it."
+        ),
+    )
     strict_mocks: bool = Field(
         default=False,
         description=(
@@ -168,6 +175,14 @@ class TestDefaults(BaseModel):
             "real one. Per-case ``strict_mocks`` overrides this default."
         ),
     )
+
+    @field_validator("mocks")
+    @classmethod
+    def _validate_mocks(cls, v: Optional[str]) -> Optional[str]:
+        if v is None:
+            return v
+        _validate_safe_ref(v, "mocks")
+        return v[:-3] if v.endswith(".py") else v
 
 
 class ChildAgentExpectation(BaseModel):
@@ -445,7 +460,7 @@ class TestFile(BaseModel):
             "files": list(case.files),
             "builder": case.builder,
             "builder_args": dict(case.builder_args) if case.builder_args else None,
-            "mocks": case.mocks,
+            "mocks": case.mocks if case.mocks is not None else self.defaults.mocks,
             "strict_mocks": (
                 case.strict_mocks if case.strict_mocks is not None else self.defaults.strict_mocks
             ),
