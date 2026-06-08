@@ -100,6 +100,118 @@ def _table(headers: list[str], rows: list[list[str]], indent: int = 4) -> None:
     click.echo(f"{pad}└{bot}┘")
 
 
+def _truncate(s: str | None, n: int = 800) -> str:
+    """Single-line-friendly trim for a run field body."""
+    if not s:
+        return ""
+    return s if len(s) <= n else s[:n] + " … (truncated)"
+
+
+def _trace_label(span: dict) -> str:
+    """Human label for a span: tool name from metadata if present, else span name."""
+    import json
+
+    name = span.get("name") or "span"
+    try:
+        meta = json.loads(span.get("metadata_json") or "{}")
+    except (ValueError, TypeError):
+        return name
+    tool = meta.get("tool_name") or meta.get("name")
+    return tool or name
+
+
+def _render_trace_tree(traces: list[dict], indent: int) -> None:
+    """Render a simple span tree: glyph, label, duration; errors inline on failures."""
+    import json
+
+    if not traces:
+        return
+    valid_ids = {s.get("span_id") for s in traces if s.get("span_id")}
+    roots: list[dict] = []
+    children: dict[str, list[dict]] = {}
+    for s in traces:
+        parent = s.get("parent_span_id")
+        if parent and parent in valid_ids:
+            children.setdefault(parent, []).append(s)
+        else:
+            roots.append(s)
+
+    def _order(s: dict):
+        return (s.get("span_order") or 0, s.get("start_time") or "")
+
+    roots.sort(key=_order)
+    for kids in children.values():
+        kids.sort(key=_order)
+
+    pad = " " * indent
+    seen: set[str] = set()
+
+    def walk(spans: list[dict], depth: int) -> None:
+        for s in spans:
+            ok = s.get("status") == "ok"
+            glyph = click.style("✓", fg="green") if ok else click.style("✗", fg="red")
+            line = f"{pad}{'  ' * depth}{glyph} {_trace_label(s)}"
+            dur = s.get("duration_ms")
+            if dur is not None:
+                line += f" ({int(dur)}ms)"
+            if not ok:
+                try:
+                    meta = json.loads(s.get("metadata_json") or "{}")
+                except (ValueError, TypeError):
+                    meta = {}
+                err = meta.get("error") or meta.get("message")
+                if err:
+                    line += f" — {_truncate(str(err), 160)}"
+            click.echo(line)
+            sid = s.get("span_id")
+            if sid and sid not in seen:
+                seen.add(sid)
+                walk(children.get(sid, []), depth + 1)
+
+    walk(roots, 0)
+
+
+def _fetch_failed_run_details(
+    client: "httpx.Client", project_id: str, case: dict, limit: int = 3
+) -> dict:
+    """Fetch input/output/context/error/traces for a failed case's failed runs."""
+    run_ids = case.get("agent_run_ids") or []
+    passed = case.get("agent_run_passed") or []
+    failed_ids = [rid for rid, ok in zip(run_ids, passed) if not ok and rid]
+
+    shown: list[dict] = []
+    for rid in failed_ids[:limit]:
+        try:
+            resp = client.get(f"/projects/{project_id}/runs/{rid}")
+        except httpx.HTTPError as e:
+            shown.append({"run_id": rid, "fetch_error": str(e)})
+            continue
+        if resp.status_code != 200:
+            shown.append({"run_id": rid, "fetch_error": f"HTTP {resp.status_code}"})
+            continue
+        run = resp.json()
+        shown.append({
+            "run_id": rid,
+            "input": run.get("input"),
+            "output": run.get("output"),
+            "error": run.get("error"),
+            "run_context": run.get("run_context"),
+            "traces": [
+                {
+                    "name": t.get("name"),
+                    "status": t.get("status"),
+                    "duration_ms": t.get("duration_ms"),
+                    "span_id": t.get("span_id"),
+                    "parent_span_id": t.get("parent_span_id"),
+                    "span_order": t.get("span_order"),
+                    "metadata_json": t.get("metadata_json"),
+                }
+                for t in (run.get("traces") or [])
+            ],
+        })
+    return {"total_failed": len(failed_ids), "shown": shown}
+
+
 # =============================================================================
 # File Validation Constants and Helpers
 # =============================================================================
@@ -878,7 +990,7 @@ def _poll_test_run(client: "httpx.Client", poll_url: str, *, quiet: bool = False
             if not announced_running and phase == "running_tests" and result.get("total_cases"):
                 _info(f"Running {result['total_cases']} test case(s)...")
                 announced_running = True
-        if result["status"] in ("passed", "failed", "error"):
+        if result["status"] in ("passed", "failed", "error", "cancelled"):
             return result
         time.sleep(2)
 
@@ -909,6 +1021,34 @@ def _render_test_cases(cases: list[dict]) -> None:
         _step("Failure details:")
         for c in failed:
             _err(f"{c['agent_name']}::{c['test_name']}: {c['failure_reason']}")
+            _render_failed_runs(c.get("failed_runs"))
+
+
+def _render_failed_runs(detail: dict | None) -> None:
+    """Render the failed-run drilldown (input/output/context/error/trace) for a case."""
+    if not detail or not detail.get("shown"):
+        return
+    for run in detail["shown"]:
+        if run.get("fetch_error"):
+            _info(f"  Run {run['run_id']} (could not load: {run['fetch_error']})")
+            continue
+        _info(f"  Run {run['run_id']}")
+        if run.get("input"):
+            _info(f"    Input:   {_truncate(run['input'])}")
+        if run.get("output"):
+            _info(f"    Output:  {_truncate(run['output'])}")
+        ctx = run.get("run_context")
+        if ctx:
+            import json
+            _info(f"    Context: {_truncate(json.dumps(ctx))}")
+        if run.get("error"):
+            _info(f"    Error:   {_truncate(run['error'])}")
+        if run.get("traces"):
+            _info("    Trace:")
+            _render_trace_tree(run["traces"], indent=10)
+    remaining = detail.get("total_failed", 0) - len(detail["shown"])
+    if remaining > 0:
+        _info(f"  … and {remaining} more failed run(s) not shown")
 
 
 def _compute_local_coverage(project_root: Path) -> dict:
@@ -1088,6 +1228,10 @@ def _run_tests_in_dev_session(client: "httpx.Client", project_id: str, env_id: s
 
     if result["status"] == "error":
         _err(f"Test run errored: {result.get('error') or 'unknown error'}")
+        return
+
+    if result["status"] == "cancelled":
+        _warn("Test run was cancelled.")
         return
 
     cases = result.get("cases", [])
@@ -1693,10 +1837,21 @@ def test(env: str | None, filter_name: str | None, coverage: bool, as_json: bool
         except RuntimeError as e:
             _fail_and_exit(f"{e}; giving up.")
 
-    cases = result.get("cases", [])
+        cases = result.get("cases", [])
+        if result.get("status") == "failed":
+            for c in cases:
+                if not c["passed"] and c.get("agent_run_ids"):
+                    c["failed_runs"] = _fetch_failed_run_details(client, project_id, c)
 
     if result["status"] == "error":
         _fail_and_exit(f"Test run errored: {result.get('error') or 'unknown error'}", code=2)
+
+    if result["status"] == "cancelled":
+        if as_json:
+            click.echo(json.dumps({"status": "cancelled", "cases": cases}, indent=2))
+        else:
+            _warn("Test run was cancelled.")
+        sys.exit(1)
 
     if as_json:
         click.echo(json.dumps({"status": result["status"], "cases": cases}, indent=2))
