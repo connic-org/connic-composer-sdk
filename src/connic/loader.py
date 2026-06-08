@@ -502,11 +502,30 @@ class ProjectLoader:
         elif config.type == AgentType.TOOL:
             # Tool agents: resolve the single tool_name
             if config.tool_name:
-                try:
-                    resolved = self._resolve_tools(config.tool_name)
-                    tools.extend(resolved)
-                except Exception as e:
-                    self._load_errors.append(f"Tool agent '{config.name}': cannot resolve tool '{config.tool_name}': {e}")
+                if config.tool_name in PREDEFINED_TOOL_NAMES:
+                    self._load_errors.append(
+                        f"Tool agent '{config.name}': tool_name must reference a custom tool under tools/. "
+                        f"Predefined tool '{config.tool_name}' is not allowed as a tool agent body; "
+                        "wrap it in a custom tool if you need to call it from a tool agent."
+                    )
+                elif config.tool_name.startswith("api:"):
+                    self._load_errors.append(
+                        f"Tool agent '{config.name}': tool_name must reference a custom tool under tools/. "
+                        f"API spec tool '{config.tool_name}' is not allowed as a tool agent body."
+                    )
+                elif "*" in config.tool_name:
+                    self._load_errors.append(
+                        f"Tool agent '{config.name}': tool_name must reference one custom tool under tools/. "
+                        f"Wildcard '{config.tool_name}' is not allowed as a tool agent body."
+                    )
+                else:
+                    try:
+                        resolved = self._resolve_tools(config.tool_name)
+                        if len(resolved) != 1 or any(tool.is_predefined or tool.func is None for tool in resolved):
+                            raise ValueError("tool_name must resolve to exactly one custom tool")
+                        tools.extend(resolved)
+                    except Exception as e:
+                        self._load_errors.append(f"Tool agent '{config.name}': cannot resolve tool '{config.tool_name}': {e}")
 
         tool_names = {t.name for t in tools}
         discoverable_names = {t.name for t in discoverable_tools}

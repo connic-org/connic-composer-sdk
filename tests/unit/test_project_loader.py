@@ -892,6 +892,33 @@ def test_tool_agent_with_invalid_tool_reports_error(tmp_path):
     assert any("cannot resolve tool" in e for e in loader._load_errors)
 
 
+@pytest.mark.parametrize(
+    ("tool_name", "expected"),
+    [
+        ("trigger_agent", "Predefined tool 'trigger_agent' is not allowed"),
+        ("api:billing.create_invoice", "API spec tool 'api:billing.create_invoice' is not allowed"),
+        ("notifier.*", "Wildcard 'notifier.*' is not allowed"),
+    ],
+)
+def test_tool_agent_rejects_non_custom_tool_name(tmp_path, tool_name, expected):
+    write_file(
+        tmp_path / "agents" / "invalid-tool-agent.yaml",
+        f"""
+        version: "1.0"
+        name: invalid-tool-agent
+        type: tool
+        tool_name: {tool_name}
+        description: "Invalid tool agent"
+        """,
+    )
+
+    loader = ProjectLoader(str(tmp_path), api_spec_tools={"billing": {"create_invoice": {}}})
+    agents = loader.load_agents()
+
+    assert len(agents) == 1
+    assert any(expected in error for error in loader._load_errors)
+
+
 # ---------------------------------------------------------------------------
 # Sequential agent
 # ---------------------------------------------------------------------------
