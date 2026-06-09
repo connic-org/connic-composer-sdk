@@ -42,7 +42,7 @@ Requires Python 3.10 or newer.
 
 ```bash
 # Create a new project
-connic init my-agents
+connic init my-agents --skill
 cd my-agents
 
 # Authenticate this project with Connic
@@ -61,10 +61,16 @@ connic test
 The default scaffold is intentionally minimal. If you want a starter project with working examples, use templates:
 
 ```bash
-connic init my-agents --templates=invoice,customer-support
+connic init my-agents --templates=invoice,customer-support --skill
 ```
 
 Browse available templates at [connic.co/agents](https://connic.co/agents).
+
+The optional `--skill` flag installs the Connic AI coding-agent skill into `.agents/skills/connic` so supported coding agents can use the current Connic project layout, YAML fields, CLI flags, connector patterns, and best practices while editing your repo. For an existing project, run:
+
+```bash
+connic skill
+```
 
 ## Example Project
 
@@ -199,15 +205,17 @@ Related docs:
 
 | Command                              | Description                                                     |
 | ------------------------------------ | --------------------------------------------------------------- |
-| `connic init [name]`                 | Create a new project scaffold                                   |
-| `connic init [name] --templates=...` | Create a project from one or more starter templates             |
-| `connic login`                       | Save project credentials in `.connic`                           |
-| `connic lint`                        | Validate agents, tools, middleware, and schemas locally         |
-| `connic tools`                       | List discovered tools and signatures                            |
-| `connic dev [name]`                  | Start an isolated cloud dev environment with hot reload         |
-| `connic test`                        | Run declarative test suites from `tests/` against an environment |
-| `connic deploy`                      | Deploy from the CLI to a Connic environment for projects without a connected Git repository |
-| `connic migrate`                     | Migrate a LangChain or Google ADK project into a Connic project |
+| `connic init [name]`                  | Create a new project scaffold                                   |
+| `connic init [name] --templates=...`  | Create a project from one or more starter templates             |
+| `connic init [name] --skill`          | Create a project and install the Connic skill into `.agents/`   |
+| `connic skill`                        | Install or update the Connic skill in the current directory     |
+| `connic login`                        | Save project credentials in `.connic`                           |
+| `connic lint`                         | Validate agents, tools, middleware, and schemas locally         |
+| `connic tools`                        | List discovered tools and signatures                            |
+| `connic dev [name]`                   | Start an isolated cloud dev environment with hot reload         |
+| `connic test`                         | Run declarative test suites from `tests/` against an environment |
+| `connic deploy`                       | Deploy from the CLI to a Connic environment for projects without a connected Git repository |
+| `connic migrate`                      | Migrate a LangChain or Google ADK project into a Connic project |
 
 Run `connic <command> --help` for flags and examples.
 

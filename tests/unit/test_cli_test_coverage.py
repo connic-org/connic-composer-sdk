@@ -8,7 +8,6 @@ from click.testing import CliRunner
 
 from connic import cli
 
-
 # ---------------------------------------------------------------------------
 # Fixture helpers
 # ---------------------------------------------------------------------------
@@ -145,6 +144,28 @@ def test_short_name_in_expected_tool_calls_matches_full_ref(tmp_path):
     _write_calculator_tool(tmp_path)
     _write_llm_agent(tmp_path, "math-agent", tools=["calculator.add"])
     _write_test_file(tmp_path, "math-agent", [["add"]])
+
+    [agent] = cli._compute_local_coverage(tmp_path)["agents"]
+    assert agent["percent"] == 100.0
+
+
+def test_expected_tool_call_order_counts_as_covered(tmp_path):
+    _write_calculator_tool(tmp_path)
+    _write_llm_agent(tmp_path, "math-agent", tools=["calculator.add", "calculator.subtract"])
+    _write(
+        tmp_path / "tests" / "math-agent.yaml",
+        """
+        version: "1.0"
+        agent: math-agent
+        tests:
+          - name: ordered_math
+            payload: '{"x": 1}'
+            expected_result: status == "completed"
+            expected_tool_call_order:
+              - calculator.add
+              - calculator.subtract
+        """,
+    )
 
     [agent] = cli._compute_local_coverage(tmp_path)["agents"]
     assert agent["percent"] == 100.0

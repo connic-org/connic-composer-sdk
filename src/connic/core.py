@@ -366,6 +366,7 @@ class GuardrailsConfig(BaseModel):
     """
     input: List[GuardrailRule] = Field(default_factory=list, description="Guardrails applied to agent input before execution")
     output: List[GuardrailRule] = Field(default_factory=list, description="Guardrails applied to agent output after execution")
+    run_after_on_block: bool = Field(default=True, description="Whether 'after' middleware runs when an input guardrail blocks the request")
 
     @model_validator(mode='after')
     def validate_rules(self):

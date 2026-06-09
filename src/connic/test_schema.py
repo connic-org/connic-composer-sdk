@@ -22,6 +22,9 @@ Example::
         expected_tool_calls:
           - math.calculator.add                      # bare → called >= 1
           - math.calculator.add: invocations >= 5    # mapping → expression
+        expected_tool_call_order:
+          - math.calculator.add
+          - email.send
         expected_no_tool_calls:
           - email.send
 
@@ -116,7 +119,6 @@ import re
 from typing import Any, Dict, List, Optional, Union
 
 from pydantic import BaseModel, Field, field_validator, model_validator
-
 
 # Tool-call expectation: either a bare tool name (= called at least once) or
 # a one-key mapping ``{tool_name: <expression>}`` (mirrors the YAML pattern
@@ -235,6 +237,13 @@ class ChildAgentExpectation(BaseModel):
         ),
     )
     expected_tool_calls: List[ToolCallExpectation] = Field(default_factory=list)
+    expected_tool_call_order: List[str] = Field(
+        default_factory=list,
+        description=(
+            "Tool names that must appear in this relative order in the "
+            "child agent's tool-call trace."
+        ),
+    )
     expected_no_tool_calls: List[str] = Field(
         default_factory=list,
         description="Tools the child agent must NOT call.",
@@ -270,6 +279,14 @@ class ChildAgentExpectation(BaseModel):
                 raise ValueError(
                     "expected_tool_calls entries must be a string or a single-key mapping."
                 )
+        return v
+
+    @field_validator("expected_tool_call_order")
+    @classmethod
+    def _validate_tool_call_order(cls, v: List[str]) -> List[str]:
+        for entry in v:
+            if not isinstance(entry, str) or not entry:
+                raise ValueError("expected_tool_call_order entries must be non-empty strings.")
         return v
 
 
@@ -362,6 +379,13 @@ class TestCase(BaseModel):
         ),
     )
     expected_tool_calls: List[ToolCallExpectation] = Field(default_factory=list)
+    expected_tool_call_order: List[str] = Field(
+        default_factory=list,
+        description=(
+            "Tool names that must appear in this relative order in the "
+            "run's tool-call trace."
+        ),
+    )
     expected_no_tool_calls: List[str] = Field(
         default_factory=list,
         description="Tools that must NOT be called during the run.",
@@ -393,6 +417,14 @@ class TestCase(BaseModel):
                     raise ValueError(f"Expression for '{tool_name}' must be a non-empty string.")
             elif not isinstance(entry, str) or not entry:
                 raise ValueError("expected_tool_calls entries must be a string or a single-key mapping.")
+        return v
+
+    @field_validator("expected_tool_call_order")
+    @classmethod
+    def _validate_tool_call_order(cls, v: List[str]) -> List[str]:
+        for entry in v:
+            if not isinstance(entry, str) or not entry:
+                raise ValueError("expected_tool_call_order entries must be non-empty strings.")
         return v
 
     @field_validator("files")
@@ -471,6 +503,7 @@ class TestFile(BaseModel):
             "timeout_s": case.timeout_s if case.timeout_s is not None else self.defaults.timeout_s,
             "expected_result": case.expected_result,
             "expected_tool_calls": case.expected_tool_calls,
+            "expected_tool_call_order": case.expected_tool_call_order,
             "expected_no_tool_calls": case.expected_no_tool_calls,
             "expected_child_agents": _dump_child_agents(case.expected_child_agents),
         }

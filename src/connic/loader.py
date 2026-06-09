@@ -452,6 +452,8 @@ class ProjectLoader:
                         GuardrailRule(**rule) if isinstance(rule, dict) else rule
                         for rule in gr_raw[direction]
                     ]
+            if "run_after_on_block" in gr_raw:
+                parsed["run_after_on_block"] = gr_raw["run_after_on_block"]
             config_data["guardrails"] = GuardrailsConfig(**parsed)
 
         # Handle approval config
@@ -1101,7 +1103,26 @@ class ProjectLoader:
                     return list
                 if base == "Dict" or base == "dict":
                     return dict
+        if isinstance(node, ast.BinOp) and isinstance(node.op, ast.BitOr):
+            # PEP 604 unions: ``X | None`` / ``X | Y``. Mirror the Optional /
+            # Union handling in _type_to_schema -- drop None and resolve the
+            # first real operand.
+            for operand in self._flatten_union(node):
+                resolved = self._resolve_ast_annotation(operand)
+                if resolved is not inspect.Parameter.empty and resolved is not type(None):
+                    return resolved
+            return inspect.Parameter.empty
         return inspect.Parameter.empty
+
+    def _flatten_union(self, node: ast.BinOp) -> List[ast.AST]:
+        """Flatten a chain of PEP 604 ``|`` union operands into a flat list."""
+        operands: List[ast.AST] = []
+        for side in (node.left, node.right):
+            if isinstance(side, ast.BinOp) and isinstance(side.op, ast.BitOr):
+                operands.extend(self._flatten_union(side))
+            else:
+                operands.append(side)
+        return operands
 
     def _resolve_ast_default(self, node: ast.AST):
         """Extract a literal default value from an AST node."""

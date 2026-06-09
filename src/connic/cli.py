@@ -1,5 +1,6 @@
 import os
 import re
+import shutil
 import sys
 import tempfile
 import zipfile
@@ -16,6 +17,10 @@ DEFAULT_API_URL = os.environ.get("CONNIC_API_URL", "https://api.connic.co/v1")
 DEFAULT_BASE_URL = os.environ.get("CONNIC_BASE_URL", "https://connic.co")
 TEMPLATES_REPO = "connic-org/connic-awesome-agents"
 TEMPLATES_ZIP_URL = f"https://github.com/{TEMPLATES_REPO}/archive/refs/heads/main.zip"
+SKILL_REPO = "connic-org/connic-skill"
+SKILL_ZIP_URL = f"https://github.com/{SKILL_REPO}/archive/refs/heads/main.zip"
+SKILL_RELATIVE_PATH = Path("plugins/connic/skills/connic")
+SKILL_DESTINATION = Path(".agents/skills/connic")
 
 
 # =============================================================================
@@ -343,7 +348,7 @@ def _validate_project_files() -> tuple[bool, str, list[Path]]:
 
 
 @click.group()
-@click.version_option(version="0.1.28", prog_name="connic")
+@click.version_option(version="0.1.29", prog_name="connic")
 def main():
     """Connic Composer SDK - Build agents with code."""
     print_update_hint()
@@ -487,6 +492,51 @@ def _fetch_templates_from_github() -> Path | None:
         return None
 
 
+def _fetch_skill_from_github() -> Path | None:
+    """Download connic-skill and return the skill directory."""
+    try:
+        with httpx.Client(timeout=30.0, follow_redirects=True) as client:
+            r = client.get(SKILL_ZIP_URL)
+            r.raise_for_status()
+            zip_bytes = r.content
+    except Exception as e:
+        click.echo(f"Could not fetch skill from GitHub: {e}", err=True)
+        return None
+    try:
+        tmp = tempfile.mkdtemp()
+        zip_path = Path(tmp) / "connic-skill.zip"
+        zip_path.write_bytes(zip_bytes)
+        with zipfile.ZipFile(zip_path, "r") as zf:
+            zf.extractall(tmp)
+        skill_dir = Path(tmp) / "connic-skill-main" / SKILL_RELATIVE_PATH
+        if not skill_dir.exists():
+            return None
+        return skill_dir
+    except Exception as e:
+        click.echo(f"Could not extract skill: {e}", err=True)
+        return None
+
+
+def _install_skill(source: Path, destination: Path = SKILL_DESTINATION) -> None:
+    """Replace the project-local Connic skill with source contents."""
+    if destination.exists():
+        shutil.rmtree(destination)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copytree(source, destination)
+
+
+def _install_skill_from_github(destination: Path = SKILL_DESTINATION) -> None:
+    _step("Fetching the Connic skill from GitHub...")
+    source = _fetch_skill_from_github()
+    if not source:
+        _fail_and_exit("Could not fetch the Connic skill. Try again from a networked environment.")
+    _ok("Fetched")
+
+    _step(f"Installing to {destination.as_posix()}...")
+    _install_skill(source, destination)
+    _ok("Installed")
+
+
 def _merge_template_into_project(
     template_src: Path,
     base_path: Path,
@@ -497,7 +547,7 @@ def _merge_template_into_project(
     
     Returns the template README content if it exists, None otherwise.
     """
-    for subdir in ["agents", "tools", "middleware", "schemas", "guardrails", "hooks"]:
+    for subdir in ["agents", "tools", "middleware", "schemas", "guardrails", "hooks", "tests"]:
         src_dir = template_src / subdir
         dst_dir = base_path / subdir
         if src_dir.exists():
@@ -565,17 +615,20 @@ def _append_template_readmes(base_path: Path, template_readmes: list[str]) -> No
     default=None,
     help="Comma-separated template names (e.g., invoice,support). Browse at connic.co/agents",
 )
-def init(name: str, templates: str | None):
+@click.option("--skill", is_flag=True, help="Install the Connic skill into .agents/skills/connic")
+def init(name: str, templates: str | None, skill: bool):
     """Initialize a new Connic project.
 
     Creates the project structure. Use --templates to add agent templates from
-    connic-awesome-agents. Without --templates, creates a clean scaffold only.
+    connic-awesome-agents. Use --skill to install the Connic skill for AI coding
+    agents. Without --templates, creates a clean scaffold only.
 
     Examples:
-        connic init                        # Clean project, no examples
-        connic init my-project             # Clean project in new directory
-        connic init . --templates=invoice  # Project with invoice template
-        connic init app --templates=invoice,support
+        connic init                                # Clean project, no examples
+        connic init my-project                     # Clean project in new directory
+        connic init my-project --skill             # Clean project with Connic skill
+        connic init . --templates=invoice          # Project with invoice template
+        connic init app --templates=invoice --skill
     """
     _h1("Init")
 
@@ -631,6 +684,9 @@ def init(name: str, templates: str | None):
         if template_readmes:
             _append_template_readmes(base_path, template_readmes)
 
+        if skill:
+            _install_skill_from_github(base_path / SKILL_DESTINATION)
+
         _step("Next steps:")
         _info("1. Run `connic lint` to validate your project")
         _info("2. Run `connic test` to test against Connic cloud")
@@ -639,7 +695,23 @@ def init(name: str, templates: str | None):
         return
 
     # No templates: create clean project only (no example files)
-    _write_essential_files(base_path)
+    _write_essential_files(base_path, quiet=skill)
+    if skill:
+        _install_skill_from_github(base_path / SKILL_DESTINATION)
+        _step("Next steps:")
+        _info("1. Create your first agent anywhere under agents/")
+        _info("2. Run `connic lint` to validate your project")
+        _info("3. Push to your connected repository to deploy")
+        _done(f"Initialized Connic project in {base_path.resolve()}")
+
+
+@main.command()
+def skill():
+    """Install or update the Connic skill in the current directory."""
+    _h1("Skill")
+
+    _install_skill_from_github()
+    _done("Connic skill is ready.")
 
 
 def _run_lint(verbose: bool = False, quiet: bool = False, project_root: str = ".") -> bool:
@@ -1107,8 +1179,12 @@ def _compute_local_coverage(project_root: Path) -> dict:
                 if agent.config.type == AgentType.TOOL and parsed.tests:
                     covered |= agent_tools
                 for case in parsed.tests:
-                    for entry in case.expected_tool_calls:
-                        ref = entry if isinstance(entry, str) else next(iter(entry.keys()))
+                    expected_refs = [
+                        entry if isinstance(entry, str) else next(iter(entry.keys()))
+                        for entry in case.expected_tool_calls
+                    ]
+                    expected_refs.extend(case.expected_tool_call_order)
+                    for ref in expected_refs:
                         if ref in agent_tools:
                             covered.add(ref)
                             continue

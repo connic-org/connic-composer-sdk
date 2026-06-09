@@ -1,3 +1,4 @@
+import ast
 import asyncio
 import inspect
 from textwrap import dedent
@@ -345,6 +346,63 @@ def test_validation_only_infers_schema_from_ast_annotations_and_literal_defaults
     assert tool.parameters["properties"]["attributes"]["type"] == "object"
     assert tool.parameters["properties"]["scheduled_for"]["type"] == "string"
     assert "context" not in tool.parameters["properties"]
+
+
+def test_validation_only_resolves_pep604_union_annotations(tmp_path):
+    write_file(
+        tmp_path / "tools" / "audit.py",
+        '''
+        import dependency_that_is_not_installed
+
+
+        async def log_event(
+            table: str,
+            affected_ids: list[str] | None = None,
+            attempts: int | None = None,
+            metadata: dict[str, str] | None = None,
+        ) -> dict:
+            """Record an audit event.
+
+            Args:
+                table: Table the change occurred on.
+                affected_ids: IDs of affected records.
+                attempts: Retry attempts so far.
+                metadata: Extra key/value context.
+            """
+            return await dependency_that_is_not_installed.log(table, affected_ids)
+        ''',
+    )
+    write_file(
+        tmp_path / "agents" / "auditor.yaml",
+        """
+        version: "1.0"
+        name: auditor
+        type: llm
+        model: openai/gpt-5.2
+        description: "Logs audit events"
+        system_prompt: "Log significant changes."
+        tools:
+          - audit.log_event
+        """,
+    )
+
+    agent = ProjectLoader(str(tmp_path), validation_only=True).load_agent("auditor")
+    props = agent.get_tool("log_event").parameters["properties"]
+    assert props["affected_ids"]["type"] == "array"
+    assert props["attempts"]["type"] == "integer"
+    assert props["metadata"]["type"] == "object"
+
+
+def test_resolve_ast_annotation_handles_pep604_unions():
+    loader = ProjectLoader("/tmp")
+
+    def resolve(expr):
+        return loader._resolve_ast_annotation(ast.parse(expr, mode="eval").body)
+
+    assert resolve("list[str] | None") is list
+    assert resolve("int | None") is int
+    assert resolve("None | dict[str, int]") is dict
+    assert resolve("str | int") is str
 
 
 def test_duplicate_tool_function_names_are_reported_with_resolved_refs(tmp_path):

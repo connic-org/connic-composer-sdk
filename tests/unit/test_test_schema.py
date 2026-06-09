@@ -22,6 +22,9 @@ def test_test_file_parses_realistic_yaml_and_resolves_defaults():
             expected_tool_calls:
               - math.calculator.add
               - math.calculator.add: invocations >= 1
+            expected_tool_call_order:
+              - math.calculator.add
+              - notifications.send
             expected_no_tool_calls:
               - email.send
           - name: high_concurrency_smoke
@@ -53,6 +56,7 @@ def test_test_file_parses_realistic_yaml_and_resolves_defaults():
         "timeout_s": 60,
         "expected_result": 'status == "completed" and output.id == 10',
         "expected_tool_calls": ["math.calculator.add", {"math.calculator.add": "invocations >= 1"}],
+        "expected_tool_call_order": ["math.calculator.add", "notifications.send"],
         "expected_no_tool_calls": ["email.send"],
         "expected_child_agents": None,
     }
@@ -62,6 +66,7 @@ def test_test_file_parses_realistic_yaml_and_resolves_defaults():
     assert second["success_threshold"] == 95
     assert second["timeout_s"] == 90
     assert second["expected_tool_calls"] == []
+    assert second["expected_tool_call_order"] == []
     assert second["expected_no_tool_calls"] == []
 
 
@@ -81,12 +86,17 @@ def test_test_file_resolves_nested_child_agent_expectations():
                 expected_tool_calls:
                   - billing.refund
                   - billing.refund: params.charge_id == context.charge_id
+                expected_tool_call_order:
+                  - billing.refund
+                  - ledger.record_refund
                 expected_no_tool_calls:
                   - email.send
                 expected_child_agents:
                   ledger-writer:
                     expected_payload: payload.refund_id == output.refund_id
                     expected_tool_calls:
+                      - ledger.record_refund
+                    expected_tool_call_order:
                       - ledger.record_refund
               telemetry:
                 expected_triggered: 1
@@ -106,6 +116,7 @@ def test_test_file_resolves_nested_child_agent_expectations():
                 "billing.refund",
                 {"billing.refund": "params.charge_id == context.charge_id"},
             ],
+            "expected_tool_call_order": ["billing.refund", "ledger.record_refund"],
             "expected_no_tool_calls": ["email.send"],
             "expected_child_agents": {
                 "ledger-writer": {
@@ -113,6 +124,7 @@ def test_test_file_resolves_nested_child_agent_expectations():
                     "expected_payload": "payload.refund_id == output.refund_id",
                     "expected_result": None,
                     "expected_tool_calls": ["ledger.record_refund"],
+                    "expected_tool_call_order": ["ledger.record_refund"],
                     "expected_no_tool_calls": [],
                     "expected_child_agents": None,
                 }
@@ -123,6 +135,7 @@ def test_test_file_resolves_nested_child_agent_expectations():
             "expected_payload": 'payload.event == "refund"',
             "expected_result": None,
             "expected_tool_calls": [],
+            "expected_tool_call_order": [],
             "expected_no_tool_calls": [],
             "expected_child_agents": None,
         },
@@ -156,6 +169,7 @@ def test_test_file_uses_schema_defaults_for_minimal_suite():
         "timeout_s": 120,
         "expected_result": None,
         "expected_tool_calls": [],
+        "expected_tool_call_order": [],
         "expected_no_tool_calls": [],
         "expected_child_agents": None,
     }
@@ -233,6 +247,42 @@ def test_child_agent_expected_tool_calls_reject_invalid_entries(expected_tool_ca
                         "expected_child_agents": {
                             "refund-specialist": {
                                 "expected_tool_calls": expected_tool_calls,
+                            }
+                        },
+                    }
+                ]
+            }
+        )
+
+
+@pytest.mark.parametrize("expected_tool_call_order", [[""], [123]])
+def test_expected_tool_call_order_rejects_invalid_entries(expected_tool_call_order):
+    with pytest.raises(ValidationError):
+        ConnicTestFile.model_validate(
+            {
+                "tests": [
+                    {
+                        "name": "uses_calculator",
+                        "payload": '{"a": 4, "b": 6}',
+                        "expected_tool_call_order": expected_tool_call_order,
+                    }
+                ]
+            }
+        )
+
+
+@pytest.mark.parametrize("expected_tool_call_order", [[""], [123]])
+def test_child_agent_expected_tool_call_order_rejects_invalid_entries(expected_tool_call_order):
+    with pytest.raises(ValidationError):
+        ConnicTestFile.model_validate(
+            {
+                "tests": [
+                    {
+                        "name": "routes_refund",
+                        "payload": '{"charge_id": "ch_123"}',
+                        "expected_child_agents": {
+                            "refund-specialist": {
+                                "expected_tool_call_order": expected_tool_call_order,
                             }
                         },
                     }

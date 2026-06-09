@@ -102,9 +102,12 @@ def test_merge_template_copies_agent_under_template_namespace_and_merges_require
     template = tmp_path / "templates" / "invoice"
     (template / "agents").mkdir(parents=True)
     (template / "tools").mkdir()
+    (template / "tests" / "mocks").mkdir(parents=True)
     (template / "agents" / "extractor.yaml").write_text("name: invoice-extractor\n")
     (template / "agents" / "_draft.yaml").write_text("name: draft\n")
     (template / "tools" / "invoice_tools.py").write_text("def parse_invoice():\n    return {}\n")
+    (template / "tests" / "invoice-extractor.yaml").write_text("agent: invoice-extractor\n")
+    (template / "tests" / "mocks" / "invoice_mocks.py").write_text("def mock_lookup():\n    return {}\n")
     (template / "requirements.txt").write_text("pypdf>=4\nhttpx>=0.25\n")
     (template / "README.md").write_text("# Invoice Agent\n\nExtract invoices.\n")
     project = tmp_path / "project"
@@ -116,6 +119,8 @@ def test_merge_template_copies_agent_under_template_namespace_and_merges_require
     assert (project / "agents" / "invoice" / "extractor.yaml").read_text() == "name: invoice-extractor\n"
     assert not (project / "agents" / "invoice" / "_draft.yaml").exists()
     assert (project / "tools" / "invoice_tools.py").exists()
+    assert (project / "tests" / "invoice-extractor.yaml").read_text() == "agent: invoice-extractor\n"
+    assert (project / "tests" / "mocks" / "invoice_mocks.py").exists()
     assert requirements == ["pypdf>=4", "httpx>=0.25"]
     assert readme == "# Invoice Agent\n\nExtract invoices."
 
@@ -138,6 +143,75 @@ def test_write_merged_requirements_deduplicates_by_package_name(tmp_path):
         "httpx>=0.25.0",
         "pydantic>=2",
     ]
+
+
+def test_install_skill_replaces_existing_project_skill(tmp_path):
+    source = tmp_path / "source"
+    (source / "references").mkdir(parents=True)
+    (source / "SKILL.md").write_text("# Connic\n")
+    (source / "references" / "agent-yaml.md").write_text("agent docs\n")
+    destination = tmp_path / ".agents" / "skills" / "connic"
+    destination.mkdir(parents=True)
+    (destination / "stale.md").write_text("remove me\n")
+
+    cli._install_skill(source, destination)
+
+    assert (destination / "SKILL.md").read_text() == "# Connic\n"
+    assert (destination / "references" / "agent-yaml.md").read_text() == "agent docs\n"
+    assert not (destination / "stale.md").exists()
+
+
+def test_skill_command_installs_fetched_skill_into_current_directory(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(cli, "print_update_hint", lambda: None)
+    source = tmp_path / "fetched-skill"
+    source.mkdir(parents=True)
+    (source / "SKILL.md").write_text("# Connic\n")
+    monkeypatch.setattr(cli, "_fetch_skill_from_github", lambda: source)
+
+    result = CliRunner().invoke(cli.main, ["skill"])
+
+    assert result.exit_code == 0, result.output
+    assert (tmp_path / ".agents" / "skills" / "connic" / "SKILL.md").read_text() == "# Connic\n"
+    assert "Fetched" in result.output
+    assert "Connic skill is ready" in result.output
+
+
+def test_fetch_skill_from_github_extracts_main_branch_archive(monkeypatch):
+    zip_buffer = io.BytesIO()
+    with zipfile.ZipFile(zip_buffer, "w") as archive:
+        archive.writestr("connic-skill-main/plugins/connic/skills/connic/SKILL.md", "# Connic\n")
+        archive.writestr("connic-skill-main/plugins/connic/skills/connic/references/agent-yaml.md", "agent docs\n")
+
+    class Response:
+        content = zip_buffer.getvalue()
+
+        @staticmethod
+        def raise_for_status():
+            return None
+
+    class FakeClient:
+        def __init__(self, timeout, follow_redirects):
+            self.timeout = timeout
+            self.follow_redirects = follow_redirects
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def get(self, url):
+            assert url == cli.SKILL_ZIP_URL
+            return Response()
+
+    monkeypatch.setattr(cli.httpx, "Client", FakeClient)
+
+    extracted = cli._fetch_skill_from_github()
+
+    assert extracted is not None
+    assert (extracted / "SKILL.md").read_text() == "# Connic\n"
+    assert (extracted / "references" / "agent-yaml.md").read_text() == "agent docs\n"
 
 
 def test_parse_login_token_requires_project_and_api_key():
@@ -198,6 +272,38 @@ def test_init_command_creates_documented_minimal_project(tmp_path, monkeypatch):
     assert "Created directory: my-agents" in result.output
 
 
+def test_init_command_with_skill_installs_skill_into_new_project(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(cli, "print_update_hint", lambda: None)
+    source = tmp_path / "fetched-skill"
+    source.mkdir()
+    (source / "SKILL.md").write_text("# Connic\n")
+    monkeypatch.setattr(cli, "_fetch_skill_from_github", lambda: source)
+
+    result = CliRunner().invoke(cli.main, ["init", "my-agents", "--skill"])
+
+    assert result.exit_code == 0, result.output
+    project = tmp_path / "my-agents"
+    assert (project / ".agents" / "skills" / "connic" / "SKILL.md").read_text() == "# Connic\n"
+    assert "Installing to my-agents/.agents/skills/connic" in result.output
+    assert "Initialized Connic project" in result.output
+
+
+def test_init_command_without_skill_does_not_fetch_skill(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(cli, "print_update_hint", lambda: None)
+
+    def fail_if_called():
+        raise AssertionError("init should only fetch the skill with --skill")
+
+    monkeypatch.setattr(cli, "_fetch_skill_from_github", fail_if_called)
+
+    result = CliRunner().invoke(cli.main, ["init", "my-agents"])
+
+    assert result.exit_code == 0, result.output
+    assert not (tmp_path / "my-agents" / ".agents").exists()
+
+
 def test_init_command_rejects_existing_project_directory(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(cli, "print_update_hint", lambda: None)
@@ -244,8 +350,11 @@ def test_init_command_merges_local_templates_when_github_is_unavailable(tmp_path
     templates = tmp_path / "connic-awesome-agents" / "invoice"
     (templates / "agents").mkdir(parents=True)
     (templates / "tools").mkdir()
+    (templates / "tests" / "mocks").mkdir(parents=True)
     (templates / "agents" / "extractor.yaml").write_text("name: invoice-extractor\n")
     (templates / "tools" / "invoice_tools.py").write_text("def parse_invoice():\n    return {}\n")
+    (templates / "tests" / "invoice-extractor.yaml").write_text("agent: invoice-extractor\n")
+    (templates / "tests" / "mocks" / "invoice_mocks.py").write_text("def mock_lookup():\n    return {}\n")
     (templates / "requirements.txt").write_text("pypdf>=4\n")
     (templates / "README.md").write_text("# Invoice Agent\n\nExtract invoices.\n")
 
@@ -259,6 +368,8 @@ def test_init_command_merges_local_templates_when_github_is_unavailable(tmp_path
     project = workspace / "project"
     assert (project / "agents" / "invoice" / "extractor.yaml").read_text() == "name: invoice-extractor\n"
     assert (project / "tools" / "invoice_tools.py").exists()
+    assert (project / "tests" / "invoice-extractor.yaml").read_text() == "agent: invoice-extractor\n"
+    assert (project / "tests" / "mocks" / "invoice_mocks.py").exists()
     assert (project / "requirements.txt").read_text() == "pypdf>=4\n"
     assert "## Invoice Agent" in (project / "README.md").read_text()
     assert "using local connic-awesome-agents" in result.output
