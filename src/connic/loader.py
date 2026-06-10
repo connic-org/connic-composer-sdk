@@ -877,8 +877,8 @@ class ProjectLoader:
         origin = get_origin(annotation)
         args = get_args(annotation)
         
-        if origin is Union:
-            # Handle Optional[X] which is Union[X, None]
+        if origin is Union or origin is types.UnionType:
+            # Handle Optional[X] / X | None, which is Union[X, None]
             non_none_args = [a for a in args if a is not type(None)]
             if len(non_none_args) == 1:
                 # This is Optional[X]

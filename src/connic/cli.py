@@ -73,6 +73,18 @@ def _fail_and_exit(msg: str, code: int = 1) -> None:
     sys.exit(code)
 
 
+def _response_error_text(resp) -> str:
+    try:
+        data = resp.json()
+    except Exception:
+        return resp.text
+    if isinstance(data, dict):
+        detail = data.get("detail")
+        if isinstance(detail, str) and detail:
+            return detail
+    return resp.text
+
+
 _ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
 
 
@@ -212,6 +224,7 @@ def _fetch_failed_run_details(
                     "metadata_json": t.get("metadata_json"),
                 }
                 for t in (run.get("traces") or [])
+                if t.get("type") != "log"
             ],
         })
     return {"total_failed": len(failed_ids), "shown": shown}
@@ -348,7 +361,7 @@ def _validate_project_files() -> tuple[bool, str, list[Path]]:
 
 
 @click.group()
-@click.version_option(version="0.1.29", prog_name="connic")
+@click.version_option(version="0.1.30", prog_name="connic")
 def main():
     """Connic Composer SDK - Build agents with code."""
     print_update_hint()
@@ -1023,9 +1036,9 @@ def _kickoff_test_run(
         json=body,
     )
     if resp.status_code == 400:
-        raise RuntimeError(f"Test request rejected: {resp.json().get('detail', resp.text)}")
+        raise RuntimeError(f"Test request rejected: {_response_error_text(resp)}")
     if resp.status_code not in (200, 202):
-        raise RuntimeError(f"Failed to start test run: {resp.text}")
+        raise RuntimeError(f"Failed to start test run: {_response_error_text(resp)}")
     return resp.json()["id"]
 
 
@@ -1064,7 +1077,7 @@ def _poll_test_run(client: "httpx.Client", poll_url: str, *, quiet: bool = False
                 announced_running = True
         if result["status"] in ("passed", "failed", "error", "cancelled"):
             return result
-        time.sleep(2)
+        time.sleep(5)
 
 
 def _render_test_cases(cases: list[dict]) -> None:

@@ -809,6 +809,27 @@ def test_test_command_reports_project_load_errors_before_creating_cloud_session(
     assert "No tests/ directory found in project" in result.output
 
 
+def test_kickoff_test_run_reports_api_detail_instead_of_raw_json():
+    class Response:
+        status_code = 503
+        text = '{"detail":"Billing verification is temporarily unavailable. Please try again in a moment."}'
+
+        def json(self):
+            return {"detail": "Billing verification is temporarily unavailable. Please try again in a moment."}
+
+    class FakeClient:
+        def post(self, path, json=None):
+            assert path == "/projects/proj_123/test-runs"
+            return Response()
+
+    with pytest.raises(RuntimeError) as exc:
+        cli._kickoff_test_run(FakeClient(), "proj_123", "env_123", b"tarball")
+
+    assert str(exc.value) == (
+        "Failed to start test run: Billing verification is temporarily unavailable. Please try again in a moment."
+    )
+
+
 def test_test_command_ignores_invalid_saved_config_and_uses_explicit_credentials(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(cli, "print_update_hint", lambda: None)
