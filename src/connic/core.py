@@ -16,11 +16,12 @@ class StopProcessing(Exception):
     """
     Raise this in middleware or in tools to gracefully stop the run
     and return a custom response string. The run is marked completed, not failed.
+    Pass publish_outbound=False to skip outbound connector delivery for this run.
 
     Middleware example:
         async def before(content, context: dict):
             if not _is_authenticated(content):
-                raise StopProcessing("Authentication required")
+                raise StopProcessing("Authentication required", publish_outbound=False)
             return content
 
     Tool example:
@@ -31,8 +32,9 @@ class StopProcessing(Exception):
                 raise StopProcessing("Refunds are disabled for this account")
             return "Refund processed"
     """
-    def __init__(self, response: str):
+    def __init__(self, response: str, *, publish_outbound: bool = True):
         self.response = response
+        self.publish_outbound = publish_outbound
         super().__init__(response)
 
 

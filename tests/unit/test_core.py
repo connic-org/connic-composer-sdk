@@ -37,6 +37,14 @@ from connic.core import (
 def test_stop_processing_stores_response():
     exc = StopProcessing("halt now")
     assert exc.response == "halt now"
+    assert exc.publish_outbound is True
+    assert str(exc) == "halt now"
+
+
+def test_stop_processing_can_disable_outbound_publish():
+    exc = StopProcessing("halt now", publish_outbound=False)
+    assert exc.response == "halt now"
+    assert exc.publish_outbound is False
     assert str(exc) == "halt now"
 
 

@@ -904,15 +904,14 @@ def test_tool_agent_resolves_single_tool(tmp_path):
     write_file(
         tmp_path / "tools" / "notifier.py",
         """
-        def send_email(to: str, subject: str, body: str) -> dict:
+        def send_email(payload: dict, context: dict | None = None) -> dict:
             \"\"\"Send an email notification.
 
             Args:
-                to: Recipient email address.
-                subject: Email subject line.
-                body: Email body content.
+                payload: Trigger payload with to/subject/body fields.
+                context: Run context.
             \"\"\"
-            return {"to": to, "subject": subject, "body": body}
+            return {"to": payload["to"], "subject": payload["subject"], "body": payload["body"]}
         """,
     )
     write_file(
@@ -926,7 +925,9 @@ def test_tool_agent_resolves_single_tool(tmp_path):
         """,
     )
 
-    agent = ProjectLoader(str(tmp_path)).load_agent("email-sender")
+    loader = ProjectLoader(str(tmp_path))
+    agent = loader.load_agent("email-sender")
+    assert loader._load_errors == []
     assert len(agent.tools) == 1
     assert agent.tools[0].name == "send_email"
     assert agent.tools[0].is_async is False
@@ -975,6 +976,61 @@ def test_tool_agent_rejects_non_custom_tool_name(tmp_path, tool_name, expected):
 
     assert len(agents) == 1
     assert any(expected in error for error in loader._load_errors)
+
+
+@pytest.mark.parametrize(
+    ("signature", "expected"),
+    [
+        ("to: str, subject: str", "must declare a 'payload' parameter"),
+        ("payload: dict, to: str", "give these parameters defaults or remove them: to"),
+    ],
+)
+def test_tool_agent_rejects_function_without_payload_signature(tmp_path, signature, expected):
+    write_file(
+        tmp_path / "tools" / "notifier.py",
+        f"""
+        def send_email({signature}) -> dict:
+            return {{}}
+        """,
+    )
+    write_file(
+        tmp_path / "agents" / "email-sender.yaml",
+        """
+        version: "1.0"
+        name: email-sender
+        type: tool
+        tool_name: notifier.send_email
+        description: "Send an email"
+        """,
+    )
+
+    loader = ProjectLoader(str(tmp_path))
+    loader.load_agents()
+    assert any(expected in error for error in loader._load_errors)
+
+
+def test_tool_agent_allows_payload_with_defaulted_extras(tmp_path):
+    write_file(
+        tmp_path / "tools" / "notifier.py",
+        """
+        def send_email(payload: dict, context: dict | None = None, retries: int = 3) -> dict:
+            return {}
+        """,
+    )
+    write_file(
+        tmp_path / "agents" / "email-sender.yaml",
+        """
+        version: "1.0"
+        name: email-sender
+        type: tool
+        tool_name: notifier.send_email
+        description: "Send an email"
+        """,
+    )
+
+    loader = ProjectLoader(str(tmp_path))
+    loader.load_agents()
+    assert loader._load_errors == []
 
 
 # ---------------------------------------------------------------------------
@@ -1732,8 +1788,8 @@ def test_output_schema_on_tool_agent_prints_warning(tmp_path, capsys):
     write_file(
         tmp_path / "tools" / "echo.py",
         """
-        def echo(text: str) -> str:
-            return text
+        def echo(payload: dict) -> dict:
+            return payload
         """,
     )
     write_file(

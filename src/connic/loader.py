@@ -52,6 +52,29 @@ PREDEFINED_TOOL_NAMES = {
 }
 
 
+def _tool_agent_signature_error(func) -> Optional[str]:
+    """Tool agent functions are called as func(payload=<dict>) plus context if declared."""
+    try:
+        params = inspect.signature(func).parameters
+    except (TypeError, ValueError):
+        return None
+    if "payload" not in params:
+        return "must declare a 'payload' parameter (and optionally 'context')"
+    extra_required = [
+        name
+        for name, param in params.items()
+        if name not in ("payload", "context")
+        and param.default is inspect.Parameter.empty
+        and param.kind not in (param.VAR_POSITIONAL, param.VAR_KEYWORD)
+    ]
+    if extra_required:
+        return (
+            "is only called with 'payload' (and optionally 'context'); "
+            f"give these parameters defaults or remove them: {', '.join(extra_required)}"
+        )
+    return None
+
+
 class ProjectLoader:
     """
     Loads a Connic project from disk, discovering agents, tools, and middlewares.
@@ -526,6 +549,12 @@ class ProjectLoader:
                         if len(resolved) != 1 or any(tool.is_predefined or tool.func is None for tool in resolved):
                             raise ValueError("tool_name must resolve to exactly one custom tool")
                         tools.extend(resolved)
+                        sig_error = _tool_agent_signature_error(resolved[0].func)
+                        if sig_error:
+                            self._load_errors.append(
+                                f"Tool agent '{config.name}': function '{config.tool_name}' {sig_error}. "
+                                "The trigger payload is passed as payload=<dict>."
+                            )
                     except Exception as e:
                         self._load_errors.append(f"Tool agent '{config.name}': cannot resolve tool '{config.tool_name}': {e}")
 

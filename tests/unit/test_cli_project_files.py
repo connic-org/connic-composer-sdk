@@ -661,9 +661,9 @@ def test_lint_command_prints_sequential_tool_and_runtime_controls(tmp_path, monk
     (tmp_path / "agents").mkdir()
     (tmp_path / "tools").mkdir()
     (tmp_path / "tools" / "tickets.py").write_text(
-        'def lookup(ticket_id: str) -> dict:\n'
+        'def lookup(payload: dict) -> dict:\n'
         '    """Look up a ticket by ID."""\n'
-        '    return {"ticket_id": ticket_id}\n'
+        '    return {"ticket_id": payload["ticket_id"]}\n'
     )
     (tmp_path / "agents" / "lookup.yaml").write_text(
         'version: "1.0"\n'
