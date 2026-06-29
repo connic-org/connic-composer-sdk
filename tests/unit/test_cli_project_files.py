@@ -2237,6 +2237,147 @@ def test_test_command_renders_failed_case_and_dashboard_link_for_explicit_enviro
     assert "0/1 cases passed." in result.output
 
 
+def test_test_command_renders_failed_run_diagnostics_and_limits_detail_fetches(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(cli, "print_update_hint", lambda: None)
+    write_minimal_test_project(tmp_path)
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "tests" / "support.yaml").write_text(
+        "agent: support\n"
+        "tests:\n"
+        "  - name: routes_priority_refunds\n"
+        "    payload: '{\"message\":\"refund my priority shipment\"}'\n"
+        "    expected_result: output.category == \"refund\"\n"
+    )
+    requests = []
+
+    class Response:
+        def __init__(self, status_code, payload=None, text=""):
+            self.status_code = status_code
+            self._payload = payload
+            self.text = text
+
+        def json(self):
+            return self._payload
+
+    class FakeClient:
+        def __init__(self, base_url, headers, timeout):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def post(self, path, json=None):
+            requests.append(("POST", path))
+            return Response(200, {"id": "test_run_123"})
+
+        def get(self, path):
+            requests.append(("GET", path))
+            if path == "/projects/proj_123/test-runs/test_run_123":
+                return Response(
+                    200,
+                    {
+                        "status": "failed",
+                        "phase": "running_tests",
+                        "total_cases": 1,
+                        "cases": [
+                            {
+                                "agent_name": "support",
+                                "test_name": "routes_priority_refunds",
+                                "passed": False,
+                                "successes": 1,
+                                "runs": 5,
+                                "success_threshold": 80,
+                                "failure_reason": "Refund intent was routed to shipping.",
+                                "agent_run_ids": [
+                                    "run_failed_trace",
+                                    "run_passed",
+                                    "run_unavailable",
+                                    "run_failed_plain",
+                                    "run_failed_omitted",
+                                ],
+                                "agent_run_passed": [False, True, False, False, False],
+                            }
+                        ],
+                    },
+                )
+            if path == "/projects/proj_123/runs/run_failed_trace":
+                return Response(
+                    200,
+                    {
+                        "input": "priority refund " + "x" * 900,
+                        "output": '{"category":"shipping"}',
+                        "error": "Expected refund, received shipping",
+                        "run_context": {"customer_id": "cust_42", "tier": "priority"},
+                        "traces": [
+                            {
+                                "type": "agent",
+                                "name": "support",
+                                "status": "ok",
+                                "duration_ms": 120.8,
+                                "span_id": "agent",
+                                "parent_span_id": None,
+                                "span_order": 1,
+                                "metadata_json": "{}",
+                            },
+                            {
+                                "type": "tool",
+                                "name": "tool_call",
+                                "status": "error",
+                                "duration_ms": 15,
+                                "span_id": "tool",
+                                "parent_span_id": "agent",
+                                "span_order": 2,
+                                "metadata_json": json.dumps(
+                                    {
+                                        "tool_name": "shipping.lookup",
+                                        "error": "Order belongs to the refund queue",
+                                    }
+                                ),
+                            },
+                            {
+                                "type": "log",
+                                "name": "internal-log",
+                                "status": "ok",
+                                "span_id": "log",
+                                "parent_span_id": "agent",
+                            },
+                        ],
+                    },
+                )
+            if path == "/projects/proj_123/runs/run_unavailable":
+                return Response(503)
+            if path == "/projects/proj_123/runs/run_failed_plain":
+                return Response(200, {"input": "retry refund", "output": "shipping"})
+            raise AssertionError(f"Unexpected GET {path}")
+
+    monkeypatch.setattr(cli.httpx, "Client", FakeClient)
+
+    result = CliRunner().invoke(
+        cli.main,
+        ["test", "--env", "env_manual", "--api-key", "cnc_test", "--project-id", "proj_123"],
+    )
+
+    assert result.exit_code == 1, result.output
+    assert "Run run_failed_trace" in result.output
+    assert "priority refund " in result.output
+    assert "(truncated)" in result.output
+    assert '{"category":"shipping"}' in result.output
+    assert '"customer_id": "cust_42"' in result.output
+    assert "Expected refund, received shipping" in result.output
+    assert "✓ support (120ms)" in result.output
+    assert "✗ shipping.lookup (15ms) — Order belongs to the refund queue" in result.output
+    assert "internal-log" not in result.output
+    assert "Run run_unavailable (could not load: HTTP 503)" in result.output
+    assert "Run run_failed_plain" in result.output
+    assert "… and 1 more failed run(s) not shown" in result.output
+    assert ("GET", "/projects/proj_123/runs/run_passed") not in requests
+    assert ("GET", "/projects/proj_123/runs/run_failed_omitted") not in requests
+
+
 def test_dev_session_test_runner_submits_project_tests_to_active_environment(tmp_path, monkeypatch, capsys):
     monkeypatch.chdir(tmp_path)
     write_minimal_test_project(tmp_path)

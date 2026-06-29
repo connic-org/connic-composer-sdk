@@ -2044,6 +2044,48 @@ def test_mcp_servers_dedup_by_name(tmp_path):
     assert by_name["shared"].url == "https://mcp.example.com/shared-override"
 
 
+def test_guardrail_defaults_preserve_unnamed_rules_and_override_named_rules(tmp_path):
+    write_file(
+        tmp_path / "agents" / "_defaults.yaml",
+        """
+        version: "1.0"
+        type: llm
+        model: openai/gpt-5.2
+        system_prompt: "Default support prompt."
+        guardrails:
+          input:
+            - type: prompt_injection
+              mode: block
+            - type: custom
+              name: validate-ticket-id
+              mode: block
+        """,
+    )
+    write_file(
+        tmp_path / "agents" / "support-agent.yaml",
+        """
+        version: "1.0"
+        name: support-agent
+        description: "Handles customer support requests."
+        guardrails:
+          input:
+            - type: custom
+              name: validate-ticket-id
+              mode: warn
+            - type: pii
+              mode: redact
+        """,
+    )
+
+    agent = ProjectLoader(str(tmp_path)).load_agent("support-agent")
+
+    assert [(rule.type, rule.name, rule.mode) for rule in agent.config.guardrails.input] == [
+        ("prompt_injection", None, "block"),
+        ("custom", "validate-ticket-id", "warn"),
+        ("pii", None, "redact"),
+    ]
+
+
 def test_database_collections_dict_deep_merge(tmp_path):
     write_file(
         tmp_path / "agents" / "_defaults.yaml",

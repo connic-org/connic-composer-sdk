@@ -415,6 +415,26 @@ def test_mocks_parses_and_strips_trailing_py_suffix():
     assert test_file.resolved(test_file.tests[0])["mocks"] == "customer_mocks"
 
 
+def test_mocks_inherits_from_defaults_and_allows_case_override():
+    test_file = ConnicTestFile.model_validate(
+        {
+            "defaults": {"mocks": "safe_billing_tools.py"},
+            "tests": [
+                {"name": "refunds_without_charging", "payload": '{"charge_id": "ch_123"}'},
+                {
+                    "name": "emails_receipt",
+                    "payload": '{"customer_id": "cus_123"}',
+                    "mocks": "customer_notifications",
+                },
+            ],
+        }
+    )
+
+    by_name = {case.name: test_file.resolved(case) for case in test_file.tests}
+    assert by_name["refunds_without_charging"]["mocks"] == "safe_billing_tools"
+    assert by_name["emails_receipt"]["mocks"] == "customer_notifications"
+
+
 def test_explicit_null_mocks_is_allowed_with_payload():
     test_file = ConnicTestFile.model_validate(
         {"tests": [{"name": "t", "payload": "p", "mocks": None}]}

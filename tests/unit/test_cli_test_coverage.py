@@ -125,6 +125,32 @@ def test_partial_coverage_reports_only_missing_tools(tmp_path):
     assert agent["uncovered_tools"] == ["calculator.subtract"]
 
 
+def test_coverage_combines_split_suites_targeting_the_same_agent(tmp_path):
+    _write_calculator_tool(tmp_path)
+    _write_llm_agent(tmp_path, "math-agent", tools=["calculator.add", "calculator.subtract"])
+    _write_test_file(tmp_path, "math-agent", [["calculator.add"]])
+    _write(tmp_path / "tests" / "files" / "subtraction.json", '{"a": 5, "b": 3}')
+    _write(
+        tmp_path / "tests" / "math-agent-subtraction.yml",
+        """
+        version: "1.0"
+        agent: math-agent
+        tests:
+          - name: subtracts_numbers
+            payload: '{"a": 5, "b": 3}'
+            expected_result: status == "completed"
+            expected_tool_calls:
+              - calculator.subtract
+        """,
+    )
+
+    [agent] = cli._compute_local_coverage(tmp_path)["agents"]
+    assert agent["has_tests"] is True
+    assert agent["tools_covered"] == 2
+    assert agent["percent"] == 100.0
+    assert agent["uncovered_tools"] == []
+
+
 def test_mapping_form_of_expected_tool_calls_counts_as_covered(tmp_path):
     """`- tool: expression` mapping form counts the same as bare strings."""
     _write_calculator_tool(tmp_path)
@@ -363,6 +389,25 @@ def test_unparseable_test_file_for_agent_without_tools_is_not_counted(tmp_path):
     assert agent["parse_error"] is not None
 
 
+def test_invalid_split_suite_is_reported_for_its_explicit_agent(tmp_path):
+    _write_calculator_tool(tmp_path)
+    _write_llm_agent(tmp_path, "math-agent", tools=["calculator.add"])
+    _write_test_file(tmp_path, "math-agent", [["calculator.add"]])
+    _write(
+        tmp_path / "tests" / "math-agent-invalid.yaml",
+        """
+        version: "1.0"
+        agent: math-agent
+        tests: []
+        """,
+    )
+
+    [agent] = cli._compute_local_coverage(tmp_path)["agents"]
+    assert agent["has_tests"] is True
+    assert agent["percent"] is None
+    assert "at least 1 item" in agent["parse_error"]
+
+
 def test_compute_local_coverage_returns_error_when_agents_dir_is_missing(tmp_path):
     report = cli._compute_local_coverage(tmp_path)
     assert report["agents"] == []
@@ -391,6 +436,40 @@ def test_test_command_with_coverage_flag_runs_offline_without_credentials(tmp_pa
     assert "math-agent" in result.output
     assert "100.0%" in result.output
     assert "Overall coverage" in result.output
+
+
+def test_test_command_with_coverage_lists_uncovered_tools(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    _write_calculator_tool(tmp_path)
+    _write_llm_agent(tmp_path, "math-agent", tools=["calculator.add", "calculator.subtract"])
+    _write_test_file(tmp_path, "math-agent", [["calculator.add"]])
+    monkeypatch.delenv("CONNIC_API_KEY", raising=False)
+    monkeypatch.delenv("CONNIC_PROJECT_ID", raising=False)
+
+    result = CliRunner().invoke(cli.main, ["test", "--coverage"])
+
+    assert result.exit_code == 0, result.output
+    assert "math-agent" in result.output
+    assert "1/2" in result.output
+    assert "50.0%" in result.output
+    assert "Uncovered tools" in result.output
+    assert "math-agent: calculator.subtract" in result.output
+
+
+def test_test_command_with_coverage_reports_agent_without_tests(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    _write_calculator_tool(tmp_path)
+    _write_llm_agent(tmp_path, "untested-agent", tools=["calculator.add"])
+    monkeypatch.delenv("CONNIC_API_KEY", raising=False)
+    monkeypatch.delenv("CONNIC_PROJECT_ID", raising=False)
+
+    result = CliRunner().invoke(cli.main, ["test", "--coverage"])
+
+    assert result.exit_code == 0, result.output
+    assert "untested-agent" in result.output
+    assert "no tests" in result.output
+    assert "0.0%" in result.output
+    assert "Overall coverage: 0.0%" in result.output
 
 
 def test_test_command_with_coverage_stops_on_unparseable_test_file(tmp_path, monkeypatch):

@@ -853,11 +853,18 @@ def test_migrate_command_reports_custom_adk_wrappers_when_no_explicit_agents_are
         ["migrate", "--source", str(source), "--dest", str(destination)],
     )
 
-    assert result.exit_code != 0
+    report = (destination / "MIGRATION_REPORT.md").read_text()
+
+    assert result.exit_code == 0
     assert "Framework: adk" in result.output
     assert "Detected dynamically registered custom ADK agent wrappers (TenantAwareAgent) in custom_agents.py" in result.output
-    assert "No migratable agents were found" in result.output
-    assert not destination.exists()
+    assert "No migratable agents were found. Generating an empty scaffold for manual migration." in result.output
+    assert list((destination / "agents").iterdir()) == []
+    assert (destination / "tools").is_dir()
+    assert (destination / "middleware").is_dir()
+    assert (destination / "schemas").is_dir()
+    assert "- Generated agents: 0" in report
+    assert "Detected dynamically registered custom ADK agent wrappers (TenantAwareAgent) in custom_agents.py" in report
 
 
 def test_migrate_command_reports_custom_adk_wrappers_with_qualified_base_class(tmp_path):
@@ -884,11 +891,14 @@ def test_migrate_command_reports_custom_adk_wrappers_with_qualified_base_class(t
         ["migrate", "--source", str(source), "--dest", str(destination)],
     )
 
-    assert result.exit_code != 0
+    report = (destination / "MIGRATION_REPORT.md").read_text()
+
+    assert result.exit_code == 0
     assert "Framework: adk" in result.output
     assert "Detected dynamically registered custom ADK agent wrappers (TenantAwareAgent) in custom_agents.py" in result.output
-    assert "No migratable agents were found" in result.output
-    assert not destination.exists()
+    assert "No migratable agents were found. Generating an empty scaffold for manual migration." in result.output
+    assert "- Generated agents: 0" in report
+    assert "Detected dynamically registered custom ADK agent wrappers (TenantAwareAgent) in custom_agents.py" in report
 
 
 def test_langchain_migration_resolves_imported_prompt_model_and_tool_dependencies(tmp_path):
@@ -968,6 +978,71 @@ def test_langchain_migration_resolves_imported_prompt_model_and_tool_dependencie
     assert "def lookup_order" in order_tool
     assert formatter_dependency.exists()
     assert "def format_total" in formatter_dependency.read_text()
+    assert any("No source requirements.txt found" in note for note in report_notes)
+
+
+def test_langchain_migration_resolves_imported_module_alias_tool_and_config(tmp_path):
+    source = tmp_path / "langchain-module-alias"
+    destination = tmp_path / "connic-app"
+    write(
+        source / "settings.py",
+        '''
+        MODEL_NAME = "gpt-4.1-mini"
+        BASE_PROMPT = "Use catalog search to answer shopper questions."
+
+
+        def support_prompt():
+            return BASE_PROMPT
+        ''',
+    )
+    write(
+        source / "support" / "catalog.py",
+        '''
+        def normalize_query(query: str) -> str:
+            return query.strip().lower()
+
+
+        def search_catalog(query: str) -> dict:
+            return {"query": normalize_query(query), "matches": []}
+        ''',
+    )
+    write(
+        source / "agent.py",
+        '''
+        from langchain.agents import create_react_agent
+        import settings
+        import support.catalog as catalog_tools
+
+
+        shopper_agent = create_react_agent(
+            model=settings.MODEL_NAME,
+            tools=[catalog_tools.search_catalog],
+            prompt=settings.support_prompt(),
+            name="Shopper Support",
+        )
+        ''',
+    )
+
+    framework, detection_notes, agents, module_infos = migrate._build_migration_candidates(source)
+    report_notes = migrate._generate_migrated_project(
+        source,
+        destination,
+        framework,
+        detection_notes,
+        agents,
+        module_infos,
+        no_scaffold,
+    )
+
+    agent_yaml = yaml.safe_load((destination / "agents" / "shopper-support.yaml").read_text())
+    migrated_tool = (destination / "tools" / "support" / "catalog.py").read_text()
+
+    assert framework == "langchain"
+    assert agent_yaml["model"] == "openai/gpt-4.1-mini"
+    assert agent_yaml["system_prompt"] == "Use catalog search to answer shopper questions."
+    assert agent_yaml["tools"] == ["support.catalog.search_catalog"]
+    assert "def search_catalog" in migrated_tool
+    assert "def normalize_query" in migrated_tool
     assert any("No source requirements.txt found" in note for note in report_notes)
 
 
