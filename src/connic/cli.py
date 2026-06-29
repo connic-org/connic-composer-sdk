@@ -361,7 +361,7 @@ def _validate_project_files() -> tuple[bool, str, list[Path]]:
 
 
 @click.group()
-@click.version_option(version="0.1.31", prog_name="connic")
+@click.version_option(version="0.1.32", prog_name="connic")
 def main():
     """Connic Composer SDK - Build agents with code."""
     print_update_hint()
@@ -1162,6 +1162,24 @@ def _compute_local_coverage(project_root: Path) -> dict:
     tests_dir = project_root / "tests"
     DISCOVERY_MARKERS = {"search_tools", "use_tool"}
 
+    test_suites: dict[str, list[tuple[TestFile | None, str | None]]] = {}
+    if tests_dir.is_dir():
+        for path in sorted(tests_dir.rglob("*")):
+            if not path.is_file() or path.suffix.lower() not in (".yaml", ".yml"):
+                continue
+            agent_name = path.stem
+            try:
+                with open(path) as f:
+                    doc = _yaml.safe_load(f) or {}
+                if isinstance(doc, dict) and isinstance(doc.get("agent"), str):
+                    agent_name = doc["agent"]
+                parsed = TestFile(**doc)
+                error = None
+            except Exception as e:
+                parsed = None
+                error = f"{path.relative_to(project_root)}: {e}"
+            test_suites.setdefault(agent_name, []).append((parsed, error))
+
     rows: list[dict] = []
     for agent in agents:
         if getattr(agent.config, "is_test_variant", False):
@@ -1174,52 +1192,44 @@ def _compute_local_coverage(project_root: Path) -> dict:
                 continue
             agent_tools.add(tool.ref or tool.name)
 
-        test_file_path: Path | None = None
-        for ext in (".yaml", ".yml"):
-            candidate = tests_dir / f"{agent_name}{ext}"
-            if candidate.exists():
-                test_file_path = candidate
-                break
-
+        suites = test_suites.get(agent_name, [])
         covered: set[str] = set()
-        parse_error: str | None = None
-        if test_file_path is not None:
-            try:
-                with open(test_file_path) as f:
-                    parsed = TestFile(**(_yaml.safe_load(f) or {}))
-                # Tool-agents ARE their body tool: any test run invokes it,
-                # so the agent's tool is covered whenever the file has tests.
-                if agent.config.type == AgentType.TOOL and parsed.tests:
-                    covered |= agent_tools
-                for case in parsed.tests:
-                    expected_refs = [
-                        entry if isinstance(entry, str) else next(iter(entry.keys()))
-                        for entry in case.expected_tool_calls
-                    ]
-                    expected_refs.extend(case.expected_tool_call_order)
-                    for ref in expected_refs:
-                        if ref in agent_tools:
-                            covered.add(ref)
-                            continue
-                        # Fallback: match by short function name (last segment).
-                        for at in agent_tools:
-                            if at.split(".")[-1] == ref.split(".")[-1]:
-                                covered.add(at)
-                                break
-            except Exception as e:
-                parse_error = str(e)
+        parse_errors = [error for _, error in suites if error is not None]
+        parse_error = "; ".join(parse_errors) if parse_errors else None
+        for parsed, error in suites:
+            if error is not None or parsed is None:
+                continue
+            # Tool-agents ARE their body tool: any test run invokes it,
+            # so the agent's tool is covered whenever the file has tests.
+            if agent.config.type == AgentType.TOOL and parsed.tests:
+                covered |= agent_tools
+            for case in parsed.tests:
+                expected_refs = [
+                    entry if isinstance(entry, str) else next(iter(entry.keys()))
+                    for entry in case.expected_tool_calls
+                ]
+                expected_refs.extend(case.expected_tool_call_order)
+                for ref in expected_refs:
+                    if ref in agent_tools:
+                        covered.add(ref)
+                        continue
+                    # Fallback: match by short function name (last segment).
+                    for at in agent_tools:
+                        if at.split(".")[-1] == ref.split(".")[-1]:
+                            covered.add(at)
+                            break
 
         if parse_error is not None:
             pct = None
         elif agent_tools:
             pct = 100.0 * len(covered) / len(agent_tools)
         else:
-            pct = 100.0 if test_file_path is not None else 0.0
+            pct = 100.0 if suites else 0.0
 
         rows.append({
             "name": agent_name,
             "type": agent.config.type.value if isinstance(agent.config.type, AgentType) else str(agent.config.type),
-            "has_tests": test_file_path is not None,
+            "has_tests": bool(suites),
             "tools_total": len(agent_tools),
             "tools_covered": len(covered),
             "uncovered_tools": sorted(agent_tools - covered),

@@ -3,7 +3,6 @@ from __future__ import annotations
 import ast
 import re
 import shutil
-import sys
 import textwrap
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -1327,7 +1326,7 @@ def _generate_migrated_project(
 
 
 def register_migrate_command(main: click.Group, write_essential_files: WriteEssentialFiles, run_lint: RunLint) -> None:
-    from .cli import _done, _err, _fail_and_exit, _h1, _info, _ok, _step, _warn
+    from .cli import _done, _fail_and_exit, _h1, _info, _ok, _step, _warn
 
     @main.command()
     @click.option("--source", "source_path", type=click.Path(path_type=Path, file_okay=False), default=None, help="Path to the existing LangChain or ADK project")
@@ -1362,12 +1361,7 @@ def register_migrate_command(main: click.Group, write_essential_files: WriteEsse
         framework, detection_notes, agents, module_infos = _build_migration_candidates(source_root)
 
         if not agents:
-            _info(f"Framework: {framework}")
-            for note in detection_notes:
-                _info(f"- {note}")
-            _err("No migratable agents were found.")
-            _info("Add the project manually and use the migration guides for framework-specific help.")
-            sys.exit(1)
+            _warn("No migratable agents were found. Generating an empty scaffold for manual migration.")
 
         tool_count = len({tool.ref or (str(tool.source_file), tool.function_name) for agent in agents for tool in agent.tool_candidates})
         _ok(f"Framework: {framework}")
