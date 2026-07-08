@@ -241,6 +241,148 @@ def test_loads_mcp_server_with_bridge(tmp_path):
     assert servers_by_name["public-mcp"].bridge is None
 
 
+def test_loads_context_compression_config(tmp_path):
+    write_file(
+        tmp_path / "agents" / "assistant.yaml",
+        """
+        version: "1.0"
+        name: assistant
+        type: llm
+        model: openai/gpt-5.2
+        description: "Assistant with long-running sessions"
+        system_prompt: "Use prior context when answering."
+        session:
+          key: input.chat_id
+        context_compression:
+          enabled: true
+          session_history:
+            interval: 8
+            keep_recent_runs: 2
+        """,
+    )
+
+    agent = ProjectLoader(str(tmp_path)).load_agent("assistant")
+
+    compression = agent.config.context_compression
+    assert compression.enabled is True
+    assert compression.session_history.interval == 8
+    assert compression.session_history.keep_recent_runs == 2
+
+
+def test_loads_context_compression_prompt_budget(tmp_path):
+    write_file(
+        tmp_path / "agents" / "assistant.yaml",
+        """
+        version: "1.0"
+        name: assistant
+        type: llm
+        model: openai/gpt-5.2
+        description: "Invalid compression config"
+        system_prompt: "Use prior context when answering."
+        context_compression:
+          enabled: true
+          max_prompt_tokens: 100000
+          keep_recent_messages: 12
+        """,
+    )
+
+    agent = ProjectLoader(str(tmp_path)).load_agent("assistant")
+
+    compression = agent.config.context_compression
+    assert compression.max_prompt_tokens == 100000
+    assert compression.keep_recent_messages == 12
+
+
+def test_context_compression_can_enable_provider_error_recovery_only(tmp_path):
+    write_file(
+        tmp_path / "agents" / "assistant.yaml",
+        """
+        version: "1.0"
+        name: assistant
+        type: llm
+        model: openai/gpt-5.2
+        description: "Assistant with automatic context recovery"
+        system_prompt: "Use prior context when answering."
+        context_compression:
+          enabled: true
+        """,
+    )
+
+    agent = ProjectLoader(str(tmp_path)).load_agent("assistant")
+
+    compression = agent.config.context_compression
+    assert compression.enabled is True
+    assert compression.max_prompt_tokens is None
+    assert compression.session_history is None
+
+
+def test_context_compression_rejects_unknown_fields(tmp_path):
+    write_file(
+        tmp_path / "agents" / "assistant.yaml",
+        """
+        version: "1.0"
+        name: assistant
+        type: llm
+        model: openai/gpt-5.2
+        description: "Assistant with invalid compression config"
+        system_prompt: "Use prior context when answering."
+        context_compression:
+          enabled: true
+          keep_recent_messagez: 12
+        """,
+    )
+
+    loader = ProjectLoader(str(tmp_path))
+
+    assert loader.load_agents() == []
+    assert "keep_recent_messagez" in loader._load_errors[0]
+
+
+def test_context_compression_rejects_unknown_session_history_fields(tmp_path):
+    write_file(
+        tmp_path / "agents" / "assistant.yaml",
+        """
+        version: "1.0"
+        name: assistant
+        type: llm
+        model: openai/gpt-5.2
+        description: "Assistant with invalid compression history"
+        system_prompt: "Use prior context when answering."
+        context_compression:
+          enabled: true
+          session_history:
+            intervalz: 4
+        """,
+    )
+
+    loader = ProjectLoader(str(tmp_path))
+
+    assert loader.load_agents() == []
+    assert "intervalz" in loader._load_errors[0]
+
+
+def test_context_compression_is_llm_only(tmp_path):
+    write_file(
+        tmp_path / "agents" / "tool-agent.yaml",
+        """
+        version: "1.0"
+        name: tool-agent
+        type: tool
+        description: "Invalid compression config"
+        tool_name: helper.run
+        context_compression:
+          enabled: true
+          session_history:
+            interval: 4
+        """,
+    )
+
+    loader = ProjectLoader(str(tmp_path))
+
+    assert loader.load_agents() == []
+    assert "context_compression is only supported for LLM agents" in loader._load_errors[0]
+
+
 def test_validation_only_builds_tool_schema_without_importing_module(tmp_path):
     write_file(
         tmp_path / "tools" / "inventory.py",

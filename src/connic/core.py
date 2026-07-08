@@ -2,7 +2,7 @@ import asyncio
 from enum import Enum
 from typing import Any, Callable, Dict, List, Literal, Optional, Union
 
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
 class AgentType(str, Enum):
@@ -177,6 +177,59 @@ class SessionConfig(BaseModel):
                 "(e.g., 'context.chat_id')."
             )
         return v
+
+
+class SessionHistoryCompactionConfig(BaseModel):
+    """
+    Stored session-history compaction for long-running conversations.
+    """
+    model_config = ConfigDict(extra="forbid")
+
+    interval: Optional[int] = Field(
+        default=None,
+        ge=1,
+        description="Compact older stored session history after this many runs.",
+    )
+    keep_recent_runs: int = Field(
+        default=1,
+        ge=0,
+        description="Number of recent runs to keep unsummarized during stored session-history compaction.",
+    )
+
+
+class ContextCompressionConfig(BaseModel):
+    """
+    Context compression configuration for long-running LLM sessions.
+
+    When enabled, the runner recovers from provider context-window errors by
+    compressing older history and oversized tool results, then retrying.
+
+    Example YAML:
+        context_compression:
+          enabled: true
+          keep_recent_messages: 12
+          session_history:
+            interval: 4
+            keep_recent_runs: 1
+          max_prompt_tokens: 100000
+    """
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool = Field(default=True, description="Enable context compression for this LLM agent.")
+    max_prompt_tokens: Optional[int] = Field(
+        default=None,
+        ge=1,
+        description="Optional prompt-token budget. Uses model-reported usage from prior calls to compress before a later call.",
+    )
+    keep_recent_messages: int = Field(
+        default=8,
+        ge=1,
+        description="Number of recent messages to keep verbatim when compression runs.",
+    )
+    session_history: Optional[SessionHistoryCompactionConfig] = Field(
+        default=None,
+        description="Optional compaction for stored session history between runs.",
+    )
 
 
 class ConcurrencyConfig(BaseModel):
@@ -626,6 +679,12 @@ class AgentConfig(BaseModel):
         description="Persistent session configuration. When set, the agent maintains "
                     "conversation history across requests, keyed by the resolved value."
     )
+
+    # Context compression configuration
+    context_compression: Optional[ContextCompressionConfig] = Field(
+        default=None,
+        description="Context compression configuration for long-running LLM sessions.",
+    )
     
     # Guardrails configuration
     guardrails: Optional[GuardrailsConfig] = Field(
@@ -695,9 +754,13 @@ class AgentConfig(BaseModel):
             if not self.system_prompt:
                 raise ValueError("LLM agents require 'system_prompt' to be specified")
         elif self.type == AgentType.SEQUENTIAL:
+            if self.context_compression:
+                raise ValueError("context_compression is only supported for LLM agents")
             if not self.agents:
                 raise ValueError("Sequential agents require 'agents' list to be defined")
         elif self.type == AgentType.TOOL:
+            if self.context_compression:
+                raise ValueError("context_compression is only supported for LLM agents")
             if not self.tool_name:
                 raise ValueError("Tool agents require 'tool_name' to be specified")
         return self

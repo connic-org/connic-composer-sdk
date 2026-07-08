@@ -30,15 +30,29 @@ Middleware:
 # Predefined tools module - for use in custom tools
 from . import tools
 from .bridge import bridge_host
-from .core import AbortTool, Agent, AgentConfig, GuardrailResult, Middleware, RetryOptions, StopProcessing, Tool, ToolHook
+from .core import (
+    AbortTool,
+    Agent,
+    AgentConfig,
+    ContextCompressionConfig,
+    GuardrailResult,
+    Middleware,
+    RetryOptions,
+    SessionHistoryCompactionConfig,
+    StopProcessing,
+    Tool,
+    ToolHook,
+)
 from .loader import ProjectLoader
 
-__version__ = "0.1.32"
+__version__ = "0.1.33"
 
 __all__ = [
     "AbortTool",
     "Agent",
     "AgentConfig",
+    "ContextCompressionConfig",
+    "SessionHistoryCompactionConfig",
     "Tool",
     "ToolHook",
     "RetryOptions",
