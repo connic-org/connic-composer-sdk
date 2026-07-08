@@ -191,6 +191,47 @@ def test_langchain_migration_reports_wildcard_imported_tools_without_crashing(tm
     assert "Could not resolve tool reference 'lookup_invoice' in agent.py." in report
 
 
+def test_langchain_migration_reports_external_and_string_tool_refs_for_manual_mapping(tmp_path):
+    source = tmp_path / "langchain-external-tools"
+    destination = tmp_path / "connic-app"
+    write(
+        source / "agent.py",
+        '''
+        from langchain.agents import create_agent
+        import billing_tools
+
+
+        support_agent = create_agent(
+            model="openai:gpt-4o-mini",
+            tools=[billing_tools.lookup_invoice, "internal_crm.search_account"],
+            system_prompt="Answer billing questions with invoice and CRM context.",
+            name="Billing Support",
+        )
+        ''',
+    )
+
+    framework, detection_notes, agents, module_infos = migrate._build_migration_candidates(source)
+    migrate._generate_migrated_project(
+        source,
+        destination,
+        framework,
+        detection_notes,
+        agents,
+        module_infos,
+        no_scaffold,
+    )
+
+    agent_yaml = yaml.safe_load((destination / "agents" / "billing-support.yaml").read_text())
+    report = (destination / "MIGRATION_REPORT.md").read_text()
+
+    assert framework == "langchain"
+    assert agent_yaml["model"] == "openai/gpt-4o-mini"
+    assert agent_yaml["system_prompt"] == "Answer billing questions with invoice and CRM context."
+    assert "tools" not in agent_yaml
+    assert "Could not resolve tool attribute 'billing_tools.lookup_invoice'." in report
+    assert "Could not migrate string-based tool reference 'internal_crm.search_account'." in report
+
+
 def test_migrate_command_rejects_destination_inside_source_project(tmp_path):
     source = tmp_path / "langchain-app"
     source.mkdir()
@@ -297,6 +338,51 @@ def test_migrate_command_generates_project_and_reports_lint_issues(tmp_path):
     assert agent_yaml["tools"] == ["agent.check_order_status"]
     assert "def check_order_status" in (destination / "tools" / "agent.py").read_text()
     assert "Follow-up Items" in (destination / "MIGRATION_REPORT.md").read_text()
+
+
+def test_migrate_command_prompts_for_paths_and_completes_successfully(tmp_path):
+    source = tmp_path / "langchain-app"
+    destination = tmp_path / "connic-app"
+    write(
+        source / "agent.py",
+        '''
+        from langchain.agents import create_agent
+
+
+        def lookup_account(account_id: str) -> dict:
+            return {"account_id": account_id, "tier": "enterprise"}
+
+
+        account_agent = create_agent(
+            model="openai:gpt-4o-mini",
+            tools=[lookup_account],
+            system_prompt="Answer account questions with CRM context.",
+            name="Account Support",
+        )
+        ''',
+    )
+
+    lint_calls = []
+
+    def passing_lint(**kwargs):
+        lint_calls.append(kwargs)
+        return True
+
+    result = CliRunner().invoke(
+        make_migrate_cli(passing_lint),
+        ["migrate"],
+        input=f"{source}\n{destination}\n",
+    )
+
+    agent_yaml = yaml.safe_load((destination / "agents" / "account-support.yaml").read_text())
+
+    assert result.exit_code == 0
+    assert "Existing project path" in result.output
+    assert "New Connic project path" in result.output
+    assert "Migration complete." in result.output
+    assert lint_calls == [{"quiet": True, "project_root": str(destination.resolve())}]
+    assert agent_yaml["model"] == "openai/gpt-4o-mini"
+    assert agent_yaml["tools"] == ["agent.lookup_account"]
 
 
 def test_adk_migration_preserves_agent_chain_and_function_tools(tmp_path):

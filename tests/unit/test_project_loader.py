@@ -1083,6 +1083,24 @@ def test_empty_agent_yaml_is_reported_as_error(tmp_path):
     assert any("empty" in e.lower() or "Empty" in e for e in loader._load_errors)
 
 
+def test_non_mapping_agent_yaml_is_reported_as_error(tmp_path):
+    write_file(
+        tmp_path / "agents" / "broken.yaml",
+        """
+        - version: "1.0"
+        - name: broken
+        """,
+    )
+
+    loader = ProjectLoader(str(tmp_path))
+    agents = loader.load_agents()
+
+    assert agents == []
+    assert len(loader._load_errors) == 1
+    assert "agents/broken.yaml" in loader._load_errors[0]
+    assert "Agent configuration must be a YAML mapping" in loader._load_errors[0]
+
+
 def test_duplicate_agent_names_across_files_are_reported(tmp_path):
     for subdir in ("a", "b"):
         write_file(
@@ -1261,6 +1279,63 @@ def test_wildcard_no_matches_is_a_load_error(tmp_path):
 
     loader = ProjectLoader(str(tmp_path))
     agents = loader.load_agents()
+    assert any("matched no tools" in e for e in loader._load_errors)
+
+
+def test_invalid_wildcard_pattern_is_a_load_error(tmp_path):
+    write_file(
+        tmp_path / "agents" / "biller.yaml",
+        """
+        version: "1.0"
+        name: biller
+        type: llm
+        model: openai/gpt-5.2
+        description: "Billing agent"
+        system_prompt: "Handle billing."
+        tools:
+          - "*"
+        """,
+    )
+
+    loader = ProjectLoader(str(tmp_path))
+    agents = loader.load_agents()
+
+    assert len(agents) == 1
+    assert agents[0].tools == []
+    assert any("Invalid wildcard pattern" in e for e in loader._load_errors)
+
+
+def test_wildcard_reports_module_import_failure(tmp_path):
+    write_file(
+        tmp_path / "tools" / "billing.py",
+        """
+        raise RuntimeError("billing SDK is not installed")
+
+
+        def create_invoice(customer: str) -> dict:
+            return {}
+        """,
+    )
+    write_file(
+        tmp_path / "agents" / "biller.yaml",
+        """
+        version: "1.0"
+        name: biller
+        type: llm
+        model: openai/gpt-5.2
+        description: "Billing agent"
+        system_prompt: "Handle billing."
+        tools:
+          - "billing.create_*"
+        """,
+    )
+
+    loader = ProjectLoader(str(tmp_path))
+    agents = loader.load_agents()
+
+    assert len(agents) == 1
+    assert agents[0].tools == []
+    assert any("failed to load module 'billing'" in e for e in loader._load_errors)
     assert any("matched no tools" in e for e in loader._load_errors)
 
 
@@ -1452,6 +1527,26 @@ def test_load_schema_missing_type(tmp_path):
 def test_discover_schemas_empty(tmp_path):
     loader = ProjectLoader(str(tmp_path))
     assert loader.discover_schemas() == []
+
+
+def test_missing_output_schema_records_warning_without_blocking_agent(tmp_path, capsys):
+    write_file(
+        tmp_path / "agents" / "structured-agent.yaml",
+        """
+        version: "1.0"
+        name: structured-agent
+        type: llm
+        model: openai/gpt-5.2
+        description: "Agent intended to return structured data."
+        system_prompt: "Return a structured support summary."
+        output_schema: support-summary
+        """,
+    )
+
+    agent = ProjectLoader(str(tmp_path)).load_agent("structured-agent")
+
+    assert agent.config.output_schema_dict is None
+    assert "Could not load output schema 'support-summary'" in capsys.readouterr().out
 
 
 # ---------------------------------------------------------------------------
@@ -1681,6 +1776,34 @@ def test_discover_tools(tmp_path):
     tools = loader.discover_tools()
     assert "math" in tools
     assert sorted(tools["math"]) == ["add", "subtract"]
+
+
+def test_discover_tools_skips_hidden_directories_and_private_modules(tmp_path):
+    write_file(
+        tmp_path / "tools" / "public.py",
+        """
+        def lookup_customer(customer_id: str) -> dict:
+            return {"customer_id": customer_id}
+        """,
+    )
+    write_file(
+        tmp_path / "tools" / "_draft.py",
+        """
+        def should_not_load() -> dict:
+            return {}
+        """,
+    )
+    write_file(
+        tmp_path / "tools" / ".scratch" / "debug.py",
+        """
+        def should_not_load() -> dict:
+            return {}
+        """,
+    )
+
+    tools = ProjectLoader(str(tmp_path)).discover_tools()
+
+    assert tools == {"public": ["lookup_customer"]}
 
 
 def test_discover_tools_empty(tmp_path):
@@ -1913,6 +2036,27 @@ def test_root_defaults_apply_to_flat_agent(tmp_path):
     assert agent.config.system_prompt == "Default prompt."
 
 
+def test_empty_yml_defaults_file_is_allowed(tmp_path):
+    write_file(tmp_path / "agents" / "_defaults.yml", "")
+    write_file(
+        tmp_path / "agents" / "assistant.yaml",
+        """
+        version: "1.0"
+        name: assistant
+        type: llm
+        model: openai/gpt-5.2
+        description: "Agent alongside an empty defaults file."
+        system_prompt: "Help customers."
+        """,
+    )
+
+    loader = ProjectLoader(str(tmp_path))
+    agent = loader.load_agent("assistant")
+
+    assert agent.config.name == "assistant"
+    assert loader._load_errors == []
+
+
 def test_deeper_defaults_override_shallower_scalars(tmp_path):
     write_file(
         tmp_path / "agents" / "_defaults.yaml",
@@ -1971,6 +2115,50 @@ def test_agent_overrides_inherited_scalar(tmp_path):
 
     assert agent.config.model == "anthropic/claude-haiku-4-5"
     assert agent.config.temperature == 0.4
+
+
+def test_runtime_control_defaults_are_inherited(tmp_path):
+    write_file(
+        tmp_path / "agents" / "_defaults.yaml",
+        """
+        version: "1.0"
+        type: llm
+        model: openai/gpt-5.2
+        system_prompt: "Default support prompt."
+        retry_options:
+          attempts: 4
+          max_delay: 20
+          rerun_middleware: true
+        guardrails:
+          run_after_on_block: false
+          input:
+            - type: prompt_injection
+              mode: block
+        database:
+          prevent_delete: true
+          collections:
+            - customers
+            - invoices
+        """,
+    )
+    write_file(
+        tmp_path / "agents" / "support-agent.yaml",
+        """
+        version: "1.0"
+        name: support-agent
+        description: "Inherits runtime controls used by every support agent."
+        """,
+    )
+
+    agent = ProjectLoader(str(tmp_path)).load_agent("support-agent")
+
+    assert agent.config.retry_options.attempts == 4
+    assert agent.config.retry_options.max_delay == 20
+    assert agent.config.retry_options.rerun_middleware is True
+    assert agent.config.guardrails.run_after_on_block is False
+    assert [rule.type for rule in agent.config.guardrails.input] == ["prompt_injection"]
+    assert set(agent.config.database.collections) == {"customers", "invoices"}
+    assert agent.config.database.collections["customers"].prevent_delete is None
 
 
 def test_tool_list_concat_with_dedup_by_ref(tmp_path):
@@ -2177,6 +2365,32 @@ def test_defaults_with_agent_identity_fields_is_load_error(tmp_path):
     assert "agents/_defaults.yaml" in err
     assert "agent-identity fields" in err
     assert "name" in err
+
+
+def test_defaults_file_must_be_mapping(tmp_path):
+    write_file(
+        tmp_path / "agents" / "_defaults.yaml",
+        """
+        - version: "1.0"
+        - model: openai/gpt-5.2
+        """,
+    )
+    write_file(
+        tmp_path / "agents" / "assistant.yaml",
+        """
+        version: "1.0"
+        name: assistant
+        description: "Defaults file is not a mapping."
+        """,
+    )
+
+    loader = ProjectLoader(str(tmp_path))
+    agents = loader.load_agents()
+
+    assert agents == []
+    assert len(loader._load_errors) == 1
+    assert "agents/_defaults.yaml" in loader._load_errors[0]
+    assert "defaults file must be a YAML mapping" in loader._load_errors[0]
 
 
 def test_agent_missing_required_fields_errors_even_when_defaults_supply_them(tmp_path):

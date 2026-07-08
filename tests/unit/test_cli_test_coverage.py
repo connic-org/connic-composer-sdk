@@ -472,6 +472,32 @@ def test_test_command_with_coverage_reports_agent_without_tests(tmp_path, monkey
     assert "Overall coverage: 0.0%" in result.output
 
 
+def test_test_command_with_coverage_reports_empty_project(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "agents").mkdir()
+    monkeypatch.delenv("CONNIC_API_KEY", raising=False)
+    monkeypatch.delenv("CONNIC_PROJECT_ID", raising=False)
+
+    result = CliRunner().invoke(cli.main, ["test", "--coverage"])
+
+    assert result.exit_code == 0, result.output
+    assert "Test Coverage" in result.output
+    assert "No agents found." in result.output
+    assert "API key and project ID required" not in result.output
+
+
+def test_test_command_with_coverage_reports_missing_project(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("CONNIC_API_KEY", raising=False)
+    monkeypatch.delenv("CONNIC_PROJECT_ID", raising=False)
+
+    result = CliRunner().invoke(cli.main, ["test", "--coverage"])
+
+    assert result.exit_code != 0
+    assert "Agents directory not found" in result.output
+    assert "API key and project ID required" not in result.output
+
+
 def test_test_command_with_coverage_stops_on_unparseable_test_file(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     _write_calculator_tool(tmp_path)

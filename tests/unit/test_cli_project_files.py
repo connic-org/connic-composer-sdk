@@ -88,6 +88,32 @@ def test_validate_project_files_counts_requirements_toward_code_size_cap(tmp_pat
     assert files == []
 
 
+def test_validate_project_files_allows_binary_fixtures_under_tests_files(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    fixture = tmp_path / "tests" / "files" / "invoice.pdf"
+    fixture.parent.mkdir(parents=True)
+    fixture.write_bytes(b"%PDF-1.7\n" + b"x" * cli.MAX_CODE_SIZE)
+
+    is_valid, error, files = cli._validate_project_files()
+
+    assert is_valid is True
+    assert error == ""
+    assert [path.as_posix() for path in files] == ["tests/files/invoice.pdf"]
+
+
+def test_validate_project_files_rejects_non_python_builders(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    builder = tmp_path / "tests" / "builders" / "invoice.json"
+    builder.parent.mkdir(parents=True)
+    builder.write_text('{"builder": true}\n')
+
+    is_valid, error, files = cli._validate_project_files()
+
+    assert is_valid is False
+    assert "only .py files are allowed under tests/builders/" in error
+    assert files == []
+
+
 def test_write_essential_files_creates_minimal_scaffold_without_overwriting_existing_files(tmp_path):
     (tmp_path / "README.md").write_text("# Existing\n")
 
