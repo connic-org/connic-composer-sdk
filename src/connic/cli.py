@@ -361,7 +361,7 @@ def _validate_project_files() -> tuple[bool, str, list[Path]]:
 
 
 @click.group()
-@click.version_option(version="0.1.33", prog_name="connic")
+@click.version_option(version="0.1.34", prog_name="connic")
 def main():
     """Connic Composer SDK - Build agents with code."""
     print_update_hint()
@@ -824,15 +824,26 @@ def _run_lint(verbose: bool = False, quiet: bool = False, project_root: str = ".
 
     # Validate each agent
     loaded_agent_names = {a.config.name for a in agents}
+    deprecation_warnings: list[str] = []
     for agent in agents:
         config = agent.config
         agent_type = config.type.value if hasattr(config.type, 'value') else str(config.type)
+
+        if config.reasoning_budget is not None:
+            location = config.source_path or config.name
+            deprecation_warnings.append(
+                f"{location}: reasoning_budget is deprecated and only works with legacy models; "
+                "use reasoning_effort instead."
+            )
 
         if agent_type == "sequential":
             for ref in config.agents:
                 if ref not in loaded_agent_names:
                     location = f" ({config.source_path})" if config.source_path else ""
                     errors.append(f"Sequential agent '{config.name}'{location} references unknown agent '{ref}'")
+
+    for warning in deprecation_warnings:
+        _warn(warning)
 
     if quiet:
         if errors:

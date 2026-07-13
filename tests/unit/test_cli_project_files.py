@@ -596,6 +596,23 @@ def test_lint_command_validates_documented_project_with_verbose_summary(tmp_path
     assert "Project validation complete" in result.output
 
 
+def test_lint_command_warns_for_deprecated_reasoning_budget(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(cli, "print_update_hint", lambda: None)
+    _write_minimal_support_agent(tmp_path)
+    agent_path = tmp_path / "agents" / "support.yaml"
+    agent_path.write_text(agent_path.read_text() + "reasoning_budget: 4096\n")
+
+    with pytest.warns(DeprecationWarning, match="AgentConfig.reasoning_budget is deprecated"):
+        result = CliRunner().invoke(cli.main, ["lint"])
+
+    assert result.exit_code == 0, result.output
+    assert (
+        "agents/support.yaml: reasoning_budget is deprecated and only works with legacy models; "
+        "use reasoning_effort instead."
+    ) in result.output
+
+
 def test_lint_command_reports_unknown_sequential_agent_reference(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(cli, "print_update_hint", lambda: None)

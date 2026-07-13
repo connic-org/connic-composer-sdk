@@ -654,7 +654,7 @@ class AgentConfig(BaseModel):
     )
     reasoning_budget: Optional[int] = Field(
         default=None, ge=1,
-        description="Explicit token budget for reasoning. Only honored by providers that accept a raw budget (e.g. Anthropic Claude 3.7/Sonnet 4, Gemini 2.5). Providers that only accept effort levels will reject this — handle the resulting error by switching to `reasoning_effort` instead."
+        description="Deprecated. Explicit token budget for reasoning, supported only by legacy models that accept a raw budget (e.g. Anthropic Claude 3.7/Sonnet 4, Gemini 2.5). Current-generation models reject this parameter; use `reasoning_effort` instead."
     )
 
     # Deprecated — kept for one minor version to ease migration. Use reasoning_effort instead.
@@ -731,6 +731,15 @@ class AgentConfig(BaseModel):
     
     @model_validator(mode='after')
     def _migrate_legacy_reasoning_fields(self):
+        if self.reasoning_budget is not None:
+            import warnings
+            warnings.warn(
+                "AgentConfig.reasoning_budget is deprecated and only works with legacy models; "
+                "use reasoning_effort instead.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+
         # Translate the legacy `reasoning: bool` flag into the new
         # `reasoning_effort` enum so the rest of the pipeline only reads one field.
         if self.reasoning is not None and self.reasoning_effort is None:

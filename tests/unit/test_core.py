@@ -245,6 +245,13 @@ def test_agent_config_reasoning_effort_takes_precedence_over_legacy_reasoning():
     assert cfg.reasoning is None
 
 
+def test_agent_config_warns_for_deprecated_reasoning_budget():
+    with pytest.warns(DeprecationWarning, match="AgentConfig.reasoning_budget is deprecated"):
+        cfg = AgentConfig(**_llm_agent(reasoning_budget=4096))
+
+    assert cfg.reasoning_budget == 4096
+
+
 def test_mcp_server_config_bridge_default_none():
     cfg = McpServerConfig(name="srv", url="https://mcp.example.com/mcp")
     assert cfg.bridge is None
