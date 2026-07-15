@@ -1466,6 +1466,7 @@ def test_langgraph_react_agent_migration_extracts_decorated_tool_function(tmp_pa
     assert agent_yaml["system_prompt"] == "Answer travel planning questions with weather context."
     assert agent_yaml["tools"] == ["agent.fetch_weather"]
     assert "@tool" not in tool_module
+    assert "from langchain_core.tools import tool" not in tool_module
     assert "def fetch_weather" in tool_module
 
 

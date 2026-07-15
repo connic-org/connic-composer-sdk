@@ -879,7 +879,14 @@ def _detect_framework(source_root: Path, python_files: list[Path], yaml_files: l
 
 def _gather_local_dependency_names(node: ast.AST) -> set[str]:
     names = set()
+    decorator_nodes = {
+        id(child)
+        for decorator in getattr(node, "decorator_list", [])
+        for child in ast.walk(decorator)
+    }
     for child in ast.walk(node):
+        if id(child) in decorator_nodes:
+            continue
         if isinstance(child, ast.Name) and isinstance(child.ctx, ast.Load):
             names.add(child.id)
     return names
