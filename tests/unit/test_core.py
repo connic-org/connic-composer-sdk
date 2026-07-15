@@ -383,8 +383,16 @@ def test_agent_get_tools_schema():
 def test_retry_options_defaults():
     opts = RetryOptions()
     assert opts.attempts == 3
+    assert opts.initial_delay == 10
     assert opts.max_delay == 30
     assert opts.rerun_middleware is False
+
+
+def test_retry_options_allow_max_delay_to_cap_the_initial_delay():
+    opts = RetryOptions(initial_delay=30, max_delay=10)
+
+    assert opts.initial_delay == 30
+    assert opts.max_delay == 10
 
 
 def test_concurrency_config_defaults():

@@ -131,10 +131,22 @@ class ToolHook(BaseModel):
 
 
 class RetryOptions(BaseModel):
-    """Configuration for automatic retries on failures."""
-    attempts: int = Field(default=3, ge=1, le=10, description="Maximum retry attempts (max: 10)")
+    """Configuration for retries at the failing operation boundary."""
+    attempts: int = Field(
+        default=3,
+        ge=1,
+        le=10,
+        description=(
+            "Total attempts per selected model or non-LLM operation, including the first attempt; "
+            "a configured fallback may add one primary-model call (max: 10)"
+        ),
+    )
+    initial_delay: float = Field(default=10, ge=0, le=300, description="Initial retry delay in seconds")
     max_delay: int = Field(default=30, ge=1, le=300, description="Maximum seconds between retries (max: 300s)")
-    rerun_middleware: bool = Field(default=False, description="Re-execute the 'before' middleware on each retry attempt. Useful when middleware enriches the prompt with external state that may change between retries.")
+    rerun_middleware: bool = Field(
+        default=False,
+        description="Re-execute 'before' middleware for tool and sequential operation retries; ignored by LLM agents",
+    )
 
 
 class SessionConfig(BaseModel):
@@ -665,7 +677,10 @@ class AgentConfig(BaseModel):
     
     # Common optional fields
     max_concurrent_runs: int = Field(default=1, ge=1, description="Maximum simultaneous runs allowed")
-    retry_options: Optional[RetryOptions] = Field(default=None, description="Configuration for automatic retries")
+    retry_options: Optional[RetryOptions] = Field(
+        default=None,
+        description="Retry configuration for model requests, tool reflection, and non-LLM operations",
+    )
     timeout: Optional[int] = Field(default=None, ge=5, description="Max execution time in seconds (min: 5). Capped by subscription.")
     max_iterations: int = Field(
         default=100, ge=1,

@@ -9,6 +9,7 @@ from pathlib import Path
 import click
 import httpx
 
+from .core import RetryOptions
 from .loader import ProjectLoader
 from .migrate import register_migrate_command
 from .update_check import print_update_hint
@@ -883,11 +884,15 @@ def _run_lint(verbose: bool = False, quiet: bool = False, project_root: str = ".
 
         if verbose:
             click.echo(f"  │  Max Concurrent Runs: {config.max_concurrent_runs}")
-            if config.retry_options:
-                retry_info = f"  │  Retry: {config.retry_options.attempts} attempts, max {config.retry_options.max_delay}s delay"
-                if config.retry_options.rerun_middleware:
-                    retry_info += " (rerun middleware)"
-                click.echo(retry_info)
+            retry = config.retry_options or RetryOptions()
+            retry_label = "LLM Call Retry" if agent_type == "llm" else "Retry"
+            retry_info = (
+                f"  │  {retry_label}: {retry.attempts} attempts, "
+                f"{retry.initial_delay:g}-{retry.max_delay:g}s backoff"
+            )
+            if agent_type != "llm" and retry.rerun_middleware:
+                retry_info += " (rerun middleware)"
+            click.echo(retry_info)
             if config.timeout:
                 click.echo(f"  │  Timeout: {config.timeout}s")
 

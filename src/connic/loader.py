@@ -426,7 +426,7 @@ class ProjectLoader:
                 merged = self._merge_agent_dict(merged, defaults)
             config_data = self._merge_agent_dict(merged, config_data)
 
-        # Handle retry_options as nested object
+        # Parse retry_options as its configuration model
         if "retry_options" in config_data and config_data["retry_options"]:
             config_data["retry_options"] = RetryOptions(**config_data["retry_options"])
         

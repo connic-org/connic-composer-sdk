@@ -726,6 +726,7 @@ def test_lint_command_prints_sequential_tool_and_runtime_controls(tmp_path, monk
         "timeout: 45\n"
         "retry_options:\n"
         "  attempts: 3\n"
+        "  initial_delay: 2\n"
         "  max_delay: 10\n"
         "  rerun_middleware: true\n"
         "mcp_servers:\n"
@@ -748,7 +749,7 @@ def test_lint_command_prints_sequential_tool_and_runtime_controls(tmp_path, monk
     assert "lookup-ticket" in result.output
     assert "Tool: tickets.lookup" in result.output
     assert "Fallback Model: anthropic/claude-3-5-sonnet" in result.output
-    assert "Retry: 3 attempts, max 10s delay (rerun middleware)" in result.output
+    assert "LLM Call Retry: 3 attempts, 2-10s backoff" in result.output
     assert "Timeout: 45s" in result.output
     assert "MCP Server: crm (http://localhost:8000/mcp)" in result.output
     assert "Chain: lookup-ticket" in result.output
