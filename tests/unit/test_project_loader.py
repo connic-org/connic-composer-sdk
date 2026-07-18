@@ -255,6 +255,7 @@ def test_loads_context_compression_config(tmp_path):
           key: input.chat_id
         context_compression:
           enabled: true
+          model: openai/gpt-5-mini
           session_history:
             interval: 8
             keep_recent_runs: 2
@@ -265,6 +266,7 @@ def test_loads_context_compression_config(tmp_path):
 
     compression = agent.config.context_compression
     assert compression.enabled is True
+    assert compression.model == "openai/gpt-5-mini"
     assert compression.session_history.interval == 8
     assert compression.session_history.keep_recent_runs == 2
 
@@ -312,6 +314,7 @@ def test_context_compression_can_enable_provider_error_recovery_only(tmp_path):
 
     compression = agent.config.context_compression
     assert compression.enabled is True
+    assert compression.model is None
     assert compression.max_prompt_tokens is None
     assert compression.session_history is None
 

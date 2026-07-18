@@ -219,6 +219,7 @@ class ContextCompressionConfig(BaseModel):
     Example YAML:
         context_compression:
           enabled: true
+          model: openai/gpt-5-mini
           keep_recent_messages: 12
           session_history:
             interval: 4
@@ -228,6 +229,10 @@ class ContextCompressionConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     enabled: bool = Field(default=True, description="Enable context compression for this LLM agent.")
+    model: Optional[str] = Field(
+        default=None,
+        description="Model used to produce context and stored-history compression summaries. Defaults to the agent model.",
+    )
     max_prompt_tokens: Optional[int] = Field(
         default=None,
         ge=1,
