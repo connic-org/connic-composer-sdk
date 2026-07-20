@@ -62,6 +62,18 @@ Example::
         expected_tool_calls:
           - billing.refund: params.charge_id == context.charge_id
 
+      # Match pending approvals by canonical tool ref and, optionally, their
+      # parameters using the builder ``context`` binding available to assertions.
+      - name: approves_refund_then_rejects_notification
+        builder: create_charge_then_refund
+        approval_decisions:
+          - tool: billing.refund
+            params: params.charge_id == context.charge_id
+            decision: approve
+          - tool: notifications.send
+            decision: reject
+            reason: Do not send notifications in this scenario
+
       # Mock custom file tools instead of letting them really run.
       # tests/mocks/<name>.py exposes hierarchical mock_* functions; the
       # runner substitutes the most specific match for each tool the agent
@@ -71,13 +83,12 @@ Example::
       #   mock_data                       (everything under data/)
       #   mock                            (every custom file tool)
       # Each is called as mock(tool_name, params, context) and its return
-      # value replaces the real tool result. The call is still recorded, so
-      # expected_tool_calls assertions keep working against mocked tools.
+      # value replaces the real tool result. Calls are recorded for
+      # expected_tool_calls assertions.
       # Predefined tools (db_find, web_search, trigger_agent, ...) and api:
       # tools always run for real and are never mocked. Set strict_mocks
-      # (here, or in defaults) to fail the case if the agent calls any tool
-      # that wasn't served by a mock -- a guarantee the run never touched a
-      # real tool.
+      # (here, or in defaults) to fail before an unmocked custom file tool's
+      # real implementation can execute.
       - name: handles_add_without_touching_the_db
         payload: '{"name": "Ada"}'
         mocks: customer_mocks
@@ -109,21 +120,53 @@ Example::
 The ``expected_result`` and ``expected_tool_calls`` mapping expressions are
 evaluated server-side with bindings ``output``, ``error``, ``status``,
 ``context`` (in ``expected_result``) and ``params``, ``invocations``,
-``context`` (in ``expected_tool_calls``). ``context`` is the builder's
+``context`` (in ``expected_tool_calls``). An ``approval_decisions.params``
+expression receives ``params`` and ``context``. ``context`` is the builder's
 mutable dict; for tests with no builder it is empty.
 """
 
 from __future__ import annotations
 
 import re
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Dict, List, Literal, Optional, Union
 
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 # Tool-call expectation: either a bare tool name (= called at least once) or
 # a one-key mapping ``{tool_name: <expression>}`` (mirrors the YAML pattern
 # used by ``approval.tools``). YAML parses the mapping form into a dict.
 ToolCallExpectation = Union[str, Dict[str, str]]
+
+
+class TestApprovalDecision(BaseModel):
+    """A scripted response to one approval request during a test invocation."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    tool: str = Field(description="Canonical tool ref of the approval to match.")
+    params: Optional[str] = Field(
+        default=None,
+        description=(
+            "Optional expression matched against the approval's tool parameters. "
+            "Bindings: params and the builder context."
+        ),
+    )
+    decision: Literal["approve", "reject", "timeout"]
+    reason: Optional[str] = None
+
+    @field_validator("tool")
+    @classmethod
+    def _validate_tool(cls, v: str) -> str:
+        if not v.strip():
+            raise ValueError("approval decision tool must be a non-empty string")
+        return v
+
+    @field_validator("params")
+    @classmethod
+    def _validate_params(cls, v: Optional[str]) -> Optional[str]:
+        if v is not None and not v.strip():
+            raise ValueError("approval decision params must be a non-empty expression")
+        return v
 
 
 # Filenames referenced by ``files:`` and ``builder:`` are resolved relative
@@ -171,10 +214,18 @@ class TestDefaults(BaseModel):
     strict_mocks: bool = Field(
         default=False,
         description=(
-            "When true, a case fails if the agent calls any tool that was not "
-            "served by a mock (see the case-level ``mocks`` field). Use it to "
-            "guarantee a run touched only mocked tools and never executed a "
-            "real one. Per-case ``strict_mocks`` overrides this default."
+            "When true, a case fails before an unmocked custom file tool's real "
+            "implementation executes (see the case-level ``mocks`` field). "
+            "Predefined and ``api:`` tools are exempt because they are not "
+            "mockable. Per-case ``strict_mocks`` overrides this default."
+        ),
+    )
+    strict_approval_decisions: bool = Field(
+        default=False,
+        description=(
+            "When true, a case fails if a pending approval has no matching "
+            "scripted decision or execution finishes with unused decisions. "
+            "Per-case ``strict_approval_decisions`` overrides this default."
         ),
     )
 
@@ -350,7 +401,7 @@ class TestCase(BaseModel):
             "function defined, trying ``mock_data_customer_add_customer``, then "
             "``mock_data_customer``, ``mock_data``, and finally ``mock``. Each is "
             "called as ``mock(tool_name, params, context)`` and its return value "
-            "is substituted for the real tool result. Mocked calls are still "
+            "is substituted for the real tool result. Mocked calls are "
             "validated against the real tool's signature (required args, types, "
             "unknown args), so a malformed call fails the case. Predefined and "
             "``api:`` tools always run for real."
@@ -360,7 +411,22 @@ class TestCase(BaseModel):
         default=None,
         description=(
             "Per-case override for ``defaults.strict_mocks``. When true, the "
-            "case fails if the agent calls any tool not served by a mock."
+            "case fails before an unmocked custom file tool executes."
+        ),
+    )
+    approval_decisions: List[TestApprovalDecision] = Field(
+        default_factory=list,
+        description=(
+            "Scripted approve, reject, or timeout responses for HITL approval "
+            "requests raised during each invocation of this case."
+        ),
+    )
+    strict_approval_decisions: Optional[bool] = Field(
+        default=None,
+        description=(
+            "Per-case override for ``defaults.strict_approval_decisions``. "
+            "When true, unmatched pending approvals and unused scripted "
+            "decisions fail the case."
         ),
     )
     runs: Optional[int] = Field(default=None, ge=1, le=100)
@@ -495,6 +561,14 @@ class TestFile(BaseModel):
             "mocks": case.mocks if case.mocks is not None else self.defaults.mocks,
             "strict_mocks": (
                 case.strict_mocks if case.strict_mocks is not None else self.defaults.strict_mocks
+            ),
+            "approval_decisions": [
+                decision.model_dump() for decision in case.approval_decisions
+            ],
+            "strict_approval_decisions": (
+                case.strict_approval_decisions
+                if case.strict_approval_decisions is not None
+                else self.defaults.strict_approval_decisions
             ),
             "runs": case.runs if case.runs is not None else self.defaults.runs,
             "success_threshold": (

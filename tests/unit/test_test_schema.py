@@ -51,6 +51,8 @@ def test_test_file_parses_realistic_yaml_and_resolves_defaults():
         "builder_args": None,
         "mocks": None,
         "strict_mocks": False,
+        "approval_decisions": [],
+        "strict_approval_decisions": False,
         "runs": 5,
         "success_threshold": 80,
         "timeout_s": 60,
@@ -164,6 +166,8 @@ def test_test_file_uses_schema_defaults_for_minimal_suite():
         "builder_args": None,
         "mocks": None,
         "strict_mocks": False,
+        "approval_decisions": [],
+        "strict_approval_decisions": False,
         "runs": 1,
         "success_threshold": 100,
         "timeout_s": 120,
@@ -185,6 +189,126 @@ def test_test_file_rejects_duplicate_case_names():
                 ]
             }
         )
+
+
+def test_test_case_parses_and_resolves_approval_decisions():
+    test_file = ConnicTestFile.model_validate(
+        yaml.safe_load(
+            """
+            tests:
+              - name: exercises_hitl
+                payload: refund and notify
+                approval_decisions:
+                  - tool: billing.refund
+                    params: params.charge_id == context.charge_id
+                    decision: approve
+                  - tool: notifications.send
+                    decision: reject
+                    reason: Keep the test isolated
+                  - tool: billing.capture
+                    decision: timeout
+            """
+        )
+    )
+
+    assert test_file.resolved(test_file.tests[0])["approval_decisions"] == [
+        {
+            "tool": "billing.refund",
+            "params": "params.charge_id == context.charge_id",
+            "decision": "approve",
+            "reason": None,
+        },
+        {
+            "tool": "notifications.send",
+            "params": None,
+            "decision": "reject",
+            "reason": "Keep the test isolated",
+        },
+        {
+            "tool": "billing.capture",
+            "params": None,
+            "decision": "timeout",
+            "reason": None,
+        },
+    ]
+
+
+def test_strict_approval_decisions_defaults_to_false():
+    test_file = ConnicTestFile.model_validate(
+        {"tests": [{"name": "t", "payload": "p"}]}
+    )
+
+    assert (
+        test_file.resolved(test_file.tests[0])["strict_approval_decisions"]
+        is False
+    )
+
+
+def test_strict_approval_decisions_inherits_from_defaults():
+    test_file = ConnicTestFile.model_validate(
+        {
+            "defaults": {"strict_approval_decisions": True},
+            "tests": [
+                {"name": "inherits", "payload": "p"},
+                {
+                    "name": "opts_out",
+                    "payload": "p",
+                    "strict_approval_decisions": False,
+                },
+            ],
+        }
+    )
+
+    by_name = {case.name: test_file.resolved(case) for case in test_file.tests}
+    assert by_name["inherits"]["strict_approval_decisions"] is True
+    assert by_name["opts_out"]["strict_approval_decisions"] is False
+
+
+@pytest.mark.parametrize(
+    "decision",
+    [
+        {"tool": "", "decision": "approve"},
+        {"tool": "   ", "decision": "approve"},
+        {"tool": "billing.refund", "decision": "approved"},
+        {"tool": "billing.refund", "decision": "approve", "params": ""},
+        {"tool": "billing.refund", "decision": "approve", "params": "   "},
+        {"tool": "billing.refund", "decision": "approve", "unexpected": True},
+    ],
+)
+def test_approval_decisions_reject_invalid_entries(decision):
+    with pytest.raises(ValidationError):
+        ConnicTestFile.model_validate(
+            {
+                "tests": [
+                    {
+                        "name": "invalid_hitl",
+                        "payload": "refund",
+                        "approval_decisions": [decision],
+                    }
+                ]
+            }
+        )
+
+
+def test_resolved_isolates_approval_decisions_from_caller():
+    test_file = ConnicTestFile.model_validate(
+        {
+            "tests": [
+                {
+                    "name": "hitl",
+                    "payload": "refund",
+                    "approval_decisions": [
+                        {"tool": "billing.refund", "decision": "approve"}
+                    ],
+                }
+            ]
+        }
+    )
+
+    resolved = test_file.resolved(test_file.tests[0])
+    resolved["approval_decisions"][0]["tool"] = "billing.capture"
+
+    assert test_file.tests[0].approval_decisions[0].tool == "billing.refund"
 
 
 @pytest.mark.parametrize(
