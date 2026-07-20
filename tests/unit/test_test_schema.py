@@ -51,6 +51,9 @@ def test_test_file_parses_realistic_yaml_and_resolves_defaults():
         "builder_args": None,
         "mocks": None,
         "strict_mocks": False,
+        "strict_hook_mocks": False,
+        "strict_middleware_mocks": False,
+        "strict_guardrail_mocks": False,
         "approval_decisions": [],
         "strict_approval_decisions": False,
         "runs": 5,
@@ -166,6 +169,9 @@ def test_test_file_uses_schema_defaults_for_minimal_suite():
         "builder_args": None,
         "mocks": None,
         "strict_mocks": False,
+        "strict_hook_mocks": False,
+        "strict_middleware_mocks": False,
+        "strict_guardrail_mocks": False,
         "approval_decisions": [],
         "strict_approval_decisions": False,
         "runs": 1,
@@ -603,6 +609,42 @@ def test_strict_mocks_inherits_from_defaults():
     by_name = {c.name: test_file.resolved(c) for c in test_file.tests}
     assert by_name["inherits"]["strict_mocks"] is True
     assert by_name["opts_out"]["strict_mocks"] is False
+
+
+@pytest.mark.parametrize(
+    "strict_field",
+    [
+        "strict_hook_mocks",
+        "strict_middleware_mocks",
+        "strict_guardrail_mocks",
+    ],
+)
+def test_strict_lifecycle_mock_flags_default_false_and_resolve_independently(strict_field):
+    strict_fields = {
+        "strict_hook_mocks",
+        "strict_middleware_mocks",
+        "strict_guardrail_mocks",
+    }
+    test_file = ConnicTestFile.model_validate(
+        {
+            "defaults": {strict_field: True},
+            "tests": [
+                {"name": "inherits", "payload": "p"},
+                {"name": "opts_out", "payload": "p", strict_field: False},
+            ],
+        }
+    )
+
+    inherited = test_file.resolved(test_file.tests[0])
+    opted_out = test_file.resolved(test_file.tests[1])
+    for field in strict_fields:
+        assert inherited[field] is (field == strict_field)
+        assert opted_out[field] is False
+
+    opted_in = ConnicTestFile.model_validate(
+        {"tests": [{"name": "opts_in", "payload": "p", strict_field: True}]}
+    )
+    assert opted_in.resolved(opted_in.tests[0])[strict_field] is True
 
 
 def test_resolved_isolates_builder_args_from_caller():

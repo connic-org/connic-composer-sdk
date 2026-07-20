@@ -74,10 +74,9 @@ Example::
             decision: reject
             reason: Do not send notifications in this scenario
 
-      # Mock custom file tools instead of letting them really run.
-      # tests/mocks/<name>.py exposes hierarchical mock_* functions; the
-      # runner substitutes the most specific match for each tool the agent
-      # calls. For the ref data.customer.add_customer it tries, in order:
+      # Mock custom code instead of letting it really run.
+      # tests/mocks/<name>.py exposes hierarchical mock_* functions for tools.
+      # For the ref data.customer.add_customer the runner tries, in order:
       #   mock_data_customer_add_customer  (exact function)
       #   mock_data_customer              (everything in data/customer.py)
       #   mock_data                       (everything under data/)
@@ -85,14 +84,27 @@ Example::
       # Each is called as mock(tool_name, params, context) and its return
       # value replaces the real tool result. Calls are recorded for
       # expected_tool_calls assertions.
+      # The same module can replace middleware_before/middleware_after; tool
+      # hooks such as mock_data_customer_add_customer_hook_before (falling
+      # back by tool prefix to mock_hook_before, with an equivalent after
+      # ladder); and custom guardrails such as guardrail_input_domain_check
+      # (then guardrail_input, then guardrail). A matching function replaces
+      # that phase. Without one, the real lifecycle function runs unless its
+      # independent strict lifecycle flag is enabled.
       # Predefined tools (db_find, web_search, trigger_agent, ...) and api:
-      # tools always run for real and are never mocked. Set strict_mocks
-      # (here, or in defaults) to fail before an unmocked custom file tool's
-      # real implementation can execute.
+      # tool implementations always run for real, and built-in guardrails are
+      # never mocked.
+      # strict_mocks remains tool-only. The three lifecycle strictness flags
+      # independently fail before a configured eligible real phase executes
+      # without a matching replacement. Missing phases and built-in
+      # guardrails are exempt.
       - name: handles_add_without_touching_the_db
         payload: '{"name": "Ada"}'
         mocks: customer_mocks
         strict_mocks: true
+        strict_hook_mocks: true
+        strict_middleware_mocks: true
+        strict_guardrail_mocks: true
         expected_tool_calls:
           - data.customer.add_customer
 
@@ -207,8 +219,9 @@ class TestDefaults(BaseModel):
     mocks: Optional[str] = Field(
         default=None,
         description=(
-            "Default mocks module for every case in the file (same meaning as "
-            "the case-level ``mocks`` field). Per-case ``mocks`` overrides it."
+            "Default custom-code mocks module for every case in the file "
+            "(same meaning as the case-level ``mocks`` field). Per-case "
+            "``mocks`` overrides it."
         ),
     )
     strict_mocks: bool = Field(
@@ -217,7 +230,39 @@ class TestDefaults(BaseModel):
             "When true, a case fails before an unmocked custom file tool's real "
             "implementation executes (see the case-level ``mocks`` field). "
             "Predefined and ``api:`` tools are exempt because they are not "
-            "mockable. Per-case ``strict_mocks`` overrides this default."
+            "mockable. This check is tool-only and does not govern lifecycle "
+            "phases; use the independent lifecycle strictness flags for those. "
+            "Per-case ``strict_mocks`` overrides this default."
+        ),
+    )
+    strict_hook_mocks: bool = Field(
+        default=False,
+        description=(
+            "When true, a case fails before a configured tool-hook phase "
+            "eligible for replacement executes without a matching hook mock. "
+            "Hook phases that are not configured are exempt. This flag is "
+            "independent of the other strict mock flags. Per-case "
+            "``strict_hook_mocks`` overrides this default."
+        ),
+    )
+    strict_middleware_mocks: bool = Field(
+        default=False,
+        description=(
+            "When true, a case fails before a configured middleware phase "
+            "executes without a matching middleware mock. Middleware phases "
+            "that are not configured are exempt. This flag is independent of "
+            "the other strict mock flags. Per-case "
+            "``strict_middleware_mocks`` overrides this default."
+        ),
+    )
+    strict_guardrail_mocks: bool = Field(
+        default=False,
+        description=(
+            "When true, a case fails before a configured custom guardrail "
+            "executes without a matching guardrail mock. Built-in guardrails "
+            "and guardrail phases that are not configured are exempt. This "
+            "flag is independent of the other strict mock flags. Per-case "
+            "``strict_guardrail_mocks`` overrides this default."
         ),
     )
     strict_approval_decisions: bool = Field(
@@ -395,23 +440,62 @@ class TestCase(BaseModel):
         default=None,
         description=(
             "Name of a Python module under ``tests/mocks/`` (with or without "
-            "the ``.py`` suffix) holding ``mock_*`` functions that stand in for "
-            "custom file tools during the run. For a tool ref like "
+            "the ``.py`` suffix) holding replacement functions for custom file "
+            "tools and lifecycle phases. For a tool ref like "
             "``data.customer.add_customer`` the runner picks the most specific "
             "function defined, trying ``mock_data_customer_add_customer``, then "
             "``mock_data_customer``, ``mock_data``, and finally ``mock``. Each is "
             "called as ``mock(tool_name, params, context)`` and its return value "
             "is substituted for the real tool result. Mocked calls are "
             "validated against the real tool's signature (required args, types, "
-            "unknown args), so a malformed call fails the case. Predefined and "
-            "``api:`` tools always run for real."
+            "unknown args), so a malformed call fails the case. Middleware uses "
+            "``middleware_before(content, context)`` and "
+            "``middleware_after(response, context)``. Tool hooks append "
+            "``_hook_before`` or ``_hook_after`` to the tool hierarchy and fall "
+            "back to ``mock_hook_before`` or ``mock_hook_after``; non-alphanumeric "
+            "runs in each tool-ref segment normalize to ``_``. Hooks use the real "
+            "signatures. Custom guardrails resolve the specific "
+            "``guardrail_<direction>_<name>`` function, then "
+            "``guardrail_<direction>``, then ``guardrail``, each with the real "
+            "``(content, context)`` contract. A match replaces that phase. With "
+            "no match, the real lifecycle function runs unless the corresponding "
+            "strict lifecycle flag is enabled. Predefined and ``api:`` tool "
+            "implementations and all built-in guardrails run for real."
         ),
     )
     strict_mocks: Optional[bool] = Field(
         default=None,
         description=(
             "Per-case override for ``defaults.strict_mocks``. When true, the "
-            "case fails before an unmocked custom file tool executes."
+            "case fails before an unmocked custom file tool executes. This is "
+            "tool-only and does not govern lifecycle replacements."
+        ),
+    )
+    strict_hook_mocks: Optional[bool] = Field(
+        default=None,
+        description=(
+            "Per-case override for ``defaults.strict_hook_mocks``. When true, "
+            "the case fails before a configured eligible real hook phase "
+            "executes without a matching replacement. Missing hook phases are "
+            "exempt."
+        ),
+    )
+    strict_middleware_mocks: Optional[bool] = Field(
+        default=None,
+        description=(
+            "Per-case override for ``defaults.strict_middleware_mocks``. When "
+            "true, the case fails before a configured real middleware phase "
+            "executes without a matching replacement. Missing middleware "
+            "phases are exempt."
+        ),
+    )
+    strict_guardrail_mocks: Optional[bool] = Field(
+        default=None,
+        description=(
+            "Per-case override for ``defaults.strict_guardrail_mocks``. When "
+            "true, the case fails before a configured real custom guardrail "
+            "executes without a matching replacement. Missing phases and "
+            "built-in guardrails are exempt."
         ),
     )
     approval_decisions: List[TestApprovalDecision] = Field(
@@ -561,6 +645,21 @@ class TestFile(BaseModel):
             "mocks": case.mocks if case.mocks is not None else self.defaults.mocks,
             "strict_mocks": (
                 case.strict_mocks if case.strict_mocks is not None else self.defaults.strict_mocks
+            ),
+            "strict_hook_mocks": (
+                case.strict_hook_mocks
+                if case.strict_hook_mocks is not None
+                else self.defaults.strict_hook_mocks
+            ),
+            "strict_middleware_mocks": (
+                case.strict_middleware_mocks
+                if case.strict_middleware_mocks is not None
+                else self.defaults.strict_middleware_mocks
+            ),
+            "strict_guardrail_mocks": (
+                case.strict_guardrail_mocks
+                if case.strict_guardrail_mocks is not None
+                else self.defaults.strict_guardrail_mocks
             ),
             "approval_decisions": [
                 decision.model_dump() for decision in case.approval_decisions
