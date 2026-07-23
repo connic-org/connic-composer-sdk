@@ -10,7 +10,7 @@ Define agents in YAML, extend them with Python, test them with hot reload agains
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-[Documentation](https://connic.co/docs/v1/composer/overview) • [Quickstart](https://connic.co/docs/v1/quickstart) • [Agent Templates](https://connic.co/agents) • [Dashboard](https://connic.co/projects)
+[Documentation](https://connic.co/docs/v1/build/project-structure) • [Quickstart](https://connic.co/docs/v1/quickstart) • [Agent Templates](https://connic.co/agents) • [Dashboard](https://connic.co/projects)
 
 </div>
 
@@ -151,7 +151,7 @@ connic test
 
 ### Agent Types
 
-See [Agent Configuration](https://connic.co/docs/v1/composer/agent-configuration) for the full YAML reference.
+See [Agent Configuration](https://connic.co/docs/v1/build/agent-configuration) for the full YAML reference.
 
 - `llm`: an LLM-driven agent with prompts, tools, MCP servers, schemas, and guardrails
 - `tool`: a direct wrapper around a Python tool
@@ -159,9 +159,9 @@ See [Agent Configuration](https://connic.co/docs/v1/composer/agent-configuration
 
 ### Tools
 
-Custom tools are plain Python functions discovered from `tools/`, including nested modules. Type hints and docstrings are used to generate tool schemas automatically. See [Writing Tools](https://connic.co/docs/v1/composer/write-tools) for details.
+Custom tools are plain Python functions discovered from `tools/`, including nested modules. Type hints and docstrings are used to generate tool schemas automatically. See [Writing Tools](https://connic.co/docs/v1/build/tools) for details.
 
-The SDK also exposes predefined Connic tools such as the ones documented in [Predefined Tools](https://connic.co/docs/v1/composer/predefined-tools):
+The SDK also exposes predefined Connic tools such as the ones documented in [Predefined Tools](https://connic.co/docs/v1/build/tools):
 
 - `trigger_agent`
 - `trigger_agent_at`
@@ -180,7 +180,7 @@ The SDK also exposes predefined Connic tools such as the ones documented in [Pre
 
 ### Middleware and Runtime Controls
 
-Per-agent middleware lets you modify inputs, enrich context, attach files, stop execution early, and transform outputs. See [Middleware](https://connic.co/docs/v1/composer/middleware).
+Per-agent middleware lets you modify inputs, enrich context, attach files, stop execution early, and transform outputs. See [Middleware](https://connic.co/docs/v1/build/middleware).
 
 The YAML model also supports:
 
@@ -195,11 +195,11 @@ The YAML model also supports:
 
 Related docs:
 
-- [MCP](https://connic.co/docs/v1/composer/mcp)
-- [Guardrails](https://connic.co/docs/v1/composer/guardrails)
-- [Variables](https://connic.co/docs/v1/composer/variables)
-- [Knowledge Tools](https://connic.co/docs/v1/composer/knowledge-tools)
-- [Database Tools](https://connic.co/docs/v1/composer/database-tools)
+- [MCP](https://connic.co/docs/v1/build/tools/mcp)
+- [Guardrails](https://connic.co/docs/v1/build/guardrails)
+- [Variables](https://connic.co/docs/v1/platform/environments#environment-variables)
+- [Knowledge Tools](https://connic.co/docs/v1/build/tools/knowledge)
+- [Database Tools](https://connic.co/docs/v1/build/tools/database)
 
 ## CLI Commands
 
@@ -250,18 +250,18 @@ Deployment targets Connic-managed environments.
 
 | Topic               | Link                                                                                                     |
 | ------------------- | -------------------------------------------------------------------------------------------------------- |
-| Overview            | [connic.co/docs/v1/composer/overview](https://connic.co/docs/v1/composer/overview)                       |
+| Overview            | [connic.co/docs/v1/build/project-structure](https://connic.co/docs/v1/build/project-structure)                       |
 | Quickstart          | [connic.co/docs/v1/quickstart](https://connic.co/docs/v1/quickstart)                                     |
-| Agent Configuration | [connic.co/docs/v1/composer/agent-configuration](https://connic.co/docs/v1/composer/agent-configuration) |
-| Writing Tools       | [connic.co/docs/v1/composer/write-tools](https://connic.co/docs/v1/composer/write-tools)                 |
-| Middleware          | [connic.co/docs/v1/composer/middleware](https://connic.co/docs/v1/composer/middleware)                   |
-| Predefined Tools    | [connic.co/docs/v1/composer/predefined-tools](https://connic.co/docs/v1/composer/predefined-tools)       |
-| MCP                 | [connic.co/docs/v1/composer/mcp](https://connic.co/docs/v1/composer/mcp)                                 |
-| Testing             | [connic.co/docs/v1/composer/testing](https://connic.co/docs/v1/composer/testing)                         |
-| Variables           | [connic.co/docs/v1/composer/variables](https://connic.co/docs/v1/composer/variables)                     |
-| Guardrails          | [connic.co/docs/v1/composer/guardrails](https://connic.co/docs/v1/composer/guardrails)                   |
-| Knowledge Tools     | [connic.co/docs/v1/composer/knowledge-tools](https://connic.co/docs/v1/composer/knowledge-tools)         |
-| Database Tools      | [connic.co/docs/v1/composer/database-tools](https://connic.co/docs/v1/composer/database-tools)           |
+| Agent Configuration | [connic.co/docs/v1/build/agent-configuration](https://connic.co/docs/v1/build/agent-configuration) |
+| Writing Tools       | [connic.co/docs/v1/build/tools](https://connic.co/docs/v1/build/tools)                 |
+| Middleware          | [connic.co/docs/v1/build/middleware](https://connic.co/docs/v1/build/middleware)                   |
+| Predefined Tools    | [connic.co/docs/v1/build/tools](https://connic.co/docs/v1/build/tools)       |
+| MCP                 | [connic.co/docs/v1/build/tools/mcp](https://connic.co/docs/v1/build/tools/mcp)                                 |
+| Testing             | [connic.co/docs/v1/test](https://connic.co/docs/v1/test)                         |
+| Variables           | [connic.co/docs/v1/platform/environments#environment-variables](https://connic.co/docs/v1/platform/environments#environment-variables)                     |
+| Guardrails          | [connic.co/docs/v1/build/guardrails](https://connic.co/docs/v1/build/guardrails)                   |
+| Knowledge Tools     | [connic.co/docs/v1/build/tools/knowledge](https://connic.co/docs/v1/build/tools/knowledge)         |
+| Database Tools      | [connic.co/docs/v1/build/tools/database](https://connic.co/docs/v1/build/tools/database)           |
 
 ## Contributing
 

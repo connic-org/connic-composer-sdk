@@ -452,10 +452,10 @@ This project contains AI agents built with the Connic Composer SDK.
 
 ## Documentation
 
-See the [Connic Composer docs]({base_url}/docs/v1/composer/overview) for:
-- [Agent Configuration]({base_url}/docs/v1/composer/agent-configuration)
-- [Writing Tools]({base_url}/docs/v1/composer/write-tools)
-- [Middleware]({base_url}/docs/v1/composer/middleware)
+See the [Connic Composer docs]({base_url}/docs/v1/build/project-structure) for:
+- [Agent Configuration]({base_url}/docs/v1/build/agent-configuration)
+- [Writing Tools]({base_url}/docs/v1/build/tools)
+- [Middleware]({base_url}/docs/v1/build/middleware)
 '''.format(base_url=DEFAULT_BASE_URL))
 
     # Output (skip when quiet=True, e.g. when init used templates)
