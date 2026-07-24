@@ -2,7 +2,7 @@ import asyncio
 from enum import Enum
 from typing import Any, Callable, Dict, List, Literal, Optional, Union
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
 class AgentType(str, Enum):
@@ -317,29 +317,29 @@ class DatabaseAccessConfig(BaseModel):
 
 
 class NamespacePermissions(BaseModel):
-    """Per-namespace permission overrides for knowledge access control."""
+    """Per-namespace permission overrides for retrieval access control."""
     prevent_delete: Optional[bool] = Field(
         default=None,
-        description="If true, delete_knowledge is blocked for this namespace. Inherits global setting if None."
+        description="If true, retrieval_delete is blocked for this namespace. Inherits global setting if None."
     )
     prevent_write: Optional[bool] = Field(
         default=None,
-        description="If true, store_knowledge is blocked for this namespace. Inherits global setting if None."
+        description="If true, retrieval_store is blocked for this namespace. Inherits global setting if None."
     )
 
 
-class KnowledgeAccessConfig(BaseModel):
+class RetrievalAccessConfig(BaseModel):
     """
-    Access control configuration for knowledge tools.
+    Access control configuration for retrieval tools.
 
     Example YAML (simple - flat list, global flags apply to all):
-        knowledge:
+        retrieval:
           namespaces: [products, faq]
           prevent_delete: true
           prevent_write: false
 
     Example YAML (advanced - per-namespace overrides):
-        knowledge:
+        retrieval:
           prevent_delete: true
           prevent_write: false
           namespaces:
@@ -354,11 +354,11 @@ class KnowledgeAccessConfig(BaseModel):
     )
     prevent_delete: bool = Field(
         default=False,
-        description="If true, delete_knowledge is blocked for all namespaces (can be overridden per namespace)."
+        description="If true, retrieval_delete is blocked for all namespaces (can be overridden per namespace)."
     )
     prevent_write: bool = Field(
         default=False,
-        description="If true, store_knowledge is blocked for all namespaces (can be overridden per namespace)."
+        description="If true, retrieval_store is blocked for all namespaces (can be overridden per namespace)."
     )
 
 
@@ -558,7 +558,7 @@ class Tool(BaseModel):
     # JSON Schema for LLM function calling
     parameters: Dict[str, Any] = Field(default_factory=dict)
     
-    # True for tools that will be injected by runner (trigger_agent, query_knowledge, etc.)
+    # True for tools that will be injected by runner (trigger_agent, retrieval_query, etc.)
     is_predefined: bool = False
     
     # Condition expression for conditional tool availability (evaluated per-request)
@@ -621,11 +621,12 @@ class AgentConfig(BaseModel):
                     "If omitted, the agent has unrestricted database access."
     )
 
-    # Knowledge access control
-    knowledge: Optional[KnowledgeAccessConfig] = Field(
+    # Retrieval access control
+    retrieval: Optional[RetrievalAccessConfig] = Field(
         default=None,
-        description="Access control configuration for knowledge tools. "
-                    "If omitted, the agent has unrestricted knowledge access."
+        validation_alias=AliasChoices("retrieval", "knowledge"),
+        description="Access control configuration for retrieval tools. "
+                    "If omitted, the agent has unrestricted retrieval access."
     )
 
     # MCP server connections

@@ -5,7 +5,7 @@ These are placeholder functions that get auto-injected with real implementations
 when running via `connic test` or after deployment.
 
 Usage in custom tools:
-    from connic.tools import trigger_agent, query_knowledge, db_find
+    from connic.tools import trigger_agent, retrieval_query, db_find
 
     async def my_custom_tool(input: str) -> dict:
         # Call another agent
@@ -88,7 +88,7 @@ async def trigger_agent_at(
     )
 
 
-async def query_knowledge(
+async def retrieval_query(
     query: str,
     namespace: Optional[str] = None,
     min_score: float = 0.7,
@@ -96,16 +96,16 @@ async def query_knowledge(
     metadata_filter: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """
-    Query the knowledge base for relevant information using semantic search.
+    Query managed semantic retrieval for relevant information.
 
-    This tool searches the environment's knowledge base and returns the most
+    This tool searches the environment's retrieval index and returns the most
     relevant text chunks based on semantic similarity to your query.
 
     Args:
         query: The search query - describe what information you're looking for.
                Be specific and descriptive for better results.
         namespace: Optional namespace to filter results. Use this to search
-                   only within a specific category of knowledge (e.g., "policies",
+                   only within a specific content category (e.g., "policies",
                    "products", "faq"). If not provided, searches all namespaces.
         min_score: Minimum similarity score threshold (default: 0.7).
                    Only results with score >= min_score are returned.
@@ -135,24 +135,24 @@ async def query_knowledge(
             - metadata: The entry's metadata dict
 
     Example:
-        result = await query_knowledge("What is the refund policy?")
+        result = await retrieval_query("What is the refund policy?")
         for chunk in result["results"]:
             print(f"[{chunk['score']:.2f}] {chunk['content'][:100]}...")
     """
     raise RuntimeError(
-        "query_knowledge will be auto-injected when testing using the connic CLI or deploying. "
+        "retrieval_query will be auto-injected when testing using the connic CLI or deploying. "
         "Run 'connic test' to test your agents with predefined tools."
     )
 
 
-async def store_knowledge(
+async def retrieval_store(
     content: str,
     entry_id: Optional[str] = None,
     namespace: Optional[str] = None,
     metadata: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """
-    Store new knowledge in the knowledge base for future retrieval.
+    Store content for managed semantic retrieval.
     
     Use this tool to save important information, facts, or content that
     should be remembered and searchable later. The content is automatically
@@ -165,35 +165,35 @@ async def store_knowledge(
                   a random UUID is generated. Use this to update existing entries
                   by providing the same entry_id within the same namespace.
         namespace: Optional namespace for organization. Use namespaces to
-                   categorize knowledge (e.g., "user_preferences", "meeting_notes").
+                   categorize content (e.g., "user_preferences", "meeting_notes").
         metadata: Optional dictionary of additional metadata to store.
     
     Returns:
         A dictionary containing:
-        - entry_id: Identifier for this knowledge entry
+        - entry_id: Identifier for this retrieval entry
         - chunk_count: Number of chunks the content was split into
         - success: True if stored successfully
     
     Example:
-        result = await store_knowledge(
+        result = await retrieval_store(
             content="The user prefers dark mode.",
             entry_id="user-prefs",
             namespace="preferences"
         )
     """
     raise RuntimeError(
-        "store_knowledge will be auto-injected when testing using the connic CLI or deploying. "
+        "retrieval_store will be auto-injected when testing using the connic CLI or deploying. "
         "Run 'connic test' to test your agents with predefined tools."
     )
 
 
-async def delete_knowledge(
+async def retrieval_delete(
     entry_id: Optional[str] = None,
     namespace: Optional[str] = None,
     metadata_filter: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """
-    Delete knowledge from the knowledge base.
+    Delete content from managed semantic retrieval.
 
     Two deletion modes are supported:
 
@@ -224,10 +224,10 @@ async def delete_knowledge(
 
     Example:
         # Delete one entry
-        await delete_knowledge(entry_id="outdated-info", namespace="products")
+        await retrieval_delete(entry_id="outdated-info", namespace="products")
 
         # Orphan cleanup: keep current run's writes, delete the rest in scope
-        await delete_knowledge(
+        await retrieval_delete(
             namespace="confluence",
             metadata_filter={
                 "root_page_id": page_id,
@@ -236,20 +236,20 @@ async def delete_knowledge(
         )
 
         # Wipe an entire namespace subtree
-        await delete_knowledge(namespace="meetings")
+        await retrieval_delete(namespace="meetings")
     """
     raise RuntimeError(
-        "delete_knowledge will be auto-injected when testing using the connic CLI or deploying. "
+        "retrieval_delete will be auto-injected when testing using the connic CLI or deploying. "
         "Run 'connic test' to test your agents with predefined tools."
     )
 
 
-async def kb_list_namespaces(
+async def retrieval_list_namespaces(
     parent: Optional[str] = None,
     depth: int = 1,
 ) -> Dict[str, Any]:
     """
-    List knowledge base namespaces to discover how content is organized.
+    List retrieval namespaces to discover how content is organized.
 
     Namespaces are hierarchical, separated by dots (e.g. "policies.hr.leave").
     Use this tool to explore the namespace hierarchy before searching.
@@ -278,15 +278,49 @@ async def kb_list_namespaces(
 
     Example:
         # List top-level namespaces
-        result = await kb_list_namespaces()
+        result = await retrieval_list_namespaces()
 
         # Drill into a specific namespace
-        result = await kb_list_namespaces(parent="policies")
+        result = await retrieval_list_namespaces(parent="policies")
     """
     raise RuntimeError(
-        "kb_list_namespaces will be auto-injected when testing using the connic CLI or deploying. "
+        "retrieval_list_namespaces will be auto-injected when testing using the connic CLI or deploying. "
         "Run 'connic test' to test your agents with predefined tools."
     )
+
+
+async def query_knowledge(
+    query: str,
+    namespace: Optional[str] = None,
+    min_score: float = 0.7,
+    max_results: int = 3,
+    metadata_filter: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    return await retrieval_query(query, namespace, min_score, max_results, metadata_filter)
+
+
+async def store_knowledge(
+    content: str,
+    entry_id: Optional[str] = None,
+    namespace: Optional[str] = None,
+    metadata: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    return await retrieval_store(content, entry_id, namespace, metadata)
+
+
+async def delete_knowledge(
+    entry_id: Optional[str] = None,
+    namespace: Optional[str] = None,
+    metadata_filter: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    return await retrieval_delete(entry_id, namespace, metadata_filter)
+
+
+async def kb_list_namespaces(
+    parent: Optional[str] = None,
+    depth: int = 1,
+) -> Dict[str, Any]:
+    return await retrieval_list_namespaces(parent, depth)
 
 
 async def web_search(
@@ -561,10 +595,10 @@ async def db_list_collections() -> Dict[str, Any]:
 __all__ = [
     "trigger_agent",
     "trigger_agent_at",
-    "query_knowledge",
-    "store_knowledge",
-    "delete_knowledge",
-    "kb_list_namespaces",
+    "retrieval_query",
+    "retrieval_store",
+    "retrieval_delete",
+    "retrieval_list_namespaces",
     "web_search",
     "web_read_page",
     # Database tools

@@ -15,11 +15,11 @@ from connic.core import (
     GuardrailResult,
     GuardrailRule,
     GuardrailsConfig,
-    KnowledgeAccessConfig,
     McpServerConfig,
     Middleware,
     NamespacePermissions,
     RetryOptions,
+    RetrievalAccessConfig,
     SessionConfig,
     StopProcessing,
     Tool,
@@ -430,8 +430,8 @@ def test_database_access_config_defaults():
     assert cfg.collections is None
 
 
-def test_knowledge_access_config_defaults():
-    cfg = KnowledgeAccessConfig()
+def test_retrieval_access_config_defaults():
+    cfg = RetrievalAccessConfig()
     assert cfg.prevent_delete is False
     assert cfg.prevent_write is False
     assert cfg.namespaces is None

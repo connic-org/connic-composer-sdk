@@ -11,7 +11,7 @@ from typing import Callable
 import click
 import yaml
 
-from .loader import PREDEFINED_TOOL_NAMES
+from .loader import PREDEFINED_TOOL_ALIASES, PREDEFINED_TOOL_NAMES
 
 MIGRATION_SKIP_DIRS = {
     ".git",
@@ -499,7 +499,7 @@ def _resolve_module_alias_source(
 
 
 def _predefined_tool_candidate(name: str) -> ToolCandidate | None:
-    alias_map = {"google_search": "web_search"}
+    alias_map = {"google_search": "web_search", **PREDEFINED_TOOL_ALIASES}
     mapped = alias_map.get(name, name)
     if mapped in PREDEFINED_TOOL_NAMES:
         return ToolCandidate(function_name=mapped, ref=mapped)

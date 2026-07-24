@@ -26,10 +26,10 @@ async def _expect_stub(coro):
             ("report-job", {"k": 1}),
             {"delay": {"h": 1}},
         ),
-        (tools.query_knowledge, ("refund policy",), {}),
-        (tools.store_knowledge, ("some content",), {}),
-        (tools.delete_knowledge, ("entry-1",), {}),
-        (tools.kb_list_namespaces, (), {}),
+        (tools.retrieval_query, ("refund policy",), {}),
+        (tools.retrieval_store, ("some content",), {}),
+        (tools.retrieval_delete, ("entry-1",), {}),
+        (tools.retrieval_list_namespaces, (), {}),
         (tools.web_search, ("latest AI news",), {}),
         (tools.web_read_page, ("https://example.com",), {}),
         (tools.db_find, ("orders",), {}),
@@ -47,3 +47,17 @@ async def _expect_stub(coro):
 )
 def test_predefined_tool_raises_until_injected(tool_fn, args, kwargs):
     asyncio.run(_expect_stub(tool_fn(*args, **kwargs)))
+
+
+@pytest.mark.parametrize(
+    "alias, args",
+    [
+        ("query_knowledge", ("refund policy",)),
+        ("store_knowledge", ("some content",)),
+        ("delete_knowledge", ("entry-1",)),
+        ("kb_list_namespaces", ()),
+    ],
+)
+def test_legacy_retrieval_aliases_remain_callable_but_are_not_exported(alias, args):
+    asyncio.run(_expect_stub(getattr(tools, alias)(*args)))
+    assert alias not in tools.__all__

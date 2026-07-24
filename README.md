@@ -97,14 +97,14 @@ version: "1.0"
 name: support-assistant
 type: llm
 model: gemini/gemini-2.5-pro
-description: "Customer support agent with billing and knowledge access"
+description: "Customer support agent with billing and retrieval access"
 system_prompt: |
   You are a concise support agent.
   Use tools when they help produce a more accurate answer.
 
 tools:
   - billing.lookup_invoice
-  - query_knowledge
+  - retrieval_query
 
 session:
   key: input.user_id
@@ -165,10 +165,10 @@ The SDK also exposes predefined Connic tools such as the ones documented in [Pre
 
 - `trigger_agent`
 - `trigger_agent_at`
-- `query_knowledge`
-- `store_knowledge`
-- `delete_knowledge`
-- `kb_list_namespaces`
+- `retrieval_query`
+- `retrieval_store`
+- `retrieval_delete`
+- `retrieval_list_namespaces`
 - `web_search`
 - `web_read_page`
 - `db_find`
@@ -198,7 +198,7 @@ Related docs:
 - [MCP](https://connic.co/docs/v1/build/tools/mcp)
 - [Guardrails](https://connic.co/docs/v1/build/guardrails)
 - [Variables](https://connic.co/docs/v1/platform/environments#environment-variables)
-- [Knowledge Tools](https://connic.co/docs/v1/build/tools/knowledge)
+- [Retrieval Tools](https://connic.co/docs/v1/build/tools/retrieval)
 - [Database Tools](https://connic.co/docs/v1/build/tools/database)
 
 ## CLI Commands
@@ -260,7 +260,7 @@ Deployment targets Connic-managed environments.
 | Testing             | [connic.co/docs/v1/test](https://connic.co/docs/v1/test)                         |
 | Variables           | [connic.co/docs/v1/platform/environments#environment-variables](https://connic.co/docs/v1/platform/environments#environment-variables)                     |
 | Guardrails          | [connic.co/docs/v1/build/guardrails](https://connic.co/docs/v1/build/guardrails)                   |
-| Knowledge Tools     | [connic.co/docs/v1/build/tools/knowledge](https://connic.co/docs/v1/build/tools/knowledge)         |
+| Retrieval Tools     | [connic.co/docs/v1/build/tools/retrieval](https://connic.co/docs/v1/build/tools/retrieval)         |
 | Database Tools      | [connic.co/docs/v1/build/tools/database](https://connic.co/docs/v1/build/tools/database)           |
 
 ## Contributing

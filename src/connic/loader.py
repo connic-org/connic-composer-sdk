@@ -21,10 +21,10 @@ from .core import (
     DatabaseAccessConfig,
     GuardrailRule,
     GuardrailsConfig,
-    KnowledgeAccessConfig,
     McpServerConfig,
     Middleware,
     NamespacePermissions,
+    RetrievalAccessConfig,
     RetryOptions,
     Tool,
     ToolHook,
@@ -35,10 +35,10 @@ from .core import (
 PREDEFINED_TOOL_NAMES = {
     "trigger_agent",
     "trigger_agent_at",
-    "query_knowledge",              # Query the knowledge base using semantic search
-    "store_knowledge",              # Store new knowledge in the knowledge base
-    "delete_knowledge",             # Delete knowledge from the knowledge base
-    "kb_list_namespaces",           # List knowledge base namespaces and hierarchy
+    "retrieval_query",
+    "retrieval_store",
+    "retrieval_delete",
+    "retrieval_list_namespaces",
     "web_search",           # Search the web for real-time information (costs 2x runs)
     "web_read_page",        # Fetch a web page and return its content as markdown (costs 2x runs)
     # Database tools
@@ -50,6 +50,17 @@ PREDEFINED_TOOL_NAMES = {
     "db_count",             # Count documents matching a filter
     "db_list_collections",  # List all collections in the environment
 }
+
+PREDEFINED_TOOL_ALIASES = {
+    "query_knowledge": "retrieval_query",
+    "store_knowledge": "retrieval_store",
+    "delete_knowledge": "retrieval_delete",
+    "kb_list_namespaces": "retrieval_list_namespaces",
+}
+
+
+def is_predefined_tool_name(name: str) -> bool:
+    return name in PREDEFINED_TOOL_NAMES or name in PREDEFINED_TOOL_ALIASES
 
 
 def _tool_agent_signature_error(func) -> Optional[str]:
@@ -451,19 +462,23 @@ class ProjectLoader:
                 }
             config_data["database"] = DatabaseAccessConfig(**db_raw)
 
-        # Handle knowledge access config
-        if "knowledge" in config_data and config_data["knowledge"]:
-            kn_raw = dict(config_data["knowledge"])
-            if "namespaces" in kn_raw and isinstance(kn_raw["namespaces"], list):
+        # Handle retrieval access config
+        retrieval_raw = config_data.get("retrieval")
+        if retrieval_raw is None:
+            retrieval_raw = config_data.get("knowledge")
+        if retrieval_raw:
+            rt_raw = dict(retrieval_raw)
+            if "namespaces" in rt_raw and isinstance(rt_raw["namespaces"], list):
                 # Simple format: flat list -> dict with empty per-namespace permissions
-                kn_raw["namespaces"] = {name: NamespacePermissions() for name in kn_raw["namespaces"]}
-            elif "namespaces" in kn_raw and isinstance(kn_raw["namespaces"], dict):
+                rt_raw["namespaces"] = {name: NamespacePermissions() for name in rt_raw["namespaces"]}
+            elif "namespaces" in rt_raw and isinstance(rt_raw["namespaces"], dict):
                 # Advanced format: dict with optional per-namespace overrides
-                kn_raw["namespaces"] = {
+                rt_raw["namespaces"] = {
                     name: NamespacePermissions(**(perms or {}))
-                    for name, perms in kn_raw["namespaces"].items()
+                    for name, perms in rt_raw["namespaces"].items()
                 }
-            config_data["knowledge"] = KnowledgeAccessConfig(**kn_raw)
+            config_data["retrieval"] = RetrievalAccessConfig(**rt_raw)
+        config_data.pop("knowledge", None)
 
         # Handle guardrails config
         if "guardrails" in config_data and config_data["guardrails"]:
@@ -527,7 +542,7 @@ class ProjectLoader:
         elif config.type == AgentType.TOOL:
             # Tool agents: resolve the single tool_name
             if config.tool_name:
-                if config.tool_name in PREDEFINED_TOOL_NAMES:
+                if is_predefined_tool_name(config.tool_name):
                     self._load_errors.append(
                         f"Tool agent '{config.name}': tool_name must reference a custom tool under tools/. "
                         f"Predefined tool '{config.tool_name}' is not allowed as a tool agent body; "
@@ -601,7 +616,7 @@ class ProjectLoader:
 
     def _resolve_tools(self, tool_ref: str) -> List[Tool]:
         """Resolve a tool reference to one or more Tool instances (file tools, api: spec, wildcards, predefined)."""
-        if tool_ref in PREDEFINED_TOOL_NAMES:
+        if is_predefined_tool_name(tool_ref):
             return [self._create_predefined_tool_marker(tool_ref)]
 
         if tool_ref.startswith("api:"):
@@ -618,7 +633,7 @@ class ProjectLoader:
                 "Use 'module.function' or 'directory.module.function' format "
                 "(e.g., 'calculator.add' or 'billing.calculator.add'), "
                 "'api:spec_name.tool_name' for API spec tools, "
-                f"or a predefined tool name ({', '.join(PREDEFINED_TOOL_NAMES)})."
+                f"or a predefined tool name ({', '.join(sorted(PREDEFINED_TOOL_NAMES))})."
             )
 
         module_name = ".".join(parts[:-1])

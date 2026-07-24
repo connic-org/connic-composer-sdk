@@ -7,15 +7,15 @@ from typing import Any, Dict, List, Optional, Union
 import pytest
 
 from connic import tools as connic_tools
-from connic.loader import ProjectLoader
+from connic.loader import PREDEFINED_TOOL_ALIASES, PREDEFINED_TOOL_NAMES, ProjectLoader
 
 DOCUMENTED_PREDEFINED_TOOLS = [
     "trigger_agent",
     "trigger_agent_at",
-    "query_knowledge",
-    "store_knowledge",
-    "delete_knowledge",
-    "kb_list_namespaces",
+    "retrieval_query",
+    "retrieval_store",
+    "retrieval_delete",
+    "retrieval_list_namespaces",
     "web_search",
     "web_read_page",
     "db_find",
@@ -45,10 +45,10 @@ def test_documented_predefined_tools_can_be_referenced_from_agent_yaml(tmp_path)
         tools:
           - trigger_agent
           - trigger_agent_at
-          - query_knowledge
-          - store_knowledge
-          - delete_knowledge
-          - kb_list_namespaces
+          - retrieval_query
+          - retrieval_store
+          - retrieval_delete
+          - retrieval_list_namespaces
           - web_search
           - web_read_page
           - db_find
@@ -65,6 +65,30 @@ def test_documented_predefined_tools_can_be_referenced_from_agent_yaml(tmp_path)
     assert {tool.name for tool in agent.tools} == set(DOCUMENTED_PREDEFINED_TOOLS)
     assert all(tool.is_predefined for tool in agent.tools)
     assert set(DOCUMENTED_PREDEFINED_TOOLS).issubset(set(connic_tools.__all__))
+
+
+def test_legacy_retrieval_tool_names_are_hidden_yaml_aliases(tmp_path):
+    aliases = list(PREDEFINED_TOOL_ALIASES)
+    write_file(
+        tmp_path / "agents" / "assistant.yaml",
+        f"""
+        version: "1.0"
+        name: assistant
+        type: llm
+        model: openai/gpt-5.2
+        description: "Assistant using compatibility aliases"
+        system_prompt: "Use the configured tools when relevant."
+        tools: {aliases}
+        """,
+    )
+
+    agent = ProjectLoader(str(tmp_path)).load_agent("assistant")
+
+    assert [tool.name for tool in agent.tools] == aliases
+    assert [tool.ref for tool in agent.tools] == aliases
+    assert all(tool.is_predefined for tool in agent.tools)
+    assert not set(aliases) & PREDEFINED_TOOL_NAMES
+    assert not set(aliases) & set(connic_tools.__all__)
 
 
 def test_loads_realistic_support_agent_config(tmp_path):
@@ -139,7 +163,7 @@ def test_loads_realistic_support_agent_config(tmp_path):
         tools:
           - support.lookup_customer
           - support.issue_refund: {refund_condition}
-          - query_knowledge
+          - retrieval_query
           - web_read_page
         discoverable_tools:
           - support.search_policy
@@ -150,7 +174,7 @@ def test_loads_realistic_support_agent_config(tmp_path):
             tickets:
               prevent_write: true
             audit-log: {{}}
-        knowledge:
+        retrieval:
           prevent_delete: true
           namespaces:
             - policies
@@ -190,14 +214,14 @@ def test_loads_realistic_support_agent_config(tmp_path):
     assert agent.config.database.prevent_delete is True
     assert agent.config.database.collections["tickets"].prevent_write is True
     assert agent.config.database.collections["audit-log"].prevent_write is None
-    assert agent.config.knowledge.prevent_delete is True
-    assert sorted(agent.config.knowledge.namespaces) == ["policies", "support.faq"]
+    assert agent.config.retrieval.prevent_delete is True
+    assert sorted(agent.config.retrieval.namespaces) == ["policies", "support.faq"]
 
     tools_by_name = {tool.name: tool for tool in agent.tools}
     assert {
         "lookup_customer",
         "issue_refund",
-        "query_knowledge",
+        "retrieval_query",
         "web_read_page",
         "search_tools",
         "use_tool",
@@ -2107,20 +2131,20 @@ def test_database_advanced_dict_format(tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# Knowledge config – advanced dict format
+# Retrieval config – advanced dict format
 # ---------------------------------------------------------------------------
 
-def test_knowledge_advanced_dict_format(tmp_path):
+def test_retrieval_advanced_dict_format(tmp_path):
     write_file(
-        tmp_path / "agents" / "kb-agent.yaml",
+        tmp_path / "agents" / "retrieval-agent.yaml",
         """
         version: "1.0"
-        name: kb-agent
+        name: retrieval-agent
         type: llm
         model: openai/gpt-5.2
-        description: "Agent with advanced knowledge config"
-        system_prompt: "Search knowledge."
-        knowledge:
+        description: "Agent with advanced retrieval config"
+        system_prompt: "Search indexed content."
+        retrieval:
           prevent_delete: true
           namespaces:
             policies:
@@ -2129,9 +2153,33 @@ def test_knowledge_advanced_dict_format(tmp_path):
         """,
     )
 
-    agent = ProjectLoader(str(tmp_path)).load_agent("kb-agent")
-    assert agent.config.knowledge.namespaces["policies"].prevent_write is True
-    assert agent.config.knowledge.namespaces["faq"].prevent_write is None
+    agent = ProjectLoader(str(tmp_path)).load_agent("retrieval-agent")
+    assert agent.config.retrieval.namespaces["policies"].prevent_write is True
+    assert agent.config.retrieval.namespaces["faq"].prevent_write is None
+
+
+def test_legacy_knowledge_access_key_loads_into_retrieval_config(tmp_path):
+    write_file(
+        tmp_path / "agents" / "legacy-agent.yaml",
+        """
+        version: "1.0"
+        name: legacy-agent
+        type: llm
+        model: openai/gpt-5.2
+        description: "Agent using an existing access config"
+        system_prompt: "Search indexed content."
+        knowledge:
+          prevent_delete: true
+          namespaces:
+            - policies
+        """,
+    )
+
+    config = ProjectLoader(str(tmp_path)).load_agent("legacy-agent").config
+
+    assert config.retrieval.prevent_delete is True
+    assert list(config.retrieval.namespaces) == ["policies"]
+    assert "knowledge" not in config.model_dump()
 
 
 # ---------------------------------------------------------------------------

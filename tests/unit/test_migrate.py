@@ -91,7 +91,7 @@ def test_langchain_migration_generates_agent_yaml_and_extracted_tools(tmp_path):
     assert agent_yaml["name"] == "support-agent"
     assert agent_yaml["model"] == "openai/gpt-4o-mini"
     assert agent_yaml["system_prompt"] == "Answer support tickets with invoice context."
-    assert agent_yaml["tools"] == ["support_tools.lookup_invoice", "query_knowledge"]
+    assert agent_yaml["tools"] == ["support_tools.lookup_invoice", "retrieval_query"]
     assert "def lookup_invoice" in tools_py
     assert "def normalize_invoice_id" in tools_py
     assert "class InvoiceFormatter" in tools_py
@@ -800,7 +800,7 @@ def test_adk_yaml_migration_reports_unresolved_tool_references(tmp_path):
     assert framework == "adk"
     assert agents[0].name == "policy-bot"
     assert agents[0].model == "anthropic/claude-3-5-sonnet"
-    assert [tool.ref for tool in agents[0].tool_candidates] == ["query_knowledge"]
+    assert [tool.ref for tool in agents[0].tool_candidates] == ["retrieval_query"]
     assert agents[0].notes == ["Could not migrate YAML tool reference 'private_tool_name'."]
 
 
@@ -883,7 +883,7 @@ def test_adk_yaml_workflow_migration_links_child_agents(tmp_path):
     }
     assert triage_yaml["model"] == "gemini/gemini-2.5-flash"
     assert triage_yaml["system_prompt"] == "Classify the ticket and decide whether escalation is needed."
-    assert triage_yaml["tools"] == ["query_knowledge"]
+    assert triage_yaml["tools"] == ["retrieval_query"]
     assert escalation_yaml["model"] == "anthropic/claude-3-5-sonnet"
     assert escalation_yaml["system_prompt"] == "Resolve high-priority customer escalations."
     assert "- `support-flow` (sequential)" in report
