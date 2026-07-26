@@ -61,3 +61,76 @@ def test_predefined_tool_raises_until_injected(tool_fn, args, kwargs):
 def test_legacy_retrieval_aliases_remain_callable_but_are_not_exported(alias, args):
     asyncio.run(_expect_stub(getattr(tools, alias)(*args)))
     assert alias not in tools.__all__
+
+
+@pytest.mark.parametrize(
+    "alias, canonical, args, kwargs, expected_args",
+    [
+        (
+            "query_knowledge",
+            "retrieval_query",
+            ("refund policy",),
+            {
+                "namespace": "policies",
+                "min_score": 0.5,
+                "max_results": 7,
+                "metadata_filter": {"status": "active"},
+            },
+            ("refund policy", "policies", 0.5, 7, {"status": "active"}),
+        ),
+        (
+            "store_knowledge",
+            "retrieval_store",
+            ("Refunds are available for 30 days.",),
+            {
+                "entry_id": "refund-policy",
+                "namespace": "policies",
+                "metadata": {"owner": "support"},
+            },
+            (
+                "Refunds are available for 30 days.",
+                "refund-policy",
+                "policies",
+                {"owner": "support"},
+            ),
+        ),
+        (
+            "delete_knowledge",
+            "retrieval_delete",
+            (),
+            {
+                "entry_id": "refund-policy",
+                "namespace": "policies",
+                "metadata_filter": {"status": "stale"},
+            },
+            ("refund-policy", "policies", {"status": "stale"}),
+        ),
+        (
+            "kb_list_namespaces",
+            "retrieval_list_namespaces",
+            (),
+            {"parent": "policies", "depth": 0},
+            ("policies", 0),
+        ),
+    ],
+)
+def test_legacy_retrieval_aliases_forward_to_canonical_tools(
+    monkeypatch,
+    alias,
+    canonical,
+    args,
+    kwargs,
+    expected_args,
+):
+    calls = []
+
+    async def canonical_tool(*received_args, **received_kwargs):
+        calls.append((received_args, received_kwargs))
+        return {"canonical": canonical}
+
+    monkeypatch.setattr(tools, canonical, canonical_tool)
+
+    result = asyncio.run(getattr(tools, alias)(*args, **kwargs))
+
+    assert result == {"canonical": canonical}
+    assert calls == [(expected_args, {})]
