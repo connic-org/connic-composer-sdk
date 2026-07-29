@@ -6,6 +6,7 @@ or deployment yields a clear RuntimeError so agent code fails fast during local 
 """
 import asyncio
 import re
+from typing import Any, Dict, List, get_args, get_origin, get_type_hints
 
 import pytest
 
@@ -47,6 +48,14 @@ async def _expect_stub(coro):
 )
 def test_predefined_tool_raises_until_injected(tool_fn, args, kwargs):
     asyncio.run(_expect_stub(tool_fn(*args, **kwargs)))
+
+
+@pytest.mark.parametrize("tool_fn", [tools.trigger_agent, tools.trigger_agent_at])
+def test_orchestration_payload_type_supports_structured_and_text_inputs(tool_fn):
+    payload_type = get_type_hints(tool_fn)["payload"]
+
+    assert get_origin(payload_type) is not None
+    assert set(get_args(payload_type)) == {Dict[str, Any], List[Any], str}
 
 
 @pytest.mark.parametrize(

@@ -362,7 +362,7 @@ def _validate_project_files() -> tuple[bool, str, list[Path]]:
 
 
 @click.group()
-@click.version_option(version="0.1.37", prog_name="connic")
+@click.version_option(version="0.1.38", prog_name="connic")
 def main():
     """Connic Composer SDK - Build agents with code."""
     print_update_hint()
@@ -435,7 +435,7 @@ This project contains AI agents built with the Connic Composer SDK.
    version: "1.0"
    name: my-agent
    type: llm
-   model: gemini/gemini-2.5-flash
+   model: connic/glm-5.2
    description: "My first agent"
    system_prompt: |
      You are a helpful assistant.

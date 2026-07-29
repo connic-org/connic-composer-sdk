@@ -497,7 +497,7 @@ class McpServerConfig(BaseModel):
     Configuration for an MCP (Model Context Protocol) server connection.
 
     MCP servers provide external tools that agents can use. The connection
-    is established from within the deployed agent container via HTTP/SSE.
+    is established from within the deployed agent container over Streamable HTTP.
 
     Example YAML:
         mcp_servers:

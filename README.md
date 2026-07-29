@@ -96,7 +96,7 @@ version: "1.0"
 
 name: support-assistant
 type: llm
-model: gemini/gemini-2.5-pro
+model: connic/glm-5.2
 description: "Customer support agent with billing and retrieval access"
 system_prompt: |
   You are a concise support agent.

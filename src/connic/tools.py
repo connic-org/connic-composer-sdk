@@ -20,7 +20,7 @@ from typing import Any, Dict, List, Optional, Union
 
 async def trigger_agent(
     agent_name: str,
-    payload: str,
+    payload: Union[Dict[str, Any], List[Any], str],
     wait_for_response: bool = True,
     timeout_seconds: int = 60
 ) -> dict:
@@ -29,8 +29,8 @@ async def trigger_agent(
 
     Args:
         agent_name: Name of the agent to trigger
-        payload: The data to send to the agent, as a string (JSON or plain
-                 text), e.g. '{"text": "Long document to summarize..."}'.
+        payload: The data to send to the agent. Pass a dict or list for
+                 structured data, or a string for plain text or JSON-encoded data.
         wait_for_response: If True, wait for the agent to complete and return its response
         timeout_seconds: Maximum time to wait for response (only if wait_for_response=True)
 
@@ -40,7 +40,7 @@ async def trigger_agent(
     Example:
         result = await trigger_agent(
             agent_name="summarizer",
-            payload='{"text": "Long document to summarize..."}',
+            payload={"text": "Long document to summarize..."},
             wait_for_response=True
         )
         summary = result["response"]
@@ -53,7 +53,7 @@ async def trigger_agent(
 
 async def trigger_agent_at(
     agent_name: str,
-    payload: str,
+    payload: Union[Dict[str, Any], List[Any], str],
     delay: Optional[Dict[str, float]] = None,
     unix_timestamp: Optional[float] = None,
 ) -> dict:
@@ -64,8 +64,8 @@ async def trigger_agent_at(
 
     Args:
         agent_name: Name of the agent to trigger
-        payload: The data to send to the agent, as a string (JSON or plain
-                 text), e.g. '{"report_type": "daily"}'.
+        payload: The data to send to the agent. Pass a dict or list for
+                 structured data, or a string for plain text or JSON-encoded data.
         delay: Relative time offset as a dict with keys d (days), h (hours),
                m (minutes), s (seconds). At least one key is required.
                Example: {"h": 2, "m": 30} triggers in 2 hours and 30 minutes.
@@ -78,7 +78,7 @@ async def trigger_agent_at(
     Example:
         result = await trigger_agent_at(
             agent_name="report-generator",
-            payload='{"report_type": "daily"}',
+            payload={"report_type": "daily"},
             delay={"h": 2, "m": 30}
         )
     """
