@@ -91,7 +91,7 @@ async def trigger_agent_at(
 async def retrieval_query(
     query: str,
     namespace: Optional[str] = None,
-    min_score: float = 0.7,
+    min_score: float = 0.3,
     max_results: int = 3,
     metadata_filter: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
@@ -107,7 +107,7 @@ async def retrieval_query(
         namespace: Optional namespace to filter results. Use this to search
                    only within a specific content category (e.g., "policies",
                    "products", "faq"). If not provided, searches all namespaces.
-        min_score: Minimum similarity score threshold (default: 0.7).
+        min_score: Minimum similarity score threshold (default: 0.3).
                    Only results with score >= min_score are returned.
                    Range is 0.0 to 1.0 where 1.0 is a perfect match.
         max_results: Maximum number of results to return (default: 3).
@@ -292,7 +292,7 @@ async def retrieval_list_namespaces(
 async def query_knowledge(
     query: str,
     namespace: Optional[str] = None,
-    min_score: float = 0.7,
+    min_score: float = 0.3,
     max_results: int = 3,
     metadata_filter: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:

@@ -5,6 +5,7 @@ These tests document the developer-facing contract: calling a stub outside the C
 or deployment yields a clear RuntimeError so agent code fails fast during local edits.
 """
 import asyncio
+import inspect
 import re
 from typing import Any, Dict, List, get_args, get_origin, get_type_hints
 
@@ -56,6 +57,11 @@ def test_orchestration_payload_type_supports_structured_and_text_inputs(tool_fn)
 
     assert get_origin(payload_type) is not None
     assert set(get_args(payload_type)) == {Dict[str, Any], List[Any], str}
+
+
+def test_retrieval_tools_preserve_public_default_score():
+    assert inspect.signature(tools.retrieval_query).parameters["min_score"].default == 0.3
+    assert inspect.signature(tools.query_knowledge).parameters["min_score"].default == 0.3
 
 
 @pytest.mark.parametrize(
