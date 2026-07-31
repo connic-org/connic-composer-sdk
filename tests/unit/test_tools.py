@@ -7,7 +7,7 @@ or deployment yields a clear RuntimeError so agent code fails fast during local 
 import asyncio
 import inspect
 import re
-from typing import Any, Dict, List, get_args, get_origin, get_type_hints
+from typing import Any, Dict, List, Union
 
 import pytest
 
@@ -53,13 +53,11 @@ def test_predefined_tool_raises_until_injected(tool_fn, args, kwargs):
 
 @pytest.mark.parametrize("tool_fn", [tools.trigger_agent, tools.trigger_agent_at])
 def test_orchestration_payload_type_supports_structured_and_text_inputs(tool_fn):
-    payload_type = get_type_hints(tool_fn)["payload"]
-
-    assert get_origin(payload_type) is not None
-    assert set(get_args(payload_type)) == {Dict[str, Any], List[Any], str}
+    payload_type = inspect.signature(tool_fn).parameters["payload"].annotation
+    assert payload_type == Union[Dict[str, Any], List[Any], str]
 
 
-def test_retrieval_tools_preserve_public_default_score():
+def test_retrieval_tools_default_min_score():
     assert inspect.signature(tools.retrieval_query).parameters["min_score"].default == 0.3
     assert inspect.signature(tools.query_knowledge).parameters["min_score"].default == 0.3
 
@@ -138,14 +136,15 @@ def test_legacy_retrieval_aliases_forward_to_canonical_tools(
     expected_args,
 ):
     calls = []
+    response = object()
 
     async def canonical_tool(*received_args, **received_kwargs):
         calls.append((received_args, received_kwargs))
-        return {"canonical": canonical}
+        return response
 
     monkeypatch.setattr(tools, canonical, canonical_tool)
 
     result = asyncio.run(getattr(tools, alias)(*args, **kwargs))
 
-    assert result == {"canonical": canonical}
+    assert result is response
     assert calls == [(expected_args, {})]
