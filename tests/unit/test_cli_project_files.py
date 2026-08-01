@@ -2201,6 +2201,106 @@ def test_test_command_runs_suite_against_default_test_environment_and_filters_js
     }
 
 
+@pytest.mark.parametrize(
+    ("failure_stage", "expected_exit_code", "expected_message"),
+    [
+        ("environment_unauthorized", 1, "Failed to list environments: invalid API key"),
+        ("environment_unavailable", 2, "Failed to list environments: environment service unavailable"),
+        ("environment_network", 2, "Failed to list environments: network down"),
+        ("submission_rejected", 1, "Test request rejected: invalid test package"),
+        ("submission_unavailable", 2, "Failed to start test run: test runner queue unavailable"),
+        ("submission_network", 2, "Failed to start test run: network down"),
+        ("polling_unavailable", 2, "Failed to poll test run: runner status unavailable; giving up."),
+        ("polling_network", 2, "Lost contact with backend (network down); giving up."),
+        ("terminal_error", 2, "Test run errored: test runner container failed to start"),
+    ],
+)
+def test_test_command_distinguishes_test_failures_from_infrastructure_errors(
+    tmp_path,
+    monkeypatch,
+    failure_stage,
+    expected_exit_code,
+    expected_message,
+):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(cli, "print_update_hint", lambda: None)
+    monkeypatch.setattr(time, "sleep", lambda _seconds: None)
+    write_minimal_test_project(tmp_path)
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "tests" / "support.yaml").write_text(
+        "agent: support\n"
+        "tests:\n"
+        "  - name: handles_refund_request\n"
+        "    payload: '{\"message\":\"refund order 123\"}'\n"
+        "    expected_result: status == \"completed\"\n"
+    )
+
+    class Response:
+        def __init__(self, status_code, payload=None, text=""):
+            self.status_code = status_code
+            self._payload = payload
+            self.text = text
+
+        def json(self):
+            return self._payload
+
+    class FakeClient:
+        def __init__(self, base_url, headers, timeout):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def get(self, path):
+            if path == "/projects/proj_123/environments/":
+                if failure_stage == "environment_unauthorized":
+                    return Response(401, text="invalid API key")
+                if failure_stage == "environment_unavailable":
+                    return Response(503, text="environment service unavailable")
+                if failure_stage == "environment_network":
+                    raise cli.httpx.ConnectError("network down")
+                return Response(
+                    200,
+                    [{"id": "env_prod", "name": "Production", "env_type": "standard", "is_default": True}],
+                )
+            if path == "/projects/proj_123/test-runs/run_123":
+                if failure_stage == "polling_unavailable":
+                    return Response(503, text="runner status unavailable")
+                if failure_stage == "polling_network":
+                    raise cli.httpx.ReadError("network down")
+                if failure_stage == "terminal_error":
+                    return Response(
+                        200,
+                        {
+                            "status": "error",
+                            "phase": "error",
+                            "error": "test runner container failed to start",
+                        },
+                    )
+            raise AssertionError(f"Unexpected GET {path}")
+
+        def post(self, path, json=None):
+            assert path == "/projects/proj_123/test-runs"
+            if failure_stage == "submission_rejected":
+                return Response(400, text="invalid test package")
+            if failure_stage == "submission_unavailable":
+                return Response(503, text="test runner queue unavailable")
+            if failure_stage == "submission_network":
+                raise cli.httpx.ConnectError("network down")
+            return Response(202, {"id": "run_123"})
+
+    monkeypatch.setattr(cli.httpx, "Client", FakeClient)
+
+    args = ["test"] if failure_stage.startswith("environment_") else ["test", "--env", "env_manual"]
+    result = CliRunner().invoke(cli.main, args)
+
+    assert result.exit_code == expected_exit_code, result.output
+    assert expected_message in result.output
+
+
 def test_test_command_renders_failed_case_and_dashboard_link_for_explicit_environment(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(cli, "print_update_hint", lambda: None)

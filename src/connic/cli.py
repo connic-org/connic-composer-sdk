@@ -997,6 +997,16 @@ _TEST_PHASE_LABELS = {
 }
 
 
+def _test_api_error_exit_code(status_code: int) -> int:
+    return 1 if 400 <= status_code < 500 and status_code not in (408, 429) else 2
+
+
+class _TestRunSubmissionError(RuntimeError):
+    def __init__(self, message: str, status_code: int):
+        super().__init__(message)
+        self.exit_code = _test_api_error_exit_code(status_code)
+
+
 def _package_project_for_tests(*, quiet: bool = False) -> tuple[bytes, list[Path], int]:
     """Validate project files and build the gzip tarball used by `/test-runs`.
 
@@ -1052,9 +1062,9 @@ def _kickoff_test_run(
         json=body,
     )
     if resp.status_code == 400:
-        raise RuntimeError(f"Test request rejected: {_response_error_text(resp)}")
+        raise _TestRunSubmissionError(f"Test request rejected: {_response_error_text(resp)}", resp.status_code)
     if resp.status_code not in (200, 202):
-        raise RuntimeError(f"Failed to start test run: {_response_error_text(resp)}")
+        raise _TestRunSubmissionError(f"Failed to start test run: {_response_error_text(resp)}", resp.status_code)
     return resp.json()["id"]
 
 
@@ -1073,7 +1083,7 @@ def _poll_test_run(client: "httpx.Client", poll_url: str, *, quiet: bool = False
     while True:
         try:
             resp = client.get(poll_url)
-        except (httpx.ReadTimeout, httpx.ConnectError, httpx.RemoteProtocolError) as e:
+        except httpx.RequestError as e:
             consecutive_poll_errors += 1
             if consecutive_poll_errors >= 5:
                 raise RuntimeError(f"Lost contact with backend ({e!s})")
@@ -1918,9 +1928,15 @@ def test(env: str | None, filter_name: str | None, coverage: bool, as_json: bool
         if env is None:
             if not as_json:
                 _step("Resolving target environment...")
-            envs_resp = client.get(f"/projects/{project_id}/environments/")
+            try:
+                envs_resp = client.get(f"/projects/{project_id}/environments/")
+            except httpx.RequestError as e:
+                _fail_and_exit(f"Failed to list environments: {e}", code=2)
             if envs_resp.status_code != 200:
-                _fail_and_exit(f"Failed to list environments: {envs_resp.text}")
+                _fail_and_exit(
+                    f"Failed to list environments: {envs_resp.text}",
+                    code=_test_api_error_exit_code(envs_resp.status_code),
+                )
             envs = envs_resp.json()
             standard = [e for e in envs if e.get("env_type") != "test"]
             default_env = next((e for e in standard if e.get("is_default")), None) or (standard[0] if standard else None)
@@ -1938,8 +1954,10 @@ def test(env: str | None, filter_name: str | None, coverage: bool, as_json: bool
             _step("Submitting to backend...")
         try:
             test_run_id = _kickoff_test_run(client, project_id, env, tar_data, test_filter=filter_name)
-        except RuntimeError as e:
-            _fail_and_exit(str(e))
+        except _TestRunSubmissionError as e:
+            _fail_and_exit(str(e), code=e.exit_code)
+        except httpx.RequestError as e:
+            _fail_and_exit(f"Failed to start test run: {e}", code=2)
         if not as_json:
             _ok(f"Test run id: {test_run_id}")
 
@@ -1950,7 +1968,7 @@ def test(env: str | None, filter_name: str | None, coverage: bool, as_json: bool
                 quiet=as_json,
             )
         except RuntimeError as e:
-            _fail_and_exit(f"{e}; giving up.")
+            _fail_and_exit(f"{e}; giving up.", code=2)
 
         cases = result.get("cases", [])
         if result.get("status") == "failed":
