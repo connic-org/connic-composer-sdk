@@ -1,8 +1,10 @@
 import base64
 import io
 import json
+import signal
 import sys
 import tarfile
+import threading
 import time
 import zipfile
 from pathlib import Path
@@ -2638,7 +2640,213 @@ def test_dev_session_test_runner_warns_when_no_test_files_exist(tmp_path, monkey
     assert "No tests/ directory found" in output
 
 
-def test_test_command_starts_session_uploads_files_and_stops_when_server_ends_session(tmp_path, monkeypatch):
+def test_dev_interactive_keys_refresh_run_tests_and_quit_with_cleanup(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(cli, "print_update_hint", lambda: None)
+    write_minimal_test_project(tmp_path)
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "tests" / "support.yaml").write_text(
+        "agent: support\n"
+        "tests:\n"
+        "  - name: handles_priority_refund\n"
+        "    payload: '{\"message\":\"refund priority order\"}'\n"
+        "    expected_result: status == \"completed\"\n"
+    )
+
+    requests = []
+    uploaded_files = []
+    test_requests = []
+    terminal_calls = []
+    input_ready = threading.Event()
+    input_consumed = threading.Event()
+
+    class Response:
+        def __init__(self, status_code, payload=None, text=""):
+            self.status_code = status_code
+            self._payload = payload
+            self.text = text
+
+        def json(self):
+            return self._payload
+
+    class FakeClient:
+        test_poll_count = 0
+
+        def __init__(self, base_url, headers, timeout):
+            self.base_url = base_url
+            self.headers = headers
+            self.timeout = timeout
+
+        def post(self, path, json=None, files=None, timeout=None):
+            requests.append(("POST", path))
+            if path == "/projects/proj_123/test-sessions":
+                return Response(
+                    200,
+                    {
+                        "id": "sess_123",
+                        "environment_id": "env_test",
+                        "environment_name": "support-dev",
+                    },
+                )
+            if path == "/test-sessions/sess_123/files":
+                uploaded_files.append(files["file"][1])
+                return Response(
+                    200,
+                    {
+                        "files_hash": f"hash_{len(uploaded_files)}",
+                        "size_bytes": len(files["file"][1]),
+                    },
+                )
+            if path == "/projects/proj_123/test-runs":
+                test_requests.append(json)
+                return Response(202, {"id": "run_dev_123"})
+            raise AssertionError(f"Unexpected POST {path}")
+
+        def get(self, path):
+            requests.append(("GET", path))
+            if path == "/test-sessions/sess_123":
+                return Response(200, {"container_status": "running"})
+            if path == "/projects/proj_123/test-runs/run_dev_123":
+                FakeClient.test_poll_count += 1
+                if FakeClient.test_poll_count == 1:
+                    return Response(200, {"status": "running", "phase": "building_image"})
+                return Response(
+                    200,
+                    {
+                        "status": "passed",
+                        "phase": "running_tests",
+                        "total_cases": 1,
+                        "cases": [
+                            {
+                                "agent_name": "support",
+                                "test_name": "handles_priority_refund",
+                                "passed": True,
+                                "successes": 1,
+                                "runs": 1,
+                                "success_threshold": 100,
+                            }
+                        ],
+                    },
+                )
+            raise AssertionError(f"Unexpected GET {path}")
+
+        def delete(self, path):
+            requests.append(("DELETE", path))
+            return Response(200, {"environment_deleted": True})
+
+        def close(self):
+            requests.append(("CLOSE", None))
+
+    class FakeObserver:
+        def schedule(self, handler, path, recursive):
+            requests.append(("SCHEDULE", path, recursive))
+
+        def start(self):
+            requests.append(("OBSERVER_START", None))
+
+        def stop(self):
+            requests.append(("OBSERVER_STOP", None))
+
+        def join(self):
+            requests.append(("OBSERVER_JOIN", None))
+
+    class FakeSelect:
+        delivered_input = False
+
+        @classmethod
+        def select(cls, readers, _writers, _errors, _timeout):
+            if cls.delivered_input:
+                cls.delivered_input = False
+                input_consumed.set()
+            if input_ready.wait(timeout=0.01):
+                input_ready.clear()
+                cls.delivered_input = True
+                return readers, [], []
+            return [], [], []
+
+    class FakeTermios:
+        TCSADRAIN = 1
+
+        @staticmethod
+        def tcgetattr(fd):
+            terminal_calls.append(("get", fd))
+            return ("saved-terminal-state",)
+
+        @staticmethod
+        def tcsetattr(fd, when, state):
+            terminal_calls.append(("restore", fd, when, state))
+
+    class FakeTty:
+        @staticmethod
+        def setcbreak(fd):
+            terminal_calls.append(("cbreak", fd))
+
+    class FakeTime:
+        current = 1000.0
+        interactive_sleeps = 0
+
+        @classmethod
+        def time(cls):
+            return cls.current
+
+        @classmethod
+        def sleep(cls, seconds):
+            cls.current += seconds
+            if seconds != 0.5:
+                return
+            cls.interactive_sleeps += 1
+            if cls.interactive_sleeps == 1:
+                agent_path = tmp_path / "agents" / "support.yaml"
+                agent_path.write_text(agent_path.read_text().replace("Help customers.", "Help priority customers."))
+            input_consumed.clear()
+            input_ready.set()
+            if not input_consumed.wait(timeout=1):
+                raise AssertionError("interactive key reader did not consume input")
+
+        @staticmethod
+        def strftime(fmt):
+            return "12:00:00"
+
+    monkeypatch.setattr(cli.httpx, "Client", FakeClient)
+    monkeypatch.setattr("watchdog.observers.Observer", FakeObserver)
+    monkeypatch.setattr("signal.signal", lambda *args: None)
+    monkeypatch.setattr("click.testing._NamedTextIOWrapper.isatty", lambda stream: stream.name == "<stdin>")
+    monkeypatch.setattr("click.testing._NamedTextIOWrapper.fileno", lambda stream: 42)
+    monkeypatch.setitem(sys.modules, "select", FakeSelect)
+    monkeypatch.setitem(sys.modules, "termios", FakeTermios)
+    monkeypatch.setitem(sys.modules, "tty", FakeTty)
+    monkeypatch.setitem(sys.modules, "time", FakeTime)
+
+    result = CliRunner().invoke(cli.main, ["dev"], input="rtq")
+
+    assert result.exit_code == 0, result.output
+    assert len(uploaded_files) == 2
+    with tarfile.open(fileobj=io.BytesIO(uploaded_files[1]), mode="r:gz") as archive:
+        refreshed_agent = archive.extractfile("agents/support.yaml").read().decode()
+    assert "Help priority customers." in refreshed_agent
+    assert len(test_requests) == 1
+    assert test_requests[0]["environment_id"] == "env_test"
+    assert ("DELETE", "/test-sessions/sess_123") in requests
+    assert requests[-1] == ("CLOSE", None)
+    assert ("OBSERVER_STOP", None) in requests
+    assert ("OBSERVER_JOIN", None) in requests
+    assert terminal_calls == [
+        ("get", 42),
+        ("cbreak", 42),
+        ("restore", 42, FakeTermios.TCSADRAIN, ("saved-terminal-state",)),
+    ]
+    assert "Manual refresh — uploading" in result.output
+    assert "1/1 cases passed." in result.output
+    assert "Quit requested" in result.output
+    assert "Ephemeral environment deleted." in result.output
+
+
+@pytest.mark.parametrize("terminal_failure", ["state_read", "thread_start"])
+def test_dev_starts_session_uploads_files_and_falls_back_when_terminal_controls_fail(
+    tmp_path,
+    monkeypatch,
+    terminal_failure,
+):
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(cli, "print_update_hint", lambda: None)
     (tmp_path / ".connic").write_text(json.dumps({"api_key": "cnc_live_secret", "project_id": "proj_123"}))
@@ -2742,10 +2950,51 @@ def test_test_command_starts_session_uploads_files_and_stops_when_server_ends_se
         def strftime(fmt):
             return "12:00:00"
 
+    terminal_setup = []
+
+    class UnsupportedTermios:
+        TCSADRAIN = 1
+
+        @staticmethod
+        def tcgetattr(fd):
+            terminal_setup.append(("get", fd))
+            if terminal_failure == "state_read":
+                raise OSError("raw terminal mode unavailable")
+            return ("saved-terminal-state",)
+
+        @staticmethod
+        def tcsetattr(fd, when, state):
+            terminal_setup.append(("restore", fd, when, state))
+
+    class UnsupportedTty:
+        @staticmethod
+        def setcbreak(fd):
+            if terminal_failure == "state_read":
+                raise AssertionError("setcbreak should not run after tcgetattr fails")
+            terminal_setup.append(("cbreak", fd))
+
+    class FailingThread:
+        def __init__(self, target, daemon):
+            pass
+
+        def start(self):
+            terminal_setup.append(("thread_start",))
+            raise RuntimeError("cannot start key reader")
+
+        def join(self, timeout=None):
+            terminal_setup.append(("thread_join", timeout))
+            raise RuntimeError("cannot join thread before it is started")
+
     monkeypatch.setattr(cli.httpx, "Client", FakeClient)
     monkeypatch.setattr("watchdog.observers.Observer", FakeObserver)
     monkeypatch.setattr("signal.signal", lambda *args: None)
+    monkeypatch.setattr("click.testing._NamedTextIOWrapper.isatty", lambda stream: stream.name == "<stdin>")
+    monkeypatch.setattr("click.testing._NamedTextIOWrapper.fileno", lambda stream: 42)
+    monkeypatch.setitem(sys.modules, "termios", UnsupportedTermios)
+    monkeypatch.setitem(sys.modules, "tty", UnsupportedTty)
     monkeypatch.setitem(sys.modules, "time", FakeTime)
+    if terminal_failure == "thread_start":
+        monkeypatch.setattr(threading, "Thread", FailingThread)
 
     result = CliRunner().invoke(cli.main, ["dev", "support-dev"])
 
@@ -2768,7 +3017,137 @@ def test_test_command_starts_session_uploads_files_and_stops_when_server_ends_se
     assert "tickets.lookup_ticket" in support_config
     assert "Using named environment: support-dev" in result.output
     assert "View and trigger your agents: https://connic.co/projects/proj_123/agents?env=env_test" in result.output
+    if terminal_failure == "state_read":
+        assert terminal_setup == [("get", 42)]
+    else:
+        assert terminal_setup == [
+            ("get", 42),
+            ("cbreak", 42),
+            ("thread_start",),
+            ("thread_join", 1.0),
+            ("restore", 42, UnsupportedTermios.TCSADRAIN, ("saved-terminal-state",)),
+        ]
+    assert "Press Ctrl+C to stop." in result.output
+    assert "Keys: [r] refresh" not in result.output
     assert "Session was cleaned up due to inactivity or manual deletion." in result.output
+
+
+@pytest.mark.parametrize("observer_exit", ["error", "signal"])
+def test_dev_restores_terminal_when_observer_setup_exits(tmp_path, monkeypatch, observer_exit):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(cli, "print_update_hint", lambda: None)
+    write_minimal_test_project(tmp_path)
+    events = []
+    signal_handlers = {}
+
+    class Response:
+        def __init__(self, status_code, payload=None):
+            self.status_code = status_code
+            self._payload = payload
+            self.text = ""
+
+        def json(self):
+            return self._payload
+
+    class FakeClient:
+        def __init__(self, base_url, headers, timeout):
+            pass
+
+        def post(self, path, json=None, files=None, timeout=None):
+            events.append(("POST", path))
+            if path == "/projects/proj_123/test-sessions":
+                return Response(
+                    200,
+                    {
+                        "id": "sess_123",
+                        "environment_id": "env_test",
+                        "environment_name": "support-dev",
+                    },
+                )
+            if path == "/test-sessions/sess_123/files":
+                return Response(200, {"files_hash": "hash_123", "size_bytes": len(files["file"][1])})
+            raise AssertionError(f"Unexpected POST {path}")
+
+        def get(self, path):
+            events.append(("GET", path))
+            if path == "/test-sessions/sess_123":
+                return Response(200, {"container_status": "running"})
+            raise AssertionError(f"Unexpected GET {path}")
+
+        def delete(self, path):
+            events.append(("DELETE", path))
+            return Response(200, {"environment_deleted": True})
+
+        def close(self):
+            events.append(("CLIENT_CLOSE", None))
+
+    class FailingObserver:
+        def schedule(self, handler, path, recursive):
+            pass
+
+        def start(self):
+            events.append(("OBSERVER_START", None))
+            if observer_exit == "error":
+                raise OSError("file watcher unavailable")
+            signal_handlers[signal.SIGTERM](signal.SIGTERM, None)
+
+        def stop(self):
+            events.append(("OBSERVER_STOP", None))
+
+        def join(self):
+            events.append(("OBSERVER_JOIN", None))
+
+    class FakeTermios:
+        TCSADRAIN = 1
+
+        @staticmethod
+        def tcgetattr(fd):
+            events.append(("TERMINAL_GET", fd))
+            return ("saved-terminal-state",)
+
+        @staticmethod
+        def tcsetattr(fd, when, state):
+            events.append(("TERMINAL_RESTORE", fd, when, state))
+
+    class FakeTty:
+        @staticmethod
+        def setcbreak(fd):
+            events.append(("TERMINAL_CBREAK", fd))
+
+    class FakeThread:
+        def __init__(self, target, daemon):
+            self.target = target
+            self.daemon = daemon
+
+        def start(self):
+            events.append(("THREAD_START", None))
+
+        def join(self, timeout=None):
+            events.append(("THREAD_JOIN", timeout))
+
+    monkeypatch.setattr(cli.httpx, "Client", FakeClient)
+    monkeypatch.setattr("watchdog.observers.Observer", FailingObserver)
+    monkeypatch.setattr("signal.signal", lambda sig, handler: signal_handlers.__setitem__(sig, handler))
+    monkeypatch.setattr("click.testing._NamedTextIOWrapper.isatty", lambda stream: stream.name == "<stdin>")
+    monkeypatch.setattr("click.testing._NamedTextIOWrapper.fileno", lambda stream: 42)
+    monkeypatch.setattr(threading, "Thread", FakeThread)
+    monkeypatch.setitem(sys.modules, "termios", FakeTermios)
+    monkeypatch.setitem(sys.modules, "tty", FakeTty)
+
+    result = CliRunner().invoke(cli.main, ["dev"])
+
+    assert result.exit_code == (1 if observer_exit == "error" else 0)
+    assert ("file watcher unavailable" in result.output) is (observer_exit == "error")
+    assert ("OBSERVER_STOP", None) in events
+    assert ("THREAD_JOIN", 1.0) in events
+    assert (
+        "TERMINAL_RESTORE",
+        42,
+        FakeTermios.TCSADRAIN,
+        ("saved-terminal-state",),
+    ) in events
+    assert ("DELETE", "/test-sessions/sess_123") in events
+    assert events[-1] == ("CLIENT_CLOSE", None)
 
 
 def test_test_command_keeps_session_open_after_initial_upload_validation_error(tmp_path, monkeypatch):

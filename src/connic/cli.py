@@ -1469,6 +1469,7 @@ def dev(name: str, api_url: str, api_key: str, project_id: str):
     session_id = None
     cleaned_up = False
     server_terminated = False  # True if session was already cleaned up by server
+    watch_cleanup = None
     
     def cleanup():
         """Clean up dev session on exit."""
@@ -1497,13 +1498,12 @@ def dev(name: str, api_url: str, api_key: str, project_id: str):
     
     # Register cleanup handler
     def signal_handler(sig, frame):
-        cleanup()
         sys.exit(0)
-    
-    signal.signal(signal.SIGINT, signal_handler)
-    signal.signal(signal.SIGTERM, signal_handler)
-    
+
     try:
+        signal.signal(signal.SIGINT, signal_handler)
+        signal.signal(signal.SIGTERM, signal_handler)
+
         # Create test session
         _step("Creating dev session...")
         body = {}
@@ -1652,11 +1652,6 @@ def dev(name: str, api_url: str, api_key: str, project_id: str):
         _step("Watching for file changes...")
         dashboard_url = f"{DEFAULT_BASE_URL}/projects/{project_id}/agents?env={env_id}"
         _info(f"View and trigger your agents: {dashboard_url}")
-        if keys_active:
-            _info("Keys: [r] refresh  [t] run tests  [q] quit  (or Ctrl+C)")
-        else:
-            _info("Press Ctrl+C to stop.")
-        click.echo()
 
         last_upload_time = time.time()
         pending_upload = False
@@ -1668,6 +1663,24 @@ def dev(name: str, api_url: str, api_key: str, project_id: str):
         key_stop = threading.Event()
         key_old_termios = None
         key_thread = None
+
+        def stop_key_reader():
+            key_stop.set()
+            try:
+                if key_thread is not None:
+                    try:
+                        key_thread.join(timeout=1.0)
+                    except RuntimeError:
+                        pass
+            finally:
+                if key_old_termios is not None and _termios_mod is not None:
+                    _termios_mod.tcsetattr(
+                        sys.stdin.fileno(),
+                        _termios_mod.TCSADRAIN,
+                        key_old_termios,
+                    )
+
+        watch_cleanup = stop_key_reader
 
         def _key_reader_loop():
             assert _select_mod is not None
@@ -1698,10 +1711,33 @@ def dev(name: str, api_url: str, api_key: str, project_id: str):
                 _tty_mod.setcbreak(sys.stdin.fileno())
                 key_thread = threading.Thread(target=_key_reader_loop, daemon=True)
                 key_thread.start()
-            except OSError:
+            except (OSError, RuntimeError):
+                stop_key_reader()
                 keys_active = False
                 key_old_termios = None
-        
+                key_thread = None
+
+        if keys_active:
+            _info("Keys: [r] refresh  [t] run tests  [q] quit  (or Ctrl+C)")
+        else:
+            _info("Press Ctrl+C to stop.")
+        click.echo()
+
+        observer = None
+
+        def stop_watching():
+            try:
+                if observer is not None:
+                    observer.stop()
+                    try:
+                        observer.join()
+                    except RuntimeError:
+                        pass
+            finally:
+                stop_key_reader()
+
+        watch_cleanup = stop_watching
+
         class FileChangeHandler(FileSystemEventHandler):
             def on_any_event(self, event):
                 nonlocal pending_upload, last_upload_time
@@ -1734,16 +1770,16 @@ def dev(name: str, api_url: str, api_key: str, project_id: str):
         
         observer = Observer()
         handler = FileChangeHandler()
-        
+
         # Watch the project directories
         for dirname in ["agents", "tools", "middleware", "schemas", "guardrails", "hooks", "tests"]:
             dirpath = Path(dirname)
             if dirpath.exists():
                 observer.schedule(handler, str(dirpath), recursive=True)
-        
+
         # Watch requirements.txt
         observer.schedule(handler, ".", recursive=False)
-        
+
         observer.start()
         
         # Track last status check time
@@ -1828,25 +1864,18 @@ def dev(name: str, api_url: str, api_key: str, project_id: str):
                     
         except KeyboardInterrupt:
             pass
-        finally:
-            observer.stop()
-            observer.join()
-            key_stop.set()
-            if key_thread is not None:
-                key_thread.join(timeout=1.0)
-            if key_old_termios is not None and _termios_mod is not None:
-                _termios_mod.tcsetattr(
-                    sys.stdin.fileno(),
-                    _termios_mod.TCSADRAIN,
-                    key_old_termios,
-                )
     
     except Exception as e:
         _err(str(e))
         import traceback
         traceback.print_exc()
+        raise
     finally:
-        cleanup()
+        try:
+            if watch_cleanup is not None:
+                watch_cleanup()
+        finally:
+            cleanup()
 
 
 @main.command()
