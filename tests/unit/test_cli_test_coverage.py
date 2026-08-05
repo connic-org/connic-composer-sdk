@@ -514,6 +514,55 @@ def test_test_command_with_coverage_stops_on_unparseable_test_file(tmp_path, mon
     assert "Overall coverage" not in result.output
 
 
+def test_test_command_with_coverage_stops_on_unloadable_agent_file(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    _write_calculator_tool(tmp_path)
+    _write_llm_agent(tmp_path, "math-agent", tools=["calculator.add"])
+    _write_test_file(tmp_path, "math-agent", [["calculator.add"]])
+    _write(
+        tmp_path / "agents" / "broken-agent.yaml",
+        """
+        version: "1.0"
+        type: llm
+        model: openai/gpt-5.2
+        description: "An agent whose required name was accidentally omitted."
+        system_prompt: "Help the user."
+        """,
+    )
+
+    result = CliRunner().invoke(cli.main, ["test", "--coverage"])
+
+    assert result.exit_code != 0
+    assert "Failed to load agent" in result.output
+    assert "agents/broken-agent.yaml" in result.output
+    assert "missing required field(s): name" in result.output
+    assert "Overall coverage" not in result.output
+
+
+def test_test_command_with_coverage_json_reports_unloadable_agent_file(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    _write_calculator_tool(tmp_path)
+    _write_llm_agent(tmp_path, "math-agent", tools=["calculator.add"])
+    _write_test_file(tmp_path, "math-agent", [["calculator.add"]])
+    _write(
+        tmp_path / "agents" / "broken-agent.yaml",
+        """
+        version: "1.0"
+        type: llm
+        model: openai/gpt-5.2
+        description: "An agent whose required name was accidentally omitted."
+        system_prompt: "Help the user."
+        """,
+    )
+
+    result = CliRunner().invoke(cli.main, ["test", "--coverage", "--json"])
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    assert "agents/broken-agent.yaml" in payload["error"]
+    assert "missing required field(s): name" in payload["error"]
+
+
 def test_test_command_with_coverage_and_json_emits_machine_readable_report(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     _write_calculator_tool(tmp_path)

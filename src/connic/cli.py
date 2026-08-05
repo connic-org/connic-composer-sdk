@@ -1184,6 +1184,7 @@ def _compute_local_coverage(project_root: Path) -> dict:
         agents = loader.load_agents()
     except FileNotFoundError as e:
         return {"agents": [], "overall": 0.0, "error": str(e)}
+    load_error = "; ".join(loader._load_errors) or None
 
     tests_dir = project_root / "tests"
     DISCOVERY_MARKERS = {"search_tools", "use_tool"}
@@ -1265,7 +1266,10 @@ def _compute_local_coverage(project_root: Path) -> dict:
 
     valid_rows = [r for r in rows if r.get("parse_error") is None]
     overall = sum(r["percent"] for r in valid_rows) / len(valid_rows) if valid_rows else 0.0
-    return {"agents": rows, "overall": overall}
+    report = {"agents": rows, "overall": overall}
+    if load_error:
+        report["error"] = load_error
+    return report
 
 
 def _coverage_color(pct: float) -> str:
