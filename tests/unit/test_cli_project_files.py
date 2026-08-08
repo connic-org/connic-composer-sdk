@@ -189,6 +189,23 @@ def test_install_skill_replaces_existing_project_skill(tmp_path):
     assert not (destination / "stale.md").exists()
 
 
+def test_install_skill_replaces_existing_skill_symlink(tmp_path):
+    source = tmp_path / "source"
+    source.mkdir()
+    (source / "SKILL.md").write_text("# Current\n")
+    legacy = tmp_path / "legacy-skill"
+    legacy.mkdir()
+    (legacy / "SKILL.md").write_text("# Legacy\n")
+    destination = tmp_path / ".claude" / "skills" / "connic"
+    destination.parent.mkdir(parents=True)
+    destination.symlink_to(legacy, target_is_directory=True)
+
+    cli._install_skill(source, destination)
+
+    assert not destination.is_symlink()
+    assert (destination / "SKILL.md").read_text() == "# Current\n"
+
+
 def test_skill_command_installs_fetched_skill_into_current_directory(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(cli, "print_update_hint", lambda: None)
@@ -201,6 +218,7 @@ def test_skill_command_installs_fetched_skill_into_current_directory(tmp_path, m
 
     assert result.exit_code == 0, result.output
     assert (tmp_path / ".agents" / "skills" / "connic" / "SKILL.md").read_text() == "# Connic\n"
+    assert (tmp_path / ".claude" / "skills" / "connic" / "SKILL.md").read_text() == "# Connic\n"
     assert "Fetched" in result.output
     assert "Connic skill is ready" in result.output
 
@@ -313,7 +331,9 @@ def test_init_command_with_skill_installs_skill_into_new_project(tmp_path, monke
     assert result.exit_code == 0, result.output
     project = tmp_path / "my-agents"
     assert (project / ".agents" / "skills" / "connic" / "SKILL.md").read_text() == "# Connic\n"
+    assert (project / ".claude" / "skills" / "connic" / "SKILL.md").read_text() == "# Connic\n"
     assert "Installing to my-agents/.agents/skills/connic" in result.output
+    assert "Installing to my-agents/.claude/skills/connic" in result.output
     assert "Initialized Connic project" in result.output
 
 
@@ -330,6 +350,137 @@ def test_init_command_without_skill_does_not_fetch_skill(tmp_path, monkeypatch):
 
     assert result.exit_code == 0, result.output
     assert not (tmp_path / "my-agents" / ".agents").exists()
+
+
+def test_global_skill_update_runs_before_and_then_continues_command(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    calls = []
+    monkeypatch.setattr(cli, "print_update_hint", lambda: cli.UpdateAction.SKILL)
+    monkeypatch.setattr(cli, "_install_skill_from_github", lambda: calls.append("skill"))
+
+    result = CliRunner().invoke(cli.main, ["init", "my-agents"])
+
+    assert result.exit_code == 0, result.output
+    assert calls == ["skill"]
+    assert (tmp_path / "my-agents" / "agents").is_dir()
+
+
+def test_global_sdk_update_exits_before_running_command(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(cli, "print_update_hint", lambda: cli.UpdateAction.SDK)
+    monkeypatch.setattr(cli, "update_sdk", lambda: True)
+
+    result = CliRunner().invoke(cli.main, ["init", "my-agents"])
+
+    assert result.exit_code == 0, result.output
+    assert not (tmp_path / "my-agents").exists()
+    assert "SDK updated. Run your command again" in result.output
+
+
+def test_global_combined_update_installs_skill_before_sdk(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    calls = []
+    monkeypatch.setattr(cli, "print_update_hint", lambda: cli.UpdateAction.BOTH)
+    monkeypatch.setattr(cli, "_install_skill_from_github", lambda: calls.append("skill"))
+    monkeypatch.setattr(cli, "update_sdk", lambda: calls.append("sdk") or True)
+
+    result = CliRunner().invoke(cli.main, ["init", "my-agents"])
+
+    assert result.exit_code == 0, result.output
+    assert calls == ["skill", "sdk"]
+    assert not (tmp_path / "my-agents").exists()
+
+
+def test_update_check_reports_without_installing(monkeypatch):
+    monkeypatch.setattr(
+        cli,
+        "check_for_updates",
+        lambda **kwargs: "Updates available:\n  SDK    1.0.0 → 2.0.0",
+    )
+    monkeypatch.setattr(
+        cli,
+        "_apply_update_action",
+        lambda action: pytest.fail("--check must not install updates"),
+    )
+
+    result = CliRunner().invoke(cli.main, ["update", "--check"])
+
+    assert result.exit_code == 0, result.output
+    assert "SDK    1.0.0 → 2.0.0" in result.output
+    assert "Update check complete" in result.output
+
+
+def test_update_selective_flags_dispatch_expected_actions(monkeypatch):
+    actions = []
+    monkeypatch.setattr(cli, "_apply_update_action", lambda action: actions.append(action) or False)
+
+    sdk_result = CliRunner().invoke(cli.main, ["update", "--sdk"])
+    skill_result = CliRunner().invoke(cli.main, ["update", "--skill"])
+    both_result = CliRunner().invoke(cli.main, ["update", "--sdk", "--skill"])
+
+    assert sdk_result.exit_code == 0, sdk_result.output
+    assert skill_result.exit_code == 0, skill_result.output
+    assert both_result.exit_code == 0, both_result.output
+    assert actions == [cli.UpdateAction.SDK, cli.UpdateAction.SKILL, cli.UpdateAction.BOTH]
+
+
+def test_update_can_enable_reminders_without_checking(monkeypatch):
+    calls = []
+    monkeypatch.setattr(cli, "enable_update_reminders", lambda: calls.append("enabled"))
+    monkeypatch.setattr(
+        cli,
+        "get_manual_update_status",
+        lambda: pytest.fail("enabling reminders alone must not check for updates"),
+    )
+
+    result = CliRunner().invoke(cli.main, ["update", "--enable-reminders"])
+
+    assert result.exit_code == 0, result.output
+    assert calls == ["enabled"]
+    assert "Update reminders are enabled" in result.output
+
+
+def test_update_enable_reminders_warns_when_environment_still_disables_checks(monkeypatch):
+    monkeypatch.setenv("CONNIC_NO_UPDATE_CHECK", "1")
+    monkeypatch.setattr(cli, "enable_update_reminders", lambda: None)
+
+    result = CliRunner().invoke(cli.main, ["update", "--enable-reminders"])
+
+    assert result.exit_code == 0, result.output
+    assert "CONNIC_NO_UPDATE_CHECK still disables update checks" in result.output
+
+
+def test_update_check_rejects_install_flags(monkeypatch):
+    monkeypatch.setattr(
+        cli,
+        "check_for_updates",
+        lambda **kwargs: pytest.fail("invalid option combinations must not check"),
+    )
+
+    result = CliRunner().invoke(cli.main, ["update", "--check", "--skill"])
+
+    assert result.exit_code == 1
+    assert "--check cannot be combined with --sdk or --skill" in result.output
+
+
+def test_skill_and_update_commands_skip_automatic_prompt(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    source = tmp_path / "fetched-skill"
+    source.mkdir()
+    (source / "SKILL.md").write_text("# Connic\n")
+    monkeypatch.setattr(cli, "_fetch_skill_from_github", lambda: source)
+    monkeypatch.setattr(cli, "check_for_updates", lambda **kwargs: None)
+    monkeypatch.setattr(
+        cli,
+        "print_update_hint",
+        lambda: pytest.fail("explicit update commands must skip the automatic prompt"),
+    )
+
+    skill_result = CliRunner().invoke(cli.main, ["skill"])
+    update_result = CliRunner().invoke(cli.main, ["update", "--check"])
+
+    assert skill_result.exit_code == 0, skill_result.output
+    assert update_result.exit_code == 0, update_result.output
 
 
 def test_init_command_rejects_existing_project_directory(tmp_path, monkeypatch):

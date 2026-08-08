@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "connic-composer-sdk"
-version = "0.1.38"
+version = "0.1.39"
 description = "The Connic Composer SDK for building agents and enterprise-level tools."
 authors = [
   { name = "Connic Team", email = "hello@connic.co" },
@@ -29,6 +29,7 @@ dependencies = [
     "watchdog>=3.0.0",  # For hot reloading in dev
     "nats-py>=2.7.0",
     "httpx>=0.25.0",  # For API calls in test mode
+    "packaging>=23.0",
     "websockets>=12.0",  # For log streaming in test mode
     "simpleeval>=1.0.0",  # For evaluating conditional tool expressions
 ]

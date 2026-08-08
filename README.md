@@ -66,10 +66,16 @@ connic init my-agents --templates=invoice,customer-support --skill
 
 Browse available templates at [connic.co/agents](https://connic.co/agents).
 
-The optional `--skill` flag installs the Connic AI coding-agent skill into `.agents/skills/connic` so supported coding agents can use the current Connic project layout, YAML fields, CLI flags, connector patterns, and best practices while editing your repo. For an existing project, run:
+The optional `--skill` flag installs the Connic AI coding-agent skill into both `.agents/skills/connic` and `.claude/skills/connic` so supported coding agents can use the current Connic project layout, YAML fields, CLI flags, connector patterns, and best practices while editing your repo. For an existing project, run:
 
 ```bash
 connic skill
+```
+
+The CLI checks for SDK and installed-skill updates when commands run. To check without updating, including from an AI coding-agent session, run:
+
+```bash
+connic update --check
 ```
 
 ## Example Project
@@ -207,8 +213,9 @@ Related docs:
 | ------------------------------------ | --------------------------------------------------------------- |
 | `connic init [name]`                  | Create a new project scaffold                                   |
 | `connic init [name] --templates=...`  | Create a project from one or more starter templates             |
-| `connic init [name] --skill`          | Create a project and install the Connic skill into `.agents/`   |
-| `connic skill`                        | Install or update the Connic skill in the current directory     |
+| `connic init [name] --skill`          | Create a project and install the skill for compatible agents    |
+| `connic skill`                        | Install the Connic skill in the current directory               |
+| `connic update [--check|--sdk|--skill]` | Check for or install available SDK and skill updates          |
 | `connic login`                        | Save project credentials in `.connic`                           |
 | `connic lint`                         | Validate agents, tools, middleware, and schemas locally         |
 | `connic tools`                        | List discovered tools and signatures                            |

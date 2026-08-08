@@ -9,10 +9,18 @@ from pathlib import Path
 import click
 import httpx
 
+from . import __version__
 from .core import RetryOptions
 from .loader import ProjectLoader
 from .migrate import register_migrate_command
-from .update_check import print_update_hint
+from .update_check import (
+    UpdateAction,
+    check_for_updates,
+    enable_update_reminders,
+    get_manual_update_status,
+    print_update_hint,
+    update_sdk,
+)
 
 DEFAULT_API_URL = os.environ.get("CONNIC_API_URL", "https://api.connic.co/v1")
 DEFAULT_BASE_URL = os.environ.get("CONNIC_BASE_URL", "https://connic.co")
@@ -22,6 +30,8 @@ SKILL_REPO = "connic-org/connic-skill"
 SKILL_ZIP_URL = f"https://github.com/{SKILL_REPO}/archive/refs/heads/main.zip"
 SKILL_RELATIVE_PATH = Path("plugins/connic/skills/connic")
 SKILL_DESTINATION = Path(".agents/skills/connic")
+CLAUDE_SKILL_DESTINATION = Path(".claude/skills/connic")
+SKILL_DESTINATIONS = (SKILL_DESTINATION, CLAUDE_SKILL_DESTINATION)
 
 
 # =============================================================================
@@ -361,11 +371,32 @@ def _validate_project_files() -> tuple[bool, str, list[Path]]:
     return True, "", valid_files
 
 
+def _apply_update_action(action: UpdateAction | None) -> bool:
+    if action in {UpdateAction.BOTH, UpdateAction.SKILL}:
+        _install_skill_from_github()
+
+    if action in {UpdateAction.BOTH, UpdateAction.SDK}:
+        _step("Updating the Connic SDK...")
+        if not update_sdk():
+            _fail_and_exit("Could not update the Connic SDK. Run `pip install --upgrade connic-composer-sdk`.")
+        _ok("SDK updated")
+        return True
+
+    return False
+
+
 @click.group()
-@click.version_option(version="0.1.38", prog_name="connic")
-def main():
+@click.version_option(version=__version__, prog_name="connic")
+@click.pass_context
+def main(ctx: click.Context):
     """Connic Composer SDK - Build agents with code."""
-    print_update_hint()
+    if ctx.invoked_subcommand in {"skill", "update"}:
+        return
+
+    action = print_update_hint()
+    if _apply_update_action(action):
+        _done("SDK updated. Run your command again.")
+        ctx.exit(0)
 
 
 def _write_essential_files(base_path: Path, quiet: bool = False):
@@ -533,22 +564,26 @@ def _fetch_skill_from_github() -> Path | None:
 
 def _install_skill(source: Path, destination: Path = SKILL_DESTINATION) -> None:
     """Replace the project-local Connic skill with source contents."""
-    if destination.exists():
+    if destination.is_symlink() or destination.is_file():
+        destination.unlink()
+    elif destination.exists():
         shutil.rmtree(destination)
     destination.parent.mkdir(parents=True, exist_ok=True)
     shutil.copytree(source, destination)
 
 
-def _install_skill_from_github(destination: Path = SKILL_DESTINATION) -> None:
+def _install_skill_from_github(base_path: Path = Path(".")) -> None:
     _step("Fetching the Connic skill from GitHub...")
     source = _fetch_skill_from_github()
     if not source:
         _fail_and_exit("Could not fetch the Connic skill. Try again from a networked environment.")
     _ok("Fetched")
 
-    _step(f"Installing to {destination.as_posix()}...")
-    _install_skill(source, destination)
-    _ok("Installed")
+    for relative_destination in SKILL_DESTINATIONS:
+        destination = base_path / relative_destination
+        _step(f"Installing to {destination.as_posix()}...")
+        _install_skill(source, destination)
+        _ok("Installed")
 
 
 def _merge_template_into_project(
@@ -629,7 +664,11 @@ def _append_template_readmes(base_path: Path, template_readmes: list[str]) -> No
     default=None,
     help="Comma-separated template names (e.g., invoice,support). Browse at connic.co/agents",
 )
-@click.option("--skill", is_flag=True, help="Install the Connic skill into .agents/skills/connic")
+@click.option(
+    "--skill",
+    is_flag=True,
+    help="Install the Connic skill into .agents/skills/connic and .claude/skills/connic",
+)
 def init(name: str, templates: str | None, skill: bool):
     """Initialize a new Connic project.
 
@@ -699,7 +738,7 @@ def init(name: str, templates: str | None, skill: bool):
             _append_template_readmes(base_path, template_readmes)
 
         if skill:
-            _install_skill_from_github(base_path / SKILL_DESTINATION)
+            _install_skill_from_github(base_path)
 
         _step("Next steps:")
         _info("1. Run `connic lint` to validate your project")
@@ -711,7 +750,7 @@ def init(name: str, templates: str | None, skill: bool):
     # No templates: create clean project only (no example files)
     _write_essential_files(base_path, quiet=skill)
     if skill:
-        _install_skill_from_github(base_path / SKILL_DESTINATION)
+        _install_skill_from_github(base_path)
         _step("Next steps:")
         _info("1. Create your first agent anywhere under agents/")
         _info("2. Run `connic lint` to validate your project")
@@ -721,11 +760,70 @@ def init(name: str, templates: str | None, skill: bool):
 
 @main.command()
 def skill():
-    """Install or update the Connic skill in the current directory."""
+    """Install the Connic skill in the current directory."""
     _h1("Skill")
 
     _install_skill_from_github()
     _done("Connic skill is ready.")
+
+
+@main.command()
+@click.option("--check", is_flag=True, help="Check for updates without installing them")
+@click.option("--sdk", "sdk_only", is_flag=True, help="Update only the Connic SDK")
+@click.option("--skill", "skill_only", is_flag=True, help="Update only the Connic skill")
+@click.option(
+    "--enable-reminders",
+    is_flag=True,
+    help="Show automatic update reminders again",
+)
+def update(check: bool, sdk_only: bool, skill_only: bool, enable_reminders: bool):
+    """Check for or install SDK and skill updates."""
+    _h1("Update")
+
+    if check and (sdk_only or skill_only):
+        _fail_and_exit("--check cannot be combined with --sdk or --skill.")
+
+    if enable_reminders:
+        enable_update_reminders()
+        _ok("Automatic update reminders enabled")
+        if os.environ.get("CONNIC_NO_UPDATE_CHECK"):
+            _warn("CONNIC_NO_UPDATE_CHECK still disables update checks while it is set.")
+        if not check and not sdk_only and not skill_only:
+            _done("Update reminders are enabled.")
+            return
+
+    if check:
+        message = check_for_updates(force=True)
+        if message:
+            click.echo(message)
+        elif os.environ.get("CONNIC_NO_UPDATE_CHECK"):
+            _warn("Update checks are disabled by CONNIC_NO_UPDATE_CHECK.")
+        else:
+            _ok("SDK and installed skill are up to date")
+        _done("Update check complete.")
+        return
+
+    if sdk_only or skill_only:
+        if sdk_only and skill_only:
+            action = UpdateAction.BOTH
+        elif sdk_only:
+            action = UpdateAction.SDK
+        else:
+            action = UpdateAction.SKILL
+    else:
+        status = get_manual_update_status()
+        if status is None:
+            _warn("Update checks are disabled by CONNIC_NO_UPDATE_CHECK.")
+            _done("No updates installed.")
+            return
+        action = status.action
+        if action == UpdateAction.NONE:
+            _ok("SDK and installed skill are up to date")
+            _done("No updates needed.")
+            return
+
+    _apply_update_action(action)
+    _done("Updates complete.")
 
 
 def _run_lint(verbose: bool = False, quiet: bool = False, project_root: str = ".") -> bool:
