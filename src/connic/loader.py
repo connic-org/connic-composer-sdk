@@ -853,6 +853,22 @@ class ProjectLoader:
         Uses type hints and docstring to build a schema suitable for LLM function calling.
         """
         sig = inspect.signature(func)
+
+        unsupported_kinds = {
+            inspect.Parameter.POSITIONAL_ONLY: "positional-only",
+            inspect.Parameter.VAR_POSITIONAL: "*args",
+            inspect.Parameter.VAR_KEYWORD: "**kwargs",
+        }
+        unsupported = [
+            f"{name} ({unsupported_kinds[param.kind]})"
+            for name, param in sig.parameters.items()
+            if param.kind in unsupported_kinds
+        ]
+        if unsupported:
+            raise ValueError(
+                "Tool functions must use named parameters; unsupported parameters: "
+                + ", ".join(unsupported)
+            )
         
         # Try to get type hints (handles forward references)
         try:
@@ -1087,28 +1103,48 @@ class ProjectLoader:
         # Build inspect.Parameter list from AST args
         parameters = []
         args = node.args
-        num_defaults = len(args.defaults)
-        num_args = len(args.args)
-        first_default_idx = num_args - num_defaults
+        positional_args = [*args.posonlyargs, *args.args]
+        first_default_idx = len(positional_args) - len(args.defaults)
 
-        for i, arg in enumerate(args.args):
+        def append_parameter(arg, kind, default=inspect.Parameter.empty):
             if arg.arg == "self":
-                continue
+                return
 
             annotation = inspect.Parameter.empty
             if arg.annotation:
                 annotation = self._resolve_ast_annotation(arg.annotation)
 
-            default = inspect.Parameter.empty
-            if i >= first_default_idx:
-                default = self._resolve_ast_default(args.defaults[i - first_default_idx])
-
             parameters.append(inspect.Parameter(
                 name=arg.arg,
-                kind=inspect.Parameter.POSITIONAL_OR_KEYWORD,
+                kind=kind,
                 default=default,
                 annotation=annotation,
             ))
+
+        for i, arg in enumerate(positional_args):
+            kind = (
+                inspect.Parameter.POSITIONAL_ONLY
+                if i < len(args.posonlyargs)
+                else inspect.Parameter.POSITIONAL_OR_KEYWORD
+            )
+            default = inspect.Parameter.empty
+            if i >= first_default_idx:
+                default = self._resolve_ast_default(args.defaults[i - first_default_idx])
+            append_parameter(arg, kind, default)
+
+        if args.vararg:
+            append_parameter(args.vararg, inspect.Parameter.VAR_POSITIONAL)
+
+        for arg, default_node in zip(args.kwonlyargs, args.kw_defaults):
+            default = (
+                inspect.Parameter.empty
+                if default_node is None
+                else self._resolve_ast_default(default_node)
+            )
+            append_parameter(arg, inspect.Parameter.KEYWORD_ONLY, default)
+
+        if args.kwarg:
+            append_parameter(args.kwarg, inspect.Parameter.VAR_KEYWORD)
 
         stub.__signature__ = inspect.Signature(parameters)
 

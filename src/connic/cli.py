@@ -1,6 +1,8 @@
+import json
 import os
 import re
 import shutil
+import subprocess
 import sys
 import tempfile
 import zipfile
@@ -15,7 +17,7 @@ from .loader import ProjectLoader
 from .migrate import register_migrate_command
 from .update_check import (
     UpdateAction,
-    check_for_updates,
+    _format_update_message,
     enable_update_reminders,
     get_manual_update_status,
     print_update_hint,
@@ -32,6 +34,26 @@ SKILL_RELATIVE_PATH = Path("plugins/connic/skills/connic")
 SKILL_DESTINATION = Path(".agents/skills/connic")
 CLAUDE_SKILL_DESTINATION = Path(".claude/skills/connic")
 SKILL_DESTINATIONS = (SKILL_DESTINATION, CLAUDE_SKILL_DESTINATION)
+AI_AGENT_SETUP_URL = f"{DEFAULT_BASE_URL.rstrip('/')}/docs/v1/ai-agent-setup"
+CONNIC_PLUGIN_ID = "connic@connic"
+PLUGIN_INSTALLS = (
+    (
+        "Codex",
+        "codex",
+        (
+            ("codex", "plugin", "marketplace", "add", SKILL_REPO),
+            ("codex", "plugin", "add", CONNIC_PLUGIN_ID),
+        ),
+    ),
+    (
+        "Claude Code",
+        "claude",
+        (
+            ("claude", "plugin", "marketplace", "add", SKILL_REPO, "--scope", "user"),
+            ("claude", "plugin", "install", CONNIC_PLUGIN_ID, "--scope", "user"),
+        ),
+    ),
+)
 
 
 # =============================================================================
@@ -586,6 +608,74 @@ def _install_skill_from_github(base_path: Path = Path(".")) -> None:
         _ok("Installed")
 
 
+def _can_prompt_for_plugins() -> bool:
+    return sys.stdin.isatty() and sys.stderr.isatty()
+
+
+def _plugin_is_installed(executable: str) -> bool:
+    try:
+        result = subprocess.run(
+            [executable, "plugin", "list", "--json"],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        data = json.loads(result.stdout) if result.returncode == 0 else []
+    except (OSError, ValueError, TypeError):
+        return False
+
+    plugins = data.get("installed", []) if isinstance(data, dict) else data
+    if not isinstance(plugins, list):
+        return False
+
+    for plugin in plugins:
+        if not isinstance(plugin, dict):
+            continue
+        if (plugin.get("pluginId") or plugin.get("id")) != CONNIC_PLUGIN_ID:
+            continue
+        if executable == "claude":
+            if plugin.get("scope") == "user" and plugin.get("enabled", True) is not False:
+                return True
+            continue
+        return True
+    return False
+
+
+def _install_plugin_for_client(label: str, commands: tuple[tuple[str, ...], ...]) -> None:
+    _step(f"Installing the Connic plugin for {label}...")
+    try:
+        subprocess.run(commands[0], check=False)
+        result = subprocess.run(commands[1], check=False)
+    except OSError as e:
+        _warn(f"Could not run {label}: {e}")
+        result = None
+
+    if result is not None and result.returncode == 0:
+        _ok(f"Installed for {label}")
+        return
+
+    _warn(f"The {label} plugin install did not complete. Run these commands manually:")
+    for command in commands:
+        _info(" ".join(command))
+
+
+def _offer_plugin_installs() -> None:
+    detected = [setup for setup in PLUGIN_INSTALLS if shutil.which(setup[1])]
+
+    if _can_prompt_for_plugins():
+        for label, executable, commands in detected:
+            if _plugin_is_installed(executable):
+                _info(f"Connic plugin is already installed for {label}")
+                continue
+            if click.confirm(
+                f"  {label} detected. Install the Connic plugin (skill + MCP)?",
+                default=False,
+            ):
+                _install_plugin_for_client(label, commands)
+
+    _info(f"AI agent setup: {AI_AGENT_SETUP_URL}")
+
+
 def _merge_template_into_project(
     template_src: Path,
     base_path: Path,
@@ -667,14 +757,15 @@ def _append_template_readmes(base_path: Path, template_readmes: list[str]) -> No
 @click.option(
     "--skill",
     is_flag=True,
-    help="Install the Connic skill into .agents/skills/connic and .claude/skills/connic",
+    help="Install the Connic skill and offer full plugins for detected Codex and Claude Code clients",
 )
 def init(name: str, templates: str | None, skill: bool):
     """Initialize a new Connic project.
 
     Creates the project structure. Use --templates to add agent templates from
-    connic-awesome-agents. Use --skill to install the Connic skill for AI coding
-    agents. Without --templates, creates a clean scaffold only.
+    connic-awesome-agents. Use --skill to install the Connic skill and optionally
+    the full plugin for detected coding clients. Without --templates, creates a
+    clean scaffold only.
 
     Examples:
         connic init                                # Clean project, no examples
@@ -739,6 +830,7 @@ def init(name: str, templates: str | None, skill: bool):
 
         if skill:
             _install_skill_from_github(base_path)
+            _offer_plugin_installs()
 
         _step("Next steps:")
         _info("1. Run `connic lint` to validate your project")
@@ -751,6 +843,7 @@ def init(name: str, templates: str | None, skill: bool):
     _write_essential_files(base_path, quiet=skill)
     if skill:
         _install_skill_from_github(base_path)
+        _offer_plugin_installs()
         _step("Next steps:")
         _info("1. Create your first agent anywhere under agents/")
         _info("2. Run `connic lint` to validate your project")
@@ -760,11 +853,27 @@ def init(name: str, templates: str | None, skill: bool):
 
 @main.command()
 def skill():
-    """Install the Connic skill in the current directory."""
+    """Install the Connic skill and offer plugins for detected coding clients."""
     _h1("Skill")
 
     _install_skill_from_github()
+    _offer_plugin_installs()
     _done("Connic skill is ready.")
+
+
+def _require_complete_update_check(status) -> None:
+    if status.check_complete:
+        return
+
+    unavailable = []
+    if not status.sdk_check_succeeded:
+        unavailable.append("SDK")
+    if status.installed_skill_paths and not status.skill_check_succeeded:
+        unavailable.append("installed skill")
+    _fail_and_exit(
+        f"Could not check for {' and '.join(unavailable)} updates. "
+        "Check your network connection and try again."
+    )
 
 
 @main.command()
@@ -793,13 +902,15 @@ def update(check: bool, sdk_only: bool, skill_only: bool, enable_reminders: bool
             return
 
     if check:
-        message = check_for_updates(force=True)
-        if message:
-            click.echo(message)
-        elif os.environ.get("CONNIC_NO_UPDATE_CHECK"):
+        status = get_manual_update_status()
+        if status is None:
             _warn("Update checks are disabled by CONNIC_NO_UPDATE_CHECK.")
         else:
-            _ok("SDK and installed skill are up to date")
+            _require_complete_update_check(status)
+            if status.has_updates:
+                click.echo(_format_update_message(status))
+            else:
+                _ok("SDK and installed skill are up to date")
         _done("Update check complete.")
         return
 
@@ -816,6 +927,7 @@ def update(check: bool, sdk_only: bool, skill_only: bool, enable_reminders: bool
             _warn("Update checks are disabled by CONNIC_NO_UPDATE_CHECK.")
             _done("No updates installed.")
             return
+        _require_complete_update_check(status)
         action = status.action
         if action == UpdateAction.NONE:
             _ok("SDK and installed skill are up to date")

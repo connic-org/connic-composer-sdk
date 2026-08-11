@@ -1,10 +1,13 @@
 from textwrap import dedent
 
 import click
+import pytest
 import yaml
 from click.testing import CliRunner
 
 from connic import migrate
+from connic.cli import _run_lint
+from connic.loader import ProjectLoader
 
 
 def write(path, content):
@@ -1002,24 +1005,64 @@ def test_langchain_migration_resolves_imported_prompt_model_and_tool_dependencie
         ''',
     )
     write(
+        source / "order_ids.py",
+        '''
+        def normalize_order_id(order_id: str) -> str:
+            return order_id.strip().upper()
+        ''',
+    )
+    write(
+        source / "tools" / "symbols.py",
+        '''
+        DEFAULT_CURRENCY = "EUR"
+        ''',
+    )
+    write(
+        source / "tools" / "rates.py",
+        '''
+        DEFAULT_TAX_RATE = 0.19
+        ''',
+    )
+    write(
+        source / "tools" / "currency.py",
+        '''
+        import tools.symbols
+        import tools.rates
+
+
+        CURRENCY = tools.symbols.DEFAULT_CURRENCY
+        TAX_RATE = tools.rates.DEFAULT_TAX_RATE
+        ''',
+    )
+    write(
         source / "tools" / "formatters.py",
         '''
-        CURRENCY = "EUR"
+        from tools.currency import CURRENCY, TAX_RATE
 
 
         def format_total(amount: float) -> dict:
-            return {"amount": amount, "currency": CURRENCY}
+            return {
+                "amount": amount,
+                "currency": CURRENCY,
+                "tax": amount * TAX_RATE,
+            }
         ''',
     )
     write(
         source / "tools" / "orders.py",
         '''
-        from tools.formatters import format_total
+        import decimal
+        import order_ids
+        import tools.formatters as fmt
 
 
         def lookup_order(order_id: str) -> dict:
-            amount = float(len(order_id) * 10)
-            return {"order_id": order_id, "total": format_total(amount)}
+            normalized_order_id = order_ids.normalize_order_id(order_id)
+            amount = decimal.Decimal(len(normalized_order_id)) * decimal.Decimal("10")
+            return {
+                "order_id": normalized_order_id,
+                "total": fmt.format_total(float(amount)),
+            }
         ''',
     )
     write(
@@ -1054,17 +1097,40 @@ def test_langchain_migration_resolves_imported_prompt_model_and_tool_dependencie
     agent_yaml = yaml.safe_load((destination / "agents" / "order-support.yaml").read_text())
     order_tool = (destination / "tools" / "tools" / "orders.py").read_text()
     formatter_dependency = destination / "tools" / "tools" / "formatters.py"
+    currency_dependency = destination / "tools" / "tools" / "currency.py"
+    symbols_dependency = destination / "tools" / "tools" / "symbols.py"
+    rates_dependency = destination / "tools" / "tools" / "rates.py"
+    order_ids_dependency = destination / "tools" / "order_ids.py"
 
     assert framework == "langchain"
     assert agent_yaml["model"] == "openai/gpt-4.1-mini"
     assert agent_yaml["description"] == "You are an enterprise support agent."
     assert agent_yaml["system_prompt"] == "You are an enterprise support agent."
     assert agent_yaml["tools"] == ["tools.orders.lookup_order"]
-    assert "from tools.formatters import format_total" in order_tool
+    assert "import decimal" in order_tool
+    assert "import tools.order_ids as order_ids" in order_tool
+    assert "import tools.tools.formatters as fmt" in order_tool
     assert "def lookup_order" in order_tool
     assert formatter_dependency.exists()
+    assert "from tools.tools.currency import CURRENCY" in formatter_dependency.read_text()
     assert "def format_total" in formatter_dependency.read_text()
+    assert "import tools.tools.symbols" in currency_dependency.read_text()
+    assert "import tools.tools.rates" in currency_dependency.read_text()
+    assert "from tools import tools" in currency_dependency.read_text()
+    assert symbols_dependency.read_text() == 'DEFAULT_CURRENCY = "EUR"\n'
+    assert rates_dependency.read_text() == "DEFAULT_TAX_RATE = 0.19\n"
+    assert "def normalize_order_id" in order_ids_dependency.read_text()
     assert any("No source requirements.txt found" in note for note in report_notes)
+
+    loader = ProjectLoader(str(destination))
+    migrated_agents = loader.load_agents()
+
+    assert loader._load_errors == []
+    assert len(migrated_agents) == 1
+    assert migrated_agents[0].tools[0].func(" order-42 ") == {
+        "order_id": "ORDER-42",
+        "total": {"amount": 80.0, "currency": "EUR", "tax": 15.2},
+    }
 
 
 def test_langchain_migration_resolves_imported_module_alias_tool_and_config(tmp_path):
@@ -1428,11 +1494,11 @@ def test_langgraph_react_agent_migration_extracts_decorated_tool_function(tmp_pa
         source / "agent.py",
         '''
         from langchain.chat_models import init_chat_model
-        from langchain_core.tools import tool
+        import langchain_core.tools as lc_tools
         from langgraph.prebuilt import create_react_agent
 
 
-        @tool
+        @lc_tools.tool
         def fetch_weather(city: str) -> str:
             """Return a weather summary for a city."""
             return f"Weather for {city}: clear"
@@ -1465,9 +1531,389 @@ def test_langgraph_react_agent_migration_extracts_decorated_tool_function(tmp_pa
     assert agent_yaml["model"] == "openai/gpt-4.1-mini"
     assert agent_yaml["system_prompt"] == "Answer travel planning questions with weather context."
     assert agent_yaml["tools"] == ["agent.fetch_weather"]
-    assert "@tool" not in tool_module
-    assert "from langchain_core.tools import tool" not in tool_module
+    assert "@lc_tools.tool" not in tool_module
+    assert "import langchain_core.tools as lc_tools" not in tool_module
     assert "def fetch_weather" in tool_module
+
+
+def test_langchain_migration_preserves_decorated_tool_dependencies(tmp_path):
+    source = tmp_path / "langchain-billing"
+    destination = tmp_path / "connic-app"
+    write(
+        source / "invoice_tools.py",
+        '''
+        from dataclasses import dataclass
+        from functools import lru_cache
+        from langchain_core.tools import tool as langchain_tool
+
+
+        @dataclass(frozen=True)
+        class Invoice:
+            invoice_id: str
+            status: str = "paid"
+
+
+        @lru_cache(maxsize=32)
+        def normalize_invoice_id(invoice_id: str) -> str:
+            return invoice_id.strip().lower()
+
+
+        @langchain_tool
+        def lookup_invoice(invoice_id: str) -> dict:
+            invoice = Invoice(normalize_invoice_id(invoice_id))
+            return {"invoice_id": invoice.invoice_id, "status": invoice.status}
+        ''',
+    )
+    write(
+        source / "agent.py",
+        '''
+        from langchain.agents import create_agent
+        from invoice_tools import lookup_invoice
+
+
+        billing_agent = create_agent(
+            model="openai:gpt-4o-mini",
+            tools=[lookup_invoice],
+            system_prompt="Resolve billing questions with invoice context.",
+            name="Billing Support",
+        )
+        ''',
+    )
+
+    framework, detection_notes, agents, module_infos = migrate._build_migration_candidates(source)
+    migrate._generate_migrated_project(
+        source,
+        destination,
+        framework,
+        detection_notes,
+        agents,
+        module_infos,
+        no_scaffold,
+    )
+
+    tool_module = (destination / "tools" / "invoice_tools.py").read_text()
+    loader = ProjectLoader(str(destination))
+    migrated_agents = loader.load_agents()
+
+    assert "from dataclasses import dataclass" in tool_module
+    assert "@dataclass(frozen=True)" in tool_module
+    assert "from functools import lru_cache" in tool_module
+    assert "@lru_cache(maxsize=32)" in tool_module
+    assert "@langchain_tool" not in tool_module
+    assert "from langchain_core.tools import tool as langchain_tool" not in tool_module
+    assert loader._load_errors == []
+    assert migrated_agents[0].tools[0].func(" inv-123 ") == {
+        "invoice_id": "inv-123",
+        "status": "paid",
+    }
+
+
+def test_langchain_supervisor_agent_wrappers_migrate_to_connic_delegation(tmp_path, monkeypatch):
+    source = tmp_path / "official-supervisor-agent"
+    destination = tmp_path / "connic-app"
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    write(
+        source / "assistant.py",
+        '''
+        from langchain.agents import create_agent
+        from langchain.tools import tool
+
+
+        @tool
+        def create_calendar_event(title: str, start_time: str, end_time: str) -> str:
+            """Create a calendar event."""
+            return f"Event created: {title} from {start_time} to {end_time}"
+
+
+        @tool
+        def get_available_time_slots(date: str, duration_minutes: int) -> list[str]:
+            """Check calendar availability for a given date."""
+            return ["09:00", "14:00", "16:00"]
+
+
+        @tool
+        def send_email(to: str, subject: str, body: str) -> str:
+            """Send an email notification."""
+            return f"Email sent to {to} with subject '{subject}'"
+
+
+        calendar_agent = create_agent(
+            model="openai:gpt-5.2",
+            tools=[create_calendar_event, get_available_time_slots],
+            system_prompt=(
+                "You are a calendar scheduling assistant. "
+                "Parse scheduling requests and use the calendar tools to fulfill them."
+            ),
+        )
+
+
+        email_agent = create_agent(
+            model="openai:gpt-5.2",
+            tools=[send_email],
+            system_prompt=(
+                "You are an email assistant. Compose professional emails and send them when needed."
+            ),
+        )
+
+
+        @tool
+        def schedule_event(request: str) -> str:
+            """Schedule calendar events using natural language."""
+            result = calendar_agent.invoke(
+                {"messages": [{"role": "user", "content": request}]}
+            )
+            return result["messages"][-1].text
+
+
+        @tool
+        def manage_email(request: str) -> str:
+            """Send emails using natural language."""
+            result = email_agent.invoke(
+                {"messages": [{"role": "user", "content": request}]}
+            )
+            return result["messages"][-1].text
+
+
+        supervisor_agent = create_agent(
+            model="openai:gpt-5.2",
+            tools=[schedule_event, manage_email],
+            system_prompt=(
+                "You are a helpful personal assistant. "
+                "Break down user requests into scheduling and email actions as needed."
+            ),
+        )
+        ''',
+    )
+
+    framework, detection_notes, agents, module_infos = migrate._build_migration_candidates(source)
+    migrate._generate_migrated_project(
+        source,
+        destination,
+        framework,
+        detection_notes,
+        agents,
+        module_infos,
+        no_scaffold,
+    )
+
+    calendar_agent = yaml.safe_load((destination / "agents" / "calendar-agent.yaml").read_text())
+    email_agent = yaml.safe_load((destination / "agents" / "email-agent.yaml").read_text())
+    supervisor_agent = yaml.safe_load((destination / "agents" / "supervisor-agent.yaml").read_text())
+    tool_module = (destination / "tools" / "assistant.py").read_text()
+    report = (destination / "MIGRATION_REPORT.md").read_text()
+
+    assert framework == "langchain"
+    assert calendar_agent["tools"] == [
+        "assistant.create_calendar_event",
+        "assistant.get_available_time_slots",
+    ]
+    assert email_agent["tools"] == ["assistant.send_email"]
+    assert supervisor_agent["tools"] == [
+        "assistant.schedule_event",
+        "assistant.manage_email",
+    ]
+    assert "async def schedule_event" in tool_module
+    assert "async def manage_email" in tool_module
+    assert "langchain" not in tool_module
+    assert "create_agent" not in tool_module
+    assert "calendar_agent =" not in tool_module
+    assert "email_agent =" not in tool_module
+    assert ".invoke(" not in tool_module
+    assert "Rewrote LangChain sub-agent tool wrapper 'schedule_event'" in report
+    assert "Rewrote LangChain sub-agent tool wrapper 'manage_email'" in report
+    assert _run_lint(quiet=True, project_root=str(destination)) is True
+
+    calls = []
+
+    async def fake_trigger_agent(agent_name, payload, **_kwargs):
+        calls.append((agent_name, payload))
+        return {"response": f"{agent_name}: {payload}"}
+
+    monkeypatch.setattr("connic.tools.trigger_agent", fake_trigger_agent)
+    loader = ProjectLoader(str(destination))
+    migrated_agents = {agent.config.name: agent for agent in loader.load_agents()}
+    supervisor_tools = {tool.name: tool for tool in migrated_agents["supervisor-agent"].tools}
+
+    assert loader._load_errors == []
+    assert set(migrated_agents) == {"calendar-agent", "email-agent", "supervisor-agent"}
+    assert set(supervisor_tools) == {"schedule_event", "manage_email"}
+    assert all(tool.is_async for tool in supervisor_tools.values())
+    assert supervisor_tools["schedule_event"].description == "Schedule calendar events using natural language."
+    assert supervisor_tools["manage_email"].description == "Send emails using natural language."
+    assert supervisor_tools["schedule_event"].execute_sync(request="Book Tuesday at 14:00") == (
+        "calendar-agent: Book Tuesday at 14:00"
+    )
+    assert supervisor_tools["manage_email"].execute_sync(request="Email the attendee") == (
+        "email-agent: Email the attendee"
+    )
+    assert calls == [
+        ("calendar-agent", "Book Tuesday at 14:00"),
+        ("email-agent", "Email the attendee"),
+    ]
+
+
+def test_langchain_async_subagent_wrapper_preserves_direct_payload(tmp_path, monkeypatch):
+    source = tmp_path / "langchain-async-supervisor"
+    destination = tmp_path / "connic-app"
+    write(
+        source / "assistant.py",
+        '''
+        from langchain.agents import create_agent
+
+
+        calendar_agent = create_agent(
+            model="openai:gpt-5.2",
+            tools=[],
+            system_prompt="Schedule calendar events.",
+        )
+
+
+        async def delegate_to_calendar(request: str) -> str:
+            response: dict = await calendar_agent.ainvoke(request)
+            return response["messages"][-1].content
+
+
+        supervisor_agent = create_agent(
+            model="openai:gpt-5.2",
+            tools=[delegate_to_calendar],
+            system_prompt="Delegate scheduling requests.",
+        )
+        ''',
+    )
+
+    framework, detection_notes, agents, module_infos = migrate._build_migration_candidates(source)
+    migrate._generate_migrated_project(
+        source,
+        destination,
+        framework,
+        detection_notes,
+        agents,
+        module_infos,
+        no_scaffold,
+    )
+
+    calls = []
+
+    async def fake_trigger_agent(agent_name, payload, **_kwargs):
+        calls.append((agent_name, payload))
+        return {"response": "scheduled"}
+
+    monkeypatch.setattr("connic.tools.trigger_agent", fake_trigger_agent)
+    loader = ProjectLoader(str(destination))
+    supervisor = loader.load_agent("supervisor-agent")
+    tool = supervisor.tools[0]
+
+    assert loader._load_errors == []
+    assert tool.name == "delegate_to_calendar"
+    assert tool.is_async is True
+    assert tool.execute_sync(request="Book Friday at 09:00") == "scheduled"
+    assert calls == [("calendar-agent", "Book Friday at 09:00")]
+
+
+@pytest.mark.parametrize(
+    "wrapper_source",
+    [
+        '''
+        def audited(func):
+            return func
+
+        @audited
+        def delegate(request: str) -> str:
+            result = child_agent.invoke(request)
+            return result["messages"][-1].text
+        ''',
+        '''
+        def delegate(request: str) -> str:
+            request = request.strip()
+            result = child_agent.invoke(request)
+            return result["messages"][-1].text
+        ''',
+        '''
+        def delegate(request: str) -> str:
+            result, metadata = child_agent.invoke(request)
+            return result["messages"][-1].text
+        ''',
+        '''
+        def delegate(request: str) -> str:
+            result = child_agent.stream(request)
+            return result["messages"][-1].text
+        ''',
+        '''
+        def delegate(request: str) -> str:
+            result = child_agent.invoke(request)
+            return result
+        ''',
+        '''
+        def delegate(request: str) -> str:
+            result = child_agent.invoke(request)
+            return result.text
+        ''',
+        '''
+        def delegate(request: str) -> str:
+            result = child_agent.invoke(request)
+            return result["messages"][0].text
+        ''',
+        '''
+        def delegate(request: str) -> str:
+            result = external_agent.invoke(request)
+            return result["messages"][-1].text
+        ''',
+        '''
+        def delegate(request: str) -> str:
+            result = child_agent.invoke(request, config={})
+            return result["messages"][-1].text
+        ''',
+        '''
+        def delegate(request: str) -> str:
+            result = child_agent.invoke({"input": request})
+            return result["messages"][-1].text
+        ''',
+        '''
+        def delegate(request: str) -> str:
+            result = child_agent.invoke({"messages": {"role": "user", "content": request}})
+            return result["messages"][-1].text
+        ''',
+        '''
+        def delegate(request: str) -> str:
+            result = child_agent.invoke({"messages": [request]})
+            return result["messages"][-1].text
+        ''',
+        '''
+        def delegate(request: str) -> str:
+            result = child_agent.invoke({"messages": [{"role": "assistant", "content": request}]})
+            return result["messages"][-1].text
+        ''',
+        '''
+        def delegate(request: str) -> str:
+            result = child_agent.invoke({"messages": [{"role": "user", "content": f"Task: {request}"}]})
+            return result["messages"][-1].text
+        ''',
+    ],
+)
+def test_langchain_subagent_wrapper_rewrite_rejects_shapes_that_change_delegation_semantics(
+    tmp_path,
+    wrapper_source,
+):
+    source_file = tmp_path / "assistant.py"
+    write(
+        source_file,
+        '''
+        from langchain.agents import create_agent
+
+
+        child_agent = create_agent(
+            model="openai:gpt-5.2",
+            tools=[],
+            system_prompt="Handle delegated requests.",
+        )
+        '''
+        + wrapper_source,
+    )
+
+    module_info = migrate._parse_module_info(source_file)
+
+    assert module_info is not None
+    assert migrate._match_langchain_agent_wrapper(module_info.functions["delegate"], module_info) is None
 
 
 def test_collect_python_files_skips_venv_and_pycache(tmp_path):

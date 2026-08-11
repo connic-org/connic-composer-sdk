@@ -12,7 +12,7 @@ from pathlib import Path
 import pytest
 from click.testing import CliRunner
 
-from connic import cli
+from connic import cli, update_check
 
 
 def _write_minimal_support_agent(project: Path) -> None:
@@ -213,6 +213,8 @@ def test_skill_command_installs_fetched_skill_into_current_directory(tmp_path, m
     source.mkdir(parents=True)
     (source / "SKILL.md").write_text("# Connic\n")
     monkeypatch.setattr(cli, "_fetch_skill_from_github", lambda: source)
+    plugin_offers = []
+    monkeypatch.setattr(cli, "_offer_plugin_installs", lambda: plugin_offers.append(True))
 
     result = CliRunner().invoke(cli.main, ["skill"])
 
@@ -221,6 +223,112 @@ def test_skill_command_installs_fetched_skill_into_current_directory(tmp_path, m
     assert (tmp_path / ".claude" / "skills" / "connic" / "SKILL.md").read_text() == "# Connic\n"
     assert "Fetched" in result.output
     assert "Connic skill is ready" in result.output
+    assert plugin_offers == [True]
+
+
+def test_plugin_offer_prompts_each_detected_client_and_installs_accepted_client(monkeypatch):
+    monkeypatch.setattr(cli, "_can_prompt_for_plugins", lambda: True)
+    monkeypatch.setattr(cli.shutil, "which", lambda executable: f"/usr/bin/{executable}")
+    monkeypatch.setattr(cli, "_plugin_is_installed", lambda executable: False)
+
+    prompts = []
+    answers = iter([True, False])
+
+    def confirm(prompt, default):
+        prompts.append((prompt, default))
+        return next(answers)
+
+    commands = []
+
+    def run(command, **kwargs):
+        commands.append(tuple(command))
+        return cli.subprocess.CompletedProcess(command, 0)
+
+    monkeypatch.setattr(cli.click, "confirm", confirm)
+    monkeypatch.setattr(cli.subprocess, "run", run)
+
+    cli._offer_plugin_installs()
+
+    assert [prompt for prompt, _ in prompts] == [
+        "  Codex detected. Install the Connic plugin (skill + MCP)?",
+        "  Claude Code detected. Install the Connic plugin (skill + MCP)?",
+    ]
+    assert [default for _, default in prompts] == [False, False]
+    assert commands == [
+        ("codex", "plugin", "marketplace", "add", "connic-org/connic-skill"),
+        ("codex", "plugin", "add", "connic@connic"),
+    ]
+
+
+@pytest.mark.parametrize(
+    ("executable", "payload", "expected"),
+    [
+        ("claude", [{"id": "connic@connic", "scope": "user", "enabled": True}], True),
+        ("claude", [{"id": "connic@connic", "scope": "project", "enabled": True}], False),
+        ("claude", [{"id": "connic@connic", "scope": "user", "enabled": False}], False),
+        (
+            "claude",
+            [
+                {"id": "connic@connic", "scope": "project", "enabled": True},
+                {"id": "connic@connic", "scope": "user", "enabled": True},
+            ],
+            True,
+        ),
+        ("codex", {"installed": [{"pluginId": "connic@connic"}]}, True),
+    ],
+)
+def test_plugin_installed_check_supports_claude_and_codex_json(
+    monkeypatch,
+    executable,
+    payload,
+    expected,
+):
+    monkeypatch.setattr(
+        cli.subprocess,
+        "run",
+        lambda *args, **kwargs: cli.subprocess.CompletedProcess(
+            args[0],
+            0,
+            stdout=json.dumps(payload),
+        ),
+    )
+
+    assert cli._plugin_is_installed(executable) is expected
+
+
+def test_noninteractive_plugin_offer_only_prints_setup_link(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    source = tmp_path / "fetched-skill"
+    source.mkdir()
+    (source / "SKILL.md").write_text("# Connic\n")
+    monkeypatch.setattr(cli, "print_update_hint", lambda: None)
+    monkeypatch.setattr(cli, "_fetch_skill_from_github", lambda: source)
+    monkeypatch.setattr(cli, "_can_prompt_for_plugins", lambda: False)
+    monkeypatch.setattr(cli.shutil, "which", lambda executable: f"/usr/bin/{executable}")
+    monkeypatch.setattr(
+        cli.subprocess,
+        "run",
+        lambda *args, **kwargs: pytest.fail("noninteractive setup must not run client commands"),
+    )
+
+    result = CliRunner().invoke(cli.main, ["skill"])
+
+    assert result.exit_code == 0, result.output
+    assert cli.AI_AGENT_SETUP_URL in result.output
+
+
+def test_plugin_install_attempts_install_when_marketplace_add_fails(monkeypatch):
+    commands = []
+
+    def run(command, **kwargs):
+        commands.append(tuple(command))
+        return cli.subprocess.CompletedProcess(command, 1)
+
+    monkeypatch.setattr(cli.subprocess, "run", run)
+
+    cli._install_plugin_for_client("Codex", cli.PLUGIN_INSTALLS[0][2])
+
+    assert commands == list(cli.PLUGIN_INSTALLS[0][2])
 
 
 def test_fetch_skill_from_github_extracts_main_branch_archive(monkeypatch):
@@ -325,6 +433,8 @@ def test_init_command_with_skill_installs_skill_into_new_project(tmp_path, monke
     source.mkdir()
     (source / "SKILL.md").write_text("# Connic\n")
     monkeypatch.setattr(cli, "_fetch_skill_from_github", lambda: source)
+    plugin_offers = []
+    monkeypatch.setattr(cli, "_offer_plugin_installs", lambda: plugin_offers.append(True))
 
     result = CliRunner().invoke(cli.main, ["init", "my-agents", "--skill"])
 
@@ -335,6 +445,7 @@ def test_init_command_with_skill_installs_skill_into_new_project(tmp_path, monke
     assert "Installing to my-agents/.agents/skills/connic" in result.output
     assert "Installing to my-agents/.claude/skills/connic" in result.output
     assert "Initialized Connic project" in result.output
+    assert plugin_offers == [True]
 
 
 def test_init_command_without_skill_does_not_fetch_skill(tmp_path, monkeypatch):
@@ -392,10 +503,20 @@ def test_global_combined_update_installs_skill_before_sdk(tmp_path, monkeypatch)
 
 
 def test_update_check_reports_without_installing(monkeypatch):
+    status = update_check.UpdateStatus(
+        current_sdk_version="1.0.0",
+        latest_sdk_version="2.0.0",
+        current_skill_version="1.0.0",
+        latest_skill_version="2.0.0",
+        sdk_update_available=True,
+        skill_update_available=True,
+        installed_skill_paths=(Path(".agents/skills/connic/SKILL.md"),),
+        missing_skill_paths=(),
+    )
     monkeypatch.setattr(
         cli,
-        "check_for_updates",
-        lambda **kwargs: "Updates available:\n  SDK    1.0.0 → 2.0.0",
+        "get_manual_update_status",
+        lambda: status,
     )
     monkeypatch.setattr(
         cli,
@@ -408,6 +529,132 @@ def test_update_check_reports_without_installing(monkeypatch):
     assert result.exit_code == 0, result.output
     assert "SDK    1.0.0 → 2.0.0" in result.output
     assert "Update check complete" in result.output
+
+
+@pytest.mark.parametrize("arguments", [["update"], ["update", "--check"]])
+def test_update_reports_offline_check_instead_of_claiming_current_versions(
+    tmp_path,
+    monkeypatch,
+    arguments,
+):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("CONNIC_NO_UPDATE_CHECK", raising=False)
+    monkeypatch.setattr(update_check, "CACHE_FILE", tmp_path / "cache.json")
+    monkeypatch.setattr(
+        update_check.httpx,
+        "get",
+        lambda *args, **kwargs: (_ for _ in ()).throw(TimeoutError("offline")),
+    )
+    skill_path = tmp_path / update_check.SKILL_PATHS[0]
+    skill_path.parent.mkdir(parents=True)
+    skill_path.write_text('---\nname: connic\nmetadata:\n  version: "1.0.0"\n---\n')
+    monkeypatch.setattr(
+        cli,
+        "_apply_update_action",
+        lambda action: pytest.fail("an incomplete check must not install updates"),
+    )
+
+    result = CliRunner().invoke(cli.main, arguments)
+
+    assert result.exit_code == 1
+    assert "Could not check for SDK and installed skill updates" in result.output
+    assert "up to date" not in result.output
+    cache = json.loads(update_check.CACHE_FILE.read_text())
+    assert cache["sdk_check_succeeded"] is False
+    assert cache["skill_check_succeeded"] is False
+
+
+def test_update_does_not_install_stale_cached_version_after_failed_refresh(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(update_check, "CACHE_FILE", tmp_path / "cache.json")
+    update_check.CACHE_FILE.write_text(
+        json.dumps(
+            {
+                "last_check": 1,
+                "latest_sdk_version": "99.0.0",
+                "latest_skill_version": "99.0.0",
+                "sdk_check_succeeded": True,
+                "skill_check_succeeded": True,
+            }
+        )
+    )
+    monkeypatch.setattr(
+        update_check.httpx,
+        "get",
+        lambda *args, **kwargs: (_ for _ in ()).throw(TimeoutError("offline")),
+    )
+    monkeypatch.setattr(
+        cli,
+        "_apply_update_action",
+        lambda action: pytest.fail("stale versions must not trigger installers"),
+    )
+
+    result = CliRunner().invoke(cli.main, ["update"])
+
+    assert result.exit_code == 1
+    assert "Could not check for SDK updates" in result.output
+    assert "Updates complete" not in result.output
+
+
+def test_update_reports_installed_skill_check_failure_after_sdk_check_succeeds(
+    tmp_path,
+    monkeypatch,
+):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(update_check, "CACHE_FILE", tmp_path / "cache.json")
+    skill_path = tmp_path / update_check.SKILL_PATHS[0]
+    skill_path.parent.mkdir(parents=True)
+    skill_path.write_text('---\nname: connic\nmetadata:\n  version: "1.0.0"\n---\n')
+
+    class Response:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {"info": {"version": update_check.__version__}}
+
+    def get(url, timeout):
+        if url == update_check.PYPI_URL:
+            return Response()
+        raise TimeoutError("skill host unavailable")
+
+    monkeypatch.setattr(update_check.httpx, "get", get)
+    monkeypatch.setattr(
+        cli,
+        "_apply_update_action",
+        lambda action: pytest.fail("an incomplete skill check must not install updates"),
+    )
+
+    result = CliRunner().invoke(cli.main, ["update", "--check"])
+
+    assert result.exit_code == 1
+    assert "Could not check for installed skill updates" in result.output
+    assert "up to date" not in result.output
+
+
+def test_update_without_flags_does_not_install_when_versions_are_current(monkeypatch):
+    status = update_check.UpdateStatus(
+        current_sdk_version="1.0.0",
+        latest_sdk_version="1.0.0",
+        current_skill_version="1.0.0",
+        latest_skill_version="1.0.0",
+        sdk_update_available=False,
+        skill_update_available=False,
+        installed_skill_paths=(Path(".agents/skills/connic/SKILL.md"),),
+        missing_skill_paths=(),
+    )
+    monkeypatch.setattr(cli, "get_manual_update_status", lambda: status)
+    monkeypatch.setattr(
+        cli,
+        "_apply_update_action",
+        lambda action: pytest.fail("current versions must not trigger installers"),
+    )
+
+    result = CliRunner().invoke(cli.main, ["update"])
+
+    assert result.exit_code == 0, result.output
+    assert "SDK and installed skill are up to date" in result.output
+    assert "No updates needed" in result.output
 
 
 def test_update_selective_flags_dispatch_expected_actions(monkeypatch):
@@ -453,8 +700,8 @@ def test_update_enable_reminders_warns_when_environment_still_disables_checks(mo
 def test_update_check_rejects_install_flags(monkeypatch):
     monkeypatch.setattr(
         cli,
-        "check_for_updates",
-        lambda **kwargs: pytest.fail("invalid option combinations must not check"),
+        "get_manual_update_status",
+        lambda: pytest.fail("invalid option combinations must not check"),
     )
 
     result = CliRunner().invoke(cli.main, ["update", "--check", "--skill"])
@@ -469,7 +716,20 @@ def test_skill_and_update_commands_skip_automatic_prompt(tmp_path, monkeypatch):
     source.mkdir()
     (source / "SKILL.md").write_text("# Connic\n")
     monkeypatch.setattr(cli, "_fetch_skill_from_github", lambda: source)
-    monkeypatch.setattr(cli, "check_for_updates", lambda **kwargs: None)
+    monkeypatch.setattr(
+        cli,
+        "get_manual_update_status",
+        lambda: update_check.UpdateStatus(
+            current_sdk_version="1.0.0",
+            latest_sdk_version="1.0.0",
+            current_skill_version=None,
+            latest_skill_version="1.0.0",
+            sdk_update_available=False,
+            skill_update_available=False,
+            installed_skill_paths=(),
+            missing_skill_paths=(),
+        ),
+    )
     monkeypatch.setattr(
         cli,
         "print_update_hint",

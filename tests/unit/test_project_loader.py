@@ -410,6 +410,28 @@ def test_context_compression_is_llm_only(tmp_path):
     assert "context_compression is only supported for LLM agents" in loader._load_errors[0]
 
 
+def test_context_compression_is_rejected_for_sequential_agent(tmp_path):
+    write_file(
+        tmp_path / "agents" / "document-pipeline.yaml",
+        """
+        version: "1.0"
+        name: document-pipeline
+        type: sequential
+        description: "Extract and validate a document in order"
+        agents:
+          - extract-document
+          - validate-document
+        context_compression:
+          enabled: true
+        """,
+    )
+
+    loader = ProjectLoader(str(tmp_path))
+
+    assert loader.load_agents() == []
+    assert "context_compression is only supported for LLM agents" in loader._load_errors[0]
+
+
 def test_validation_only_builds_tool_schema_without_importing_module(tmp_path):
     write_file(
         tmp_path / "tools" / "inventory.py",
@@ -460,6 +482,101 @@ def test_validation_only_builds_tool_schema_without_importing_module(tmp_path):
     assert reserve_item.parameters["properties"]["quantity"]["type"] == "integer"
     assert reserve_item.parameters["properties"]["metadata"]["type"] == "object"
     assert "context" not in reserve_item.parameters["properties"]
+
+
+def test_validation_only_preserves_keyword_only_tool_parameters(tmp_path):
+    write_file(
+        tmp_path / "tools" / "catalog.py",
+        '''
+        import dependency_that_is_not_installed
+
+
+        def search_catalog(
+            *,
+            query: str,
+            limit: int = 10,
+            context: dict = {},
+        ) -> list:
+            """Search the product catalog.
+
+            Args:
+                query: Customer search terms.
+                limit: Maximum number of products to return.
+                context: Runtime context injected by Connic.
+            """
+            return dependency_that_is_not_installed.search(query, limit)
+        ''',
+    )
+    write_file(
+        tmp_path / "agents" / "catalog-assistant.yaml",
+        """
+        version: "1.0"
+        name: catalog-assistant
+        type: llm
+        model: openai/gpt-5.2
+        description: "Finds products for customers"
+        system_prompt: "Search the catalog before recommending a product."
+        tools:
+          - catalog.search_catalog
+        """,
+    )
+
+    agent = ProjectLoader(str(tmp_path), validation_only=True).load_agent("catalog-assistant")
+
+    search_catalog = agent.get_tool("search_catalog")
+    assert search_catalog is not None
+    assert search_catalog.parameters["required"] == ["query"]
+    assert search_catalog.parameters["properties"]["query"]["type"] == "string"
+    assert search_catalog.parameters["properties"]["limit"]["type"] == "integer"
+    assert "context" not in search_catalog.parameters["properties"]
+
+
+@pytest.mark.parametrize("validation_only", [False, True])
+@pytest.mark.parametrize(
+    ("signature", "unsupported_parameter"),
+    [
+        ("query: str, /", "query (positional-only)"),
+        ("*queries: str", "queries (*args)"),
+        ("**filters: str", "filters (**kwargs)"),
+    ],
+)
+def test_custom_tools_reject_parameters_that_cannot_be_called_from_json(
+    tmp_path,
+    validation_only,
+    signature,
+    unsupported_parameter,
+):
+    write_file(
+        tmp_path / "tools" / "catalog.py",
+        f'''
+        def search_catalog({signature}) -> list:
+            """Search the product catalog."""
+            return []
+        ''',
+    )
+    write_file(
+        tmp_path / "agents" / "catalog-assistant.yaml",
+        """
+        version: "1.0"
+        name: catalog-assistant
+        type: llm
+        model: openai/gpt-5.2
+        description: "Finds products for customers"
+        system_prompt: "Search the catalog before recommending a product."
+        tools:
+          - catalog.search_catalog
+        """,
+    )
+
+    loader = ProjectLoader(str(tmp_path), validation_only=validation_only)
+    agents = loader.load_agents()
+
+    assert len(agents) == 1
+    assert agents[0].tools == []
+    assert any(
+        "must use named parameters" in error and unsupported_parameter in error
+        for error in loader._load_errors
+    )
 
 
 def test_validation_only_infers_schema_from_ast_annotations_and_literal_defaults(tmp_path):

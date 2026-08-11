@@ -10,7 +10,7 @@ Define agents in YAML, extend them with Python, test them with hot reload agains
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-[Documentation](https://connic.co/docs/v1/build/project-structure) • [Quickstart](https://connic.co/docs/v1/quickstart) • [Agent Templates](https://connic.co/agents) • [Dashboard](https://connic.co/projects)
+[Documentation](https://connic.co/docs/v1/build/project-structure) • [Quickstart](https://connic.co/docs/v1/quickstart) • [AI Agent Setup](https://connic.co/docs/v1/ai-agent-setup) • [Agent Templates](https://connic.co/agents) • [Dashboard](https://connic.co/projects)
 
 </div>
 
@@ -71,6 +71,8 @@ The optional `--skill` flag installs the Connic AI coding-agent skill into both 
 ```bash
 connic skill
 ```
+
+In an interactive terminal, both commands detect Codex and Claude Code and ask whether to install the full Connic plugin for each detected client. The plugin bundles the same skill with Connic MCP. Declining leaves the project-local skill installation unchanged. See [AI agent setup](https://connic.co/docs/v1/ai-agent-setup) for manual and client-specific paths.
 
 The CLI checks for SDK and installed-skill updates when commands run. To check without updating, including from an AI coding-agent session, run:
 
@@ -165,7 +167,7 @@ See [Agent Configuration](https://connic.co/docs/v1/build/agent-configuration) f
 
 ### Tools
 
-Custom tools are plain Python functions discovered from `tools/`, including nested modules. Type hints and docstrings are used to generate tool schemas automatically. See [Writing Tools](https://connic.co/docs/v1/build/tools) for details.
+Custom tools are plain Python functions discovered from `tools/`, including nested modules. Type hints and docstrings are used to generate tool schemas automatically. Positional-only parameters, `*args`, and `**kwargs` are not supported. See [Writing Tools](https://connic.co/docs/v1/build/tools) for details.
 
 The SDK also exposes predefined Connic tools such as the ones documented in [Predefined Tools](https://connic.co/docs/v1/build/tools):
 
@@ -213,8 +215,8 @@ Related docs:
 | ------------------------------------ | --------------------------------------------------------------- |
 | `connic init [name]`                  | Create a new project scaffold                                   |
 | `connic init [name] --templates=...`  | Create a project from one or more starter templates             |
-| `connic init [name] --skill`          | Create a project and install the skill for compatible agents    |
-| `connic skill`                        | Install the Connic skill in the current directory               |
+| `connic init [name] --skill`          | Create a project, install the skill, and offer detected client plugins |
+| `connic skill`                        | Install the project skill and offer detected client plugins     |
 | `connic update [--check|--sdk|--skill]` | Check for or install available SDK and skill updates          |
 | `connic login`                        | Save project credentials in `.connic`                           |
 | `connic lint`                         | Validate agents, tools, middleware, and schemas locally         |

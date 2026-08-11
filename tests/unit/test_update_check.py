@@ -59,7 +59,7 @@ def test_reminder_preference_blocks_automatic_but_not_manual_check(monkeypatch):
     monkeypatch.setattr(
         update_check,
         "_fetch_remote_versions",
-        lambda **kwargs: calls.append(kwargs) or ("2.0.0", "1.0.0"),
+        lambda **kwargs: calls.append(kwargs) or ("2.0.0", "1.0.0", True, True),
     )
 
     assert update_check.get_update_status() is None
@@ -124,7 +124,7 @@ def test_remote_sdk_and_skill_versions_are_cached(monkeypatch):
 
     monkeypatch.setattr(update_check.httpx, "get", get)
 
-    assert update_check._fetch_remote_versions() == ("2.0.0", "3.0.0")
+    assert update_check._fetch_remote_versions() == ("2.0.0", "3.0.0", True, True)
     assert requested == [
         (update_check.PYPI_URL, 3),
         (update_check.SKILL_URL, 3),
@@ -133,6 +133,8 @@ def test_remote_sdk_and_skill_versions_are_cached(monkeypatch):
         "last_check": 1234,
         "latest_sdk_version": "2.0.0",
         "latest_skill_version": "3.0.0",
+        "sdk_check_succeeded": True,
+        "skill_check_succeeded": True,
     }
 
 
@@ -153,7 +155,7 @@ def test_fresh_cache_is_used_for_both_remote_versions(monkeypatch):
         lambda *args, **kwargs: pytest.fail("fresh cache must not fetch"),
     )
 
-    assert update_check._fetch_remote_versions() == ("2.0.0", "3.0.0")
+    assert update_check._fetch_remote_versions() == ("2.0.0", "3.0.0", True, True)
 
 
 def test_network_failures_are_cached_to_avoid_delaying_every_command(monkeypatch):
@@ -163,22 +165,116 @@ def test_network_failures_are_cached_to_avoid_delaying_every_command(monkeypatch
     monkeypatch.setattr(update_check.time, "time", lambda: 1234)
     monkeypatch.setattr(update_check.httpx, "get", offline)
 
-    assert update_check.check_for_updates() is None
-    assert json.loads(update_check.CACHE_FILE.read_text())["last_check"] == 1234
+    status = update_check.get_update_status()
+
+    assert status is not None
+    assert status.check_complete is False
+    assert status.sdk_check_succeeded is False
+    assert status.skill_check_succeeded is False
+    assert status.has_updates is False
+    assert status.action == update_check.UpdateAction.NONE
+    cache = json.loads(update_check.CACHE_FILE.read_text())
+    assert cache["last_check"] == 1234
+    assert cache["sdk_check_succeeded"] is False
+    assert cache["skill_check_succeeded"] is False
+    monkeypatch.setattr(
+        update_check.httpx,
+        "get",
+        lambda *args, **kwargs: pytest.fail("fresh failed checks must be throttled"),
+    )
+    assert update_check._fetch_remote_versions() == (None, None, False, False)
+
+
+def test_failed_refresh_keeps_cached_versions_but_marks_them_unverified(monkeypatch):
+    update_check.CACHE_FILE.write_text(
+        json.dumps(
+            {
+                "last_check": 100,
+                "latest_sdk_version": "2.0.0",
+                "latest_skill_version": "3.0.0",
+                "sdk_check_succeeded": True,
+                "skill_check_succeeded": True,
+            }
+        )
+    )
+    monkeypatch.setattr(update_check.time, "time", lambda: 10000)
+    monkeypatch.setattr(
+        update_check.httpx,
+        "get",
+        lambda *args, **kwargs: (_ for _ in ()).throw(TimeoutError("offline")),
+    )
+    monkeypatch.setattr(update_check, "_save_cache", lambda data: None)
+
+    status = update_check.get_manual_update_status()
+
+    assert status is not None
+    assert status.latest_sdk_version == "2.0.0"
+    assert status.latest_skill_version == "3.0.0"
+    assert status.check_complete is False
+    assert status.sdk_check_succeeded is False
+    assert status.skill_check_succeeded is False
+    assert status.has_updates is False
+    assert status.action == update_check.UpdateAction.NONE
+    cache = json.loads(update_check.CACHE_FILE.read_text())
+    assert cache["sdk_check_succeeded"] is True
+    assert cache["skill_check_succeeded"] is True
 
 
 def test_absent_skill_does_not_offer_skill_install(monkeypatch):
     monkeypatch.setattr(
         update_check,
         "_fetch_remote_versions",
-        lambda **kwargs: (update_check.__version__, "2.0.0"),
+        lambda **kwargs: (update_check.__version__, None, True, False),
     )
 
     status = update_check.get_update_status()
 
     assert status.skill_update_available is False
+    assert status.check_complete is True
     assert status.installed_skill_paths == ()
     assert status.missing_skill_paths == ()
+
+
+def test_invalid_remote_versions_are_not_treated_as_successful_checks(monkeypatch):
+    class Response:
+        text = _skill("not-a-version")
+
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {"info": {"version": "not-a-version"}}
+
+    monkeypatch.setattr(update_check.httpx, "get", lambda *args, **kwargs: Response())
+
+    assert update_check._fetch_remote_versions(force=True) == (None, None, False, False)
+
+
+def test_unversioned_remote_skill_is_a_failed_component_check(monkeypatch):
+    class Response:
+        def __init__(self, *, data=None, text=""):
+            self._data = data
+            self.text = text
+
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return self._data
+
+    def get(url, timeout):
+        if url == update_check.PYPI_URL:
+            return Response(data={"info": {"version": "2.0.0"}})
+        return Response(text=_skill(None))
+
+    monkeypatch.setattr(update_check.httpx, "get", get)
+
+    assert update_check._fetch_remote_versions(force=True) == (
+        "2.0.0",
+        None,
+        True,
+        False,
+    )
 
 
 def test_missing_claude_destination_requires_skill_sync(monkeypatch, tmp_path):
@@ -188,7 +284,7 @@ def test_missing_claude_destination_requires_skill_sync(monkeypatch, tmp_path):
     monkeypatch.setattr(
         update_check,
         "_fetch_remote_versions",
-        lambda **kwargs: (update_check.__version__, "2.0.0"),
+        lambda **kwargs: (update_check.__version__, "2.0.0", True, True),
     )
 
     status = update_check.get_update_status(project_root=tmp_path)
@@ -207,7 +303,7 @@ def test_legacy_installed_skill_is_outdated_when_remote_is_versioned(monkeypatch
     monkeypatch.setattr(
         update_check,
         "_fetch_remote_versions",
-        lambda **kwargs: (update_check.__version__, "1.0.0"),
+        lambda **kwargs: (update_check.__version__, "1.0.0", True, True),
     )
 
     status = update_check.get_update_status(project_root=tmp_path)
@@ -225,7 +321,7 @@ def test_older_or_mismatched_installed_skills_are_outdated(monkeypatch, tmp_path
     monkeypatch.setattr(
         update_check,
         "_fetch_remote_versions",
-        lambda **kwargs: (update_check.__version__, "2.0.0"),
+        lambda **kwargs: (update_check.__version__, "2.0.0", True, True),
     )
 
     status = update_check.get_update_status(project_root=tmp_path)
@@ -242,7 +338,7 @@ def test_current_skill_in_both_destinations_needs_no_update(monkeypatch, tmp_pat
     monkeypatch.setattr(
         update_check,
         "_fetch_remote_versions",
-        lambda **kwargs: (update_check.__version__, "2.0.0"),
+        lambda **kwargs: (update_check.__version__, "2.0.0", True, True),
     )
 
     status = update_check.get_update_status(project_root=tmp_path)
@@ -259,6 +355,36 @@ def test_check_for_updates_keeps_formatted_message_api(monkeypatch):
     assert "Updates available:" in message
     assert "SDK    1.0.0 → 2.0.0" in message
     assert "Skill  1.0.0 → 2.0.0" in message
+
+
+def test_failed_refresh_never_offers_a_stale_cached_update(monkeypatch, capsys):
+    update_check.CACHE_FILE.write_text(
+        json.dumps(
+            {
+                "last_check": 100,
+                "latest_sdk_version": "99.0.0",
+                "latest_skill_version": "99.0.0",
+                "sdk_check_succeeded": True,
+                "skill_check_succeeded": True,
+            }
+        )
+    )
+    monkeypatch.setattr(update_check.time, "time", lambda: 10000)
+    monkeypatch.setattr(
+        update_check.httpx,
+        "get",
+        lambda *args, **kwargs: (_ for _ in ()).throw(TimeoutError("offline")),
+    )
+    monkeypatch.setattr(update_check, "_is_interactive", lambda: True)
+    monkeypatch.setattr(
+        update_check.click,
+        "prompt",
+        lambda *args, **kwargs: pytest.fail("unverified updates must not be offered"),
+    )
+
+    assert update_check.check_for_updates(force=True) is None
+    assert update_check.print_update_hint() == update_check.UpdateAction.NONE
+    assert capsys.readouterr().err == ""
 
 
 def test_noninteractive_check_warns_without_prompting(monkeypatch, capsys):
@@ -411,7 +537,7 @@ def test_cache_write_errors_do_not_break_update_check(monkeypatch, tmp_path):
     monkeypatch.setattr(
         update_check,
         "_fetch_remote_versions",
-        lambda **kwargs: (update_check.__version__, None),
+        lambda **kwargs: (update_check.__version__, None, True, False),
     )
 
     assert update_check.check_for_updates() is None

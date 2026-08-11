@@ -48,6 +48,7 @@ ADK_YAML_AGENT_KEYS = {
     "sub_agents",
     "agents",
 }
+LANGCHAIN_AGENT_CALLS = {"create_agent", "create_react_agent"}
 
 
 @dataclass
@@ -64,6 +65,7 @@ class ModuleInfo:
     source: str
     tree: ast.Module
     imports: dict[str, ImportBinding] = field(default_factory=dict)
+    import_bindings: list[ImportBinding] = field(default_factory=list)
     assignments: dict[str, ast.AST] = field(default_factory=dict)
     functions: dict[str, ast.FunctionDef | ast.AsyncFunctionDef] = field(default_factory=dict)
     classes: dict[str, ast.ClassDef] = field(default_factory=dict)
@@ -90,6 +92,13 @@ class AgentCandidate:
     tool_candidates: list[ToolCandidate] = field(default_factory=list)
     agent_ref_keys: list[str] = field(default_factory=list)
     notes: list[str] = field(default_factory=list)
+
+
+@dataclass
+class AgentWrapperRewrite:
+    source_agent_name: str
+    target_agent_name: str
+    payload_expr: ast.expr
 
 
 WriteEssentialFiles = Callable[[Path, bool], None]
@@ -166,19 +175,23 @@ def _parse_module_info(file_path: Path) -> ModuleInfo | None:
     for node in tree.body:
         if isinstance(node, ast.Import):
             for alias in node.names:
-                alias_name = alias.asname or alias.name.split(".")[-1]
-                info.imports[alias_name] = ImportBinding(kind="import", module=alias.name)
+                alias_name = alias.asname or alias.name.split(".")[0]
+                binding = ImportBinding(kind="import", module=alias.name)
+                info.imports[alias_name] = binding
+                info.import_bindings.append(binding)
         elif isinstance(node, ast.ImportFrom):
             for alias in node.names:
                 if alias.name == "*":
                     continue
                 alias_name = alias.asname or alias.name
-                info.imports[alias_name] = ImportBinding(
+                binding = ImportBinding(
                     kind="from",
                     module=node.module,
                     name=alias.name,
                     level=node.level,
                 )
+                info.imports[alias_name] = binding
+                info.import_bindings.append(binding)
         elif isinstance(node, ast.Assign):
             if len(node.targets) != 1 or not isinstance(node.targets[0], ast.Name):
                 continue
@@ -640,12 +653,11 @@ def _extract_description(prompt: str | None, fallback: str) -> str:
 def _extract_langchain_agents(module_info: ModuleInfo, module_lookup: dict[str, Path]) -> list[AgentCandidate]:
     agents: list[AgentCandidate] = []
     module_cache: dict[Path, ModuleInfo | None] = {module_info.path: module_info}
-    supported_calls = {"create_agent", "create_react_agent"}
     for node in module_info.tree.body:
         if not isinstance(node, ast.Assign) or not isinstance(node.value, ast.Call):
             continue
         call_name = _get_call_name(node.value.func)
-        if call_name not in supported_calls:
+        if call_name not in LANGCHAIN_AGENT_CALLS:
             continue
         target_names = [target.id for target in node.targets if isinstance(target, ast.Name)]
         target_name = target_names[0] if target_names else module_info.path.stem
@@ -877,11 +889,47 @@ def _detect_framework(source_root: Path, python_files: list[Path], yaml_files: l
     return "unknown", notes
 
 
-def _gather_local_dependency_names(node: ast.AST) -> set[str]:
+def _is_framework_tool_decorator(decorator: ast.expr, module_info: ModuleInfo) -> bool:
+    target = decorator.func if isinstance(decorator, ast.Call) else decorator
+    full_name = _get_full_attr_name(target)
+    framework_modules = {"langchain.tools", "langchain_core.tools"}
+    framework_decorators = {f"{module}.tool" for module in framework_modules}
+    if full_name in framework_decorators:
+        return True
+    root = target
+    while isinstance(root, ast.Attribute):
+        root = root.value
+    if not isinstance(root, ast.Name):
+        return False
+    binding = module_info.imports.get(root.id)
+    if binding is None or binding.module is None:
+        return False
+    imported_name = binding.module
+    if binding.kind == "from" and binding.name:
+        imported_name = f"{imported_name}.{binding.name}"
+    if isinstance(target, ast.Name):
+        return imported_name in framework_decorators
+    return target.attr == "tool" and imported_name in framework_modules
+
+
+def _preserved_decorators(module_info: ModuleInfo, node: ast.AST) -> list[ast.expr]:
+    decorators = list(getattr(node, "decorator_list", []))
+    if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+        return decorators
+    return [
+        decorator
+        for decorator in decorators
+        if not _is_framework_tool_decorator(decorator, module_info)
+    ]
+
+
+def _gather_local_dependency_names(module_info: ModuleInfo, node: ast.AST) -> set[str]:
     names = set()
+    preserved_decorators = _preserved_decorators(module_info, node)
     decorator_nodes = {
         id(child)
         for decorator in getattr(node, "decorator_list", [])
+        if decorator not in preserved_decorators
         for child in ast.walk(decorator)
     }
     for child in ast.walk(node):
@@ -892,7 +940,153 @@ def _gather_local_dependency_names(node: ast.AST) -> set[str]:
     return names
 
 
-def _extract_module_subset(module_info: ModuleInfo, function_names: set[str]) -> tuple[str, list[str]]:
+def _source_with_preserved_decorators(module_info: ModuleInfo, node: ast.AST) -> str | None:
+    segment = ast.get_source_segment(module_info.source, node)
+    if not segment:
+        return None
+    decorator_segments = []
+    for decorator in _preserved_decorators(module_info, node):
+        decorator_segment = ast.get_source_segment(module_info.source, decorator)
+        if decorator_segment:
+            decorator_segments.append(f"@{decorator_segment}")
+    return "\n".join([*decorator_segments, segment])
+
+
+def _langchain_wrapper_payload(expr: ast.expr, parameter_names: set[str]) -> ast.expr | None:
+    if isinstance(expr, ast.Name) and expr.id in parameter_names:
+        return expr
+    if not isinstance(expr, ast.Dict) or len(expr.keys) != 1:
+        return None
+    if not isinstance(expr.keys[0], ast.Constant) or expr.keys[0].value != "messages":
+        return None
+    messages = expr.values[0]
+    if not isinstance(messages, (ast.List, ast.Tuple)) or len(messages.elts) != 1:
+        return None
+    message = messages.elts[0]
+    if not isinstance(message, ast.Dict) or len(message.keys) != 2:
+        return None
+    message_values = {
+        key.value: value
+        for key, value in zip(message.keys, message.values)
+        if isinstance(key, ast.Constant) and isinstance(key.value, str)
+    }
+    role = message_values.get("role")
+    content = message_values.get("content")
+    if not isinstance(role, ast.Constant) or role.value != "user":
+        return None
+    if not isinstance(content, ast.Name) or content.id not in parameter_names:
+        return None
+    return content
+
+
+def _returns_langchain_message_content(expr: ast.expr, result_name: str) -> bool:
+    if not isinstance(expr, ast.Attribute) or expr.attr not in {"text", "content"}:
+        return False
+    last_message = expr.value
+    if not isinstance(last_message, ast.Subscript):
+        return False
+    last_index = last_message.slice
+    if not (
+        isinstance(last_index, ast.UnaryOp)
+        and isinstance(last_index.op, ast.USub)
+        and isinstance(last_index.operand, ast.Constant)
+        and last_index.operand.value == 1
+    ):
+        return False
+    messages = last_message.value
+    return (
+        isinstance(messages, ast.Subscript)
+        and isinstance(messages.value, ast.Name)
+        and messages.value.id == result_name
+        and isinstance(messages.slice, ast.Constant)
+        and messages.slice.value == "messages"
+    )
+
+
+def _match_langchain_agent_wrapper(
+    function_node: ast.FunctionDef | ast.AsyncFunctionDef,
+    module_info: ModuleInfo,
+) -> tuple[str, ast.expr] | None:
+    if _preserved_decorators(module_info, function_node):
+        return None
+    body = list(function_node.body)
+    if body and isinstance(body[0], ast.Expr) and isinstance(body[0].value, ast.Constant) and isinstance(body[0].value.value, str):
+        body = body[1:]
+    if len(body) != 2 or not isinstance(body[1], ast.Return) or body[1].value is None:
+        return None
+
+    assignment = body[0]
+    if isinstance(assignment, ast.Assign) and len(assignment.targets) == 1 and isinstance(assignment.targets[0], ast.Name):
+        result_name = assignment.targets[0].id
+        invocation = assignment.value
+    elif isinstance(assignment, ast.AnnAssign) and isinstance(assignment.target, ast.Name) and assignment.value is not None:
+        result_name = assignment.target.id
+        invocation = assignment.value
+    else:
+        return None
+
+    if isinstance(invocation, ast.Await):
+        invocation = invocation.value
+    if (
+        not isinstance(invocation, ast.Call)
+        or not isinstance(invocation.func, ast.Attribute)
+        or invocation.func.attr not in {"invoke", "ainvoke"}
+        or not isinstance(invocation.func.value, ast.Name)
+        or len(invocation.args) != 1
+        or invocation.keywords
+        or not _returns_langchain_message_content(body[1].value, result_name)
+    ):
+        return None
+
+    source_agent_name = invocation.func.value.id
+    agent_assignment = module_info.assignments.get(source_agent_name)
+    if not isinstance(agent_assignment, ast.Call) or _get_call_name(agent_assignment.func) not in LANGCHAIN_AGENT_CALLS:
+        return None
+
+    parameter_names = {
+        argument.arg
+        for argument in [
+            *function_node.args.posonlyargs,
+            *function_node.args.args,
+            *function_node.args.kwonlyargs,
+        ]
+    }
+    payload_expr = _langchain_wrapper_payload(invocation.args[0], parameter_names)
+    if payload_expr is None:
+        return None
+    return source_agent_name, payload_expr
+
+
+def _render_langchain_agent_wrapper(
+    module_info: ModuleInfo,
+    function_node: ast.FunctionDef | ast.AsyncFunctionDef,
+    rewrite: AgentWrapperRewrite,
+) -> str:
+    signature = ast.unparse(function_node.args)
+    return_annotation = f" -> {ast.unparse(function_node.returns)}" if function_node.returns else ""
+    lines = [f"async def {function_node.name}({signature}){return_annotation}:"]
+    if function_node.body and isinstance(function_node.body[0], ast.Expr):
+        docstring = ast.get_source_segment(module_info.source, function_node.body[0])
+        if docstring and isinstance(function_node.body[0].value, ast.Constant) and isinstance(function_node.body[0].value.value, str):
+            lines.append(textwrap.indent(docstring, "    "))
+    lines.extend(
+        [
+            "    result = await _connic_trigger_agent(",
+            f"        agent_name={rewrite.target_agent_name!r},",
+            f"        payload={ast.unparse(rewrite.payload_expr)},",
+            "    )",
+            '    return result["response"]',
+        ]
+    )
+    return "\n".join(lines)
+
+
+def _extract_module_subset(
+    module_info: ModuleInfo,
+    function_names: set[str],
+    wrapper_rewrites: dict[str, AgentWrapperRewrite] | None = None,
+) -> tuple[str, list[str]]:
+    wrapper_rewrites = wrapper_rewrites or {}
     selected_functions: set[str] = set()
     selected_assignments: set[str] = set()
     selected_classes: set[str] = set()
@@ -906,7 +1100,7 @@ def _extract_module_subset(module_info: ModuleInfo, function_names: set[str]) ->
         if assignment is None:
             return
         selected_assignments.add(name)
-        for dependency in _gather_local_dependency_names(assignment):
+        for dependency in _gather_local_dependency_names(module_info, assignment):
             if dependency in module_info.functions:
                 collect_function(dependency)
             elif dependency in module_info.assignments:
@@ -924,7 +1118,10 @@ def _extract_module_subset(module_info: ModuleInfo, function_names: set[str]) ->
             notes.append(f"Missing source for tool function '{name}'.")
             return
         selected_functions.add(name)
-        for dependency in _gather_local_dependency_names(function_node):
+        wrapper_rewrite = wrapper_rewrites.get(name)
+        for dependency in _gather_local_dependency_names(module_info, function_node):
+            if wrapper_rewrite and dependency == wrapper_rewrite.source_agent_name:
+                continue
             if dependency in module_info.functions:
                 collect_function(dependency)
             elif dependency in module_info.assignments:
@@ -941,7 +1138,7 @@ def _extract_module_subset(module_info: ModuleInfo, function_names: set[str]) ->
         if class_node is None:
             return
         selected_classes.add(name)
-        for dependency in _gather_local_dependency_names(class_node):
+        for dependency in _gather_local_dependency_names(module_info, class_node):
             if dependency in module_info.functions:
                 collect_function(dependency)
             elif dependency in module_info.assignments:
@@ -958,11 +1155,13 @@ def _extract_module_subset(module_info: ModuleInfo, function_names: set[str]) ->
     for node in module_info.tree.body:
         if not isinstance(node, (ast.Import, ast.ImportFrom)):
             continue
-        aliases = [alias.asname or alias.name.split(".")[-1] for alias in node.names]
+        aliases = [alias.asname or alias.name.split(".")[0] for alias in node.names]
         if used_import_names.intersection(aliases):
             import_nodes.append(node)
 
     ordered_nodes: list[tuple[int, str]] = []
+    if wrapper_rewrites:
+        ordered_nodes.append((0, "from connic.tools import trigger_agent as _connic_trigger_agent"))
     for node in import_nodes:
         if isinstance(node, ast.ImportFrom) and node.level:
             notes.append(
@@ -996,7 +1195,11 @@ def _extract_module_subset(module_info: ModuleInfo, function_names: set[str]) ->
         function_node = module_info.functions.get(name)
         if function_node is None:
             continue
-        segment = ast.get_source_segment(module_info.source, function_node)
+        rewrite = wrapper_rewrites.get(name)
+        if rewrite:
+            segment = _render_langchain_agent_wrapper(module_info, function_node, rewrite)
+        else:
+            segment = _source_with_preserved_decorators(module_info, function_node)
         if segment:
             ordered_nodes.append((function_node.lineno, segment))
 
@@ -1004,7 +1207,7 @@ def _extract_module_subset(module_info: ModuleInfo, function_names: set[str]) ->
         class_node = module_info.classes.get(name)
         if class_node is None:
             continue
-        segment = ast.get_source_segment(module_info.source, class_node)
+        segment = _source_with_preserved_decorators(module_info, class_node)
         if segment:
             ordered_nodes.append((class_node.lineno, segment))
 
@@ -1033,6 +1236,70 @@ def _tool_module_name_from_relative(relative: Path) -> str:
     return ".".join(relative.with_suffix("").parts)
 
 
+def _rewrite_local_imports(
+    source: str,
+    source_file: Path,
+    source_root: Path,
+    module_lookup: dict[str, Path],
+) -> str:
+    tree = ast.parse(source)
+    encoded = source.encode()
+    line_offsets = [0]
+    for line in source.splitlines(keepends=True):
+        line_offsets.append(line_offsets[-1] + len(line.encode()))
+
+    replacements: list[tuple[int, int, bytes]] = []
+    for node in ast.walk(tree):
+        rewritten: str | None = None
+        if isinstance(node, ast.ImportFrom) and not node.level and node.module:
+            dependency_path = _resolve_absolute_module_path(node.module, module_lookup)
+            if dependency_path is None:
+                dependency_path = _resolve_neighbor_module_path(source_file, node.module)
+            if dependency_path is not None and dependency_path.is_relative_to(source_root):
+                destination_relative = _tool_destination_relative(source_root, dependency_path)
+                migrated_module = f"tools.{_tool_module_name_from_relative(destination_relative)}"
+                rewritten = ast.unparse(ast.ImportFrom(module=migrated_module, names=node.names, level=0))
+        elif isinstance(node, ast.Import):
+            rewritten_imports = []
+            changed = False
+            for alias in node.names:
+                dependency_path = _resolve_absolute_module_path(alias.name, module_lookup)
+                if dependency_path is None:
+                    dependency_path = _resolve_neighbor_module_path(source_file, alias.name)
+                if dependency_path is None or not dependency_path.is_relative_to(source_root):
+                    rewritten_imports.append(ast.unparse(ast.Import(names=[alias])))
+                    continue
+                changed = True
+                destination_relative = _tool_destination_relative(source_root, dependency_path)
+                migrated_module = f"tools.{_tool_module_name_from_relative(destination_relative)}"
+                if alias.asname:
+                    migrated_alias = ast.alias(name=migrated_module, asname=alias.asname)
+                    rewritten_imports.append(ast.unparse(ast.Import(names=[migrated_alias])))
+                elif "." not in alias.name:
+                    migrated_alias = ast.alias(name=migrated_module, asname=alias.name)
+                    rewritten_imports.append(ast.unparse(ast.Import(names=[migrated_alias])))
+                else:
+                    source_parts = alias.name.split(".")
+                    migrated_parts = migrated_module.split(".")
+                    source_root_index = len(migrated_parts) - len(source_parts)
+                    migrated_parent = ".".join(migrated_parts[:source_root_index])
+                    rewritten_imports.append(f"import {migrated_module}")
+                    rewritten_imports.append(f"from {migrated_parent} import {source_parts[0]}")
+            if changed:
+                rewritten = "\n".join(dict.fromkeys(rewritten_imports))
+        if rewritten is None:
+            continue
+        indentation = " " * node.col_offset
+        rewritten_bytes = rewritten.replace("\n", f"\n{indentation}").encode()
+        start = line_offsets[node.lineno - 1] + node.col_offset
+        end = line_offsets[node.end_lineno - 1] + node.end_col_offset
+        replacements.append((start, end, rewritten_bytes))
+
+    for start, end, replacement in sorted(replacements, reverse=True):
+        encoded = encoded[:start] + replacement + encoded[end:]
+    return encoded.decode()
+
+
 def _collect_local_module_dependencies(
     source_file: Path,
     source_root: Path,
@@ -1051,7 +1318,7 @@ def _collect_local_module_dependencies(
         return set()
 
     dependencies: set[Path] = set()
-    for binding in module_info.imports.values():
+    for binding in module_info.import_bindings:
         dependency_path: Path | None = None
         if binding.kind == "import":
             dependency_path = _resolve_absolute_module_path(binding.module, module_lookup)
@@ -1246,6 +1513,12 @@ def _write_migrated_tools(
     module_lookup = _build_module_lookup(source_root, python_files)
     module_cache: dict[Path, ModuleInfo | None] = dict(module_infos)
     source_to_functions: dict[Path, set[str]] = {}
+    source_agent_names = {
+        (agent.source_file, agent.source_id): agent.name
+        for agent in agents
+        if agent.source_file is not None
+    }
+    wrapper_rewrites: dict[Path, dict[str, AgentWrapperRewrite]] = {}
     for agent in agents:
         for tool in agent.tool_candidates:
             if tool.ref and tool.source_file is None:
@@ -1253,6 +1526,26 @@ def _write_migrated_tools(
             if tool.source_file is None:
                 continue
             source_to_functions.setdefault(tool.source_file, set()).add(tool.function_name)
+            module_info = module_infos.get(tool.source_file)
+            function_node = module_info.functions.get(tool.function_name) if module_info else None
+            wrapper_match = _match_langchain_agent_wrapper(function_node, module_info) if function_node and module_info else None
+            if wrapper_match is None:
+                continue
+            source_agent_name, payload_expr = wrapper_match
+            target_agent_name = source_agent_names.get((tool.source_file, source_agent_name))
+            if target_agent_name is None:
+                continue
+            wrapper_rewrites.setdefault(tool.source_file, {})[tool.function_name] = AgentWrapperRewrite(
+                source_agent_name=source_agent_name,
+                target_agent_name=target_agent_name,
+                payload_expr=payload_expr,
+            )
+            note = (
+                f"Rewrote LangChain sub-agent tool wrapper '{tool.function_name}' to call "
+                f"Connic agent '{target_agent_name}' via trigger_agent."
+            )
+            if note not in agent.notes:
+                agent.notes.append(note)
 
     module_name_map: dict[Path, str] = {}
     for source_file, function_names in source_to_functions.items():
@@ -1260,7 +1553,12 @@ def _write_migrated_tools(
         if module_info is None:
             report_notes.append(f"Could not parse tool module '{source_file}'.")
             continue
-        module_text, extraction_notes = _extract_module_subset(module_info, function_names)
+        module_text, extraction_notes = _extract_module_subset(
+            module_info,
+            function_names,
+            wrapper_rewrites.get(source_file),
+        )
+        module_text = _rewrite_local_imports(module_text, source_file, source_root, module_lookup)
         report_notes.extend(f"{source_file.name}: {note}" for note in extraction_notes)
         if not module_text.strip():
             report_notes.append(f"No tool code was extracted from '{source_file}'.")
@@ -1280,7 +1578,11 @@ def _write_migrated_tools(
             if dependency_destination.exists():
                 continue
             dependency_destination.parent.mkdir(parents=True, exist_ok=True)
+            dependency_source = dependency_path.read_text(encoding="utf-8", errors="ignore")
+            rewritten_dependency = _rewrite_local_imports(dependency_source, dependency_path, source_root, module_lookup)
             shutil.copy2(dependency_path, dependency_destination)
+            if rewritten_dependency != dependency_source:
+                dependency_destination.write_text(rewritten_dependency)
 
     for agent in agents:
         resolved_tools = []

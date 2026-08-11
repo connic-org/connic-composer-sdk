@@ -44,13 +44,25 @@ class UpdateStatus:
     skill_update_available: bool
     installed_skill_paths: tuple[Path, ...]
     missing_skill_paths: tuple[Path, ...]
+    sdk_check_succeeded: bool = True
+    skill_check_succeeded: bool = True
 
     @property
     def has_updates(self) -> bool:
-        return self.sdk_update_available or self.skill_update_available
+        return self.check_complete and (
+            self.sdk_update_available or self.skill_update_available
+        )
+
+    @property
+    def check_complete(self) -> bool:
+        return self.sdk_check_succeeded and (
+            not self.installed_skill_paths or self.skill_check_succeeded
+        )
 
     @property
     def action(self) -> UpdateAction:
+        if not self.check_complete:
+            return UpdateAction.NONE
         if self.sdk_update_available and self.skill_update_available:
             return UpdateAction.BOTH
         if self.sdk_update_available:
@@ -150,26 +162,45 @@ def _skill_version(contents: str) -> str | None:
     return str(version) if version is not None else None
 
 
-def _fetch_remote_versions(force: bool = False) -> tuple[str | None, str | None]:
+def _fetch_remote_versions(
+    force: bool = False,
+) -> tuple[str | None, str | None, bool, bool]:
     cached = _read_cache()
     if cached is not None and not force:
-        return cached.get("latest_sdk_version"), cached.get("latest_skill_version")
+        latest_sdk = cached.get("latest_sdk_version")
+        latest_skill = cached.get("latest_skill_version")
+        sdk_check_succeeded = cached.get("sdk_check_succeeded")
+        if not isinstance(sdk_check_succeeded, bool):
+            sdk_check_succeeded = latest_sdk is not None
+        skill_check_succeeded = cached.get("skill_check_succeeded")
+        if not isinstance(skill_check_succeeded, bool):
+            skill_check_succeeded = latest_skill is not None
+        return latest_sdk, latest_skill, sdk_check_succeeded, skill_check_succeeded
 
     previous = _load_cache()
     latest_sdk = previous.get("latest_sdk_version")
     latest_skill = previous.get("latest_skill_version")
+    sdk_check_succeeded = False
+    skill_check_succeeded = False
     try:
         response = httpx.get(PYPI_URL, timeout=3)
         response.raise_for_status()
-        latest_sdk = response.json()["info"]["version"]
-    except (httpx.HTTPError, OSError, KeyError, TypeError, ValueError):
+        fetched_sdk = response.json()["info"]["version"]
+        _parse_version(fetched_sdk)
+        latest_sdk = fetched_sdk
+        sdk_check_succeeded = True
+    except (httpx.HTTPError, OSError, KeyError, TypeError, ValueError, InvalidVersion):
         pass
 
     try:
         response = httpx.get(SKILL_URL, timeout=3)
         response.raise_for_status()
-        latest_skill = _skill_version(response.text)
-    except (httpx.HTTPError, OSError):
+        fetched_skill = _skill_version(response.text)
+        if fetched_skill is not None:
+            _parse_version(fetched_skill)
+            latest_skill = fetched_skill
+            skill_check_succeeded = True
+    except (httpx.HTTPError, OSError, InvalidVersion):
         pass
 
     data = previous
@@ -178,11 +209,13 @@ def _fetch_remote_versions(force: bool = False) -> tuple[str | None, str | None]
             "last_check": time.time(),
             "latest_sdk_version": latest_sdk,
             "latest_skill_version": latest_skill,
+            "sdk_check_succeeded": sdk_check_succeeded,
+            "skill_check_succeeded": skill_check_succeeded,
         }
     )
     data.pop("latest_version", None)
     _save_cache(data)
-    return latest_sdk, latest_skill
+    return latest_sdk, latest_skill, sdk_check_succeeded, skill_check_succeeded
 
 
 def _installed_skill_status(
@@ -229,7 +262,9 @@ def get_update_status(
     if not force and not reminders_enabled():
         return None
 
-    latest_sdk, latest_skill = _fetch_remote_versions(force=force)
+    latest_sdk, latest_skill, sdk_check_succeeded, skill_check_succeeded = (
+        _fetch_remote_versions(force=force)
+    )
     root = Path.cwd() if project_root is None else Path(project_root)
     current_skill, skill_available, installed, missing = _installed_skill_status(
         root,
@@ -244,6 +279,8 @@ def get_update_status(
         skill_update_available=skill_available,
         installed_skill_paths=installed,
         missing_skill_paths=missing,
+        sdk_check_succeeded=sdk_check_succeeded,
+        skill_check_succeeded=skill_check_succeeded,
     )
 
 
@@ -272,7 +309,7 @@ def check_for_updates(
 ) -> str | None:
     """Return a formatted update status for compatibility with existing callers."""
     status = get_update_status(force=force, project_root=project_root)
-    if status and status.has_updates:
+    if status and status.check_complete and status.has_updates:
         return _format_update_message(status)
     return None
 
@@ -297,7 +334,7 @@ def print_update_hint() -> UpdateAction:
         return UpdateAction.DISABLED
 
     status = get_update_status()
-    if not status or not status.has_updates:
+    if not status or not status.check_complete or not status.has_updates:
         return UpdateAction.NONE
 
     if not _is_interactive():
