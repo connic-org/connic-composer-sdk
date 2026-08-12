@@ -16,9 +16,12 @@ from .core import RetryOptions
 from .loader import ProjectLoader
 from .migrate import register_migrate_command
 from .update_check import (
+    CONNIC_PLUGIN_ID,
+    PluginInstallation,
     UpdateAction,
     _format_update_message,
     enable_update_reminders,
+    get_installed_plugins,
     get_manual_update_status,
     print_update_hint,
     update_sdk,
@@ -35,7 +38,6 @@ SKILL_DESTINATION = Path(".agents/skills/connic")
 CLAUDE_SKILL_DESTINATION = Path(".claude/skills/connic")
 SKILL_DESTINATIONS = (SKILL_DESTINATION, CLAUDE_SKILL_DESTINATION)
 AI_AGENT_SETUP_URL = f"{DEFAULT_BASE_URL.rstrip('/')}/docs/v1/ai-agent-setup"
-CONNIC_PLUGIN_ID = "connic@connic"
 PLUGIN_INSTALLS = (
     (
         "Codex",
@@ -395,7 +397,8 @@ def _validate_project_files() -> tuple[bool, str, list[Path]]:
 
 def _apply_update_action(action: UpdateAction | None) -> bool:
     if action in {UpdateAction.BOTH, UpdateAction.SKILL}:
-        _install_skill_from_github()
+        if not _update_skill_installations():
+            _fail_and_exit("Could not update every installed Connic skill or plugin.")
 
     if action in {UpdateAction.BOTH, UpdateAction.SDK}:
         _step("Updating the Connic SDK...")
@@ -606,6 +609,126 @@ def _install_skill_from_github(base_path: Path = Path(".")) -> None:
         _step(f"Installing to {destination.as_posix()}...")
         _install_skill(source, destination)
         _ok("Installed")
+
+
+def _run_plugin_update(
+    label: str,
+    command: tuple[str, ...],
+    *,
+    cwd: Path | None = None,
+    expect_json: bool = False,
+) -> bool:
+    _step(f"Updating {label}...")
+    try:
+        result = subprocess.run(
+            command,
+            check=False,
+            capture_output=True,
+            text=True,
+            cwd=cwd,
+        )
+    except OSError as e:
+        _warn(f"Could not run {' '.join(command)}: {e}")
+        return False
+
+    if result.returncode == 0 and not expect_json:
+        _ok("Updated")
+        return True
+    if result.returncode == 0:
+        try:
+            response = json.loads(result.stdout)
+        except (TypeError, ValueError):
+            response = None
+        if isinstance(response, dict) and not response.get("errors"):
+            _ok("Updated")
+            return True
+
+    _warn(f"Update failed. Run `{' '.join(command)}` manually.")
+    return False
+
+
+def _update_installed_plugins(
+    installations: tuple[PluginInstallation, ...],
+    check_failures: tuple[str, ...],
+) -> bool:
+    succeeded = not check_failures
+    for label in check_failures:
+        _warn(f"Could not check the installed Connic plugin for {label}.")
+
+    if any(installation.executable == "codex" for installation in installations):
+        succeeded = _run_plugin_update(
+            "the Codex plugin",
+            ("codex", "plugin", "marketplace", "upgrade", "connic", "--json"),
+            expect_json=True,
+        ) and succeeded
+
+    claude_installations = tuple(
+        installation
+        for installation in installations
+        if installation.executable == "claude"
+    )
+    if not claude_installations:
+        return succeeded
+
+    marketplace_updated = _run_plugin_update(
+        "the Claude Code marketplace",
+        ("claude", "plugin", "marketplace", "update", "connic"),
+    )
+    succeeded = marketplace_updated and succeeded
+    if not marketplace_updated:
+        return False
+
+    for installation in claude_installations:
+        if installation.scope is None:
+            _warn("Could not update a Claude Code plugin with an unknown scope.")
+            succeeded = False
+            continue
+
+        cwd = None
+        if installation.scope in {"project", "local"}:
+            cwd = installation.project_path
+            if cwd is None or not cwd.is_dir():
+                _warn(
+                    f"Could not update {installation.label}: its project path is unavailable."
+                )
+                succeeded = False
+                continue
+
+        command = (
+            "claude",
+            "plugin",
+            "update",
+            CONNIC_PLUGIN_ID,
+            "--scope",
+            installation.scope,
+        )
+        succeeded = _run_plugin_update(installation.label, command, cwd=cwd) and succeeded
+    return succeeded
+
+
+def _update_skill_installations(base_path: Path = Path(".")) -> bool:
+    destinations = tuple(
+        base_path / destination
+        for destination in SKILL_DESTINATIONS
+        if (base_path / destination / "SKILL.md").is_file()
+    )
+    if destinations:
+        _step("Fetching the Connic skill from GitHub...")
+        source = _fetch_skill_from_github()
+        if not source:
+            _warn("Could not fetch the Connic skill from GitHub.")
+            return False
+        _ok("Fetched")
+        for destination in destinations:
+            _step(f"Updating {destination.as_posix()}...")
+            _install_skill(source, destination)
+            _ok("Updated")
+
+    installations, check_failures = get_installed_plugins()
+    plugins_updated = _update_installed_plugins(installations, check_failures)
+    if not destinations and not installations and not check_failures:
+        _info("No installed Connic skills or plugins found")
+    return plugins_updated
 
 
 def _can_prompt_for_plugins() -> bool:
@@ -870,23 +993,38 @@ def _require_complete_update_check(status) -> None:
         unavailable.append("SDK")
     if status.installed_skill_paths and not status.skill_check_succeeded:
         unavailable.append("installed skill")
+    if status.installed_plugins and not status.plugin_check_succeeded:
+        unavailable.append("installed plugin")
+    unavailable.extend(f"{label} plugin" for label in status.client_check_failures)
     _fail_and_exit(
         f"Could not check for {' and '.join(unavailable)} updates. "
         "Check your network connection and try again."
     )
 
 
+def _report_current_versions(status) -> None:
+    if status.installed_skill_paths or status.installed_plugins:
+        _ok("SDK and detected Connic skill/plugin installations are up to date")
+    else:
+        _ok("SDK is up to date; no installed Connic skill or plugin was detected")
+
+
 @main.command()
 @click.option("--check", is_flag=True, help="Check for updates without installing them")
 @click.option("--sdk", "sdk_only", is_flag=True, help="Update only the Connic SDK")
-@click.option("--skill", "skill_only", is_flag=True, help="Update only the Connic skill")
+@click.option(
+    "--skill",
+    "skill_only",
+    is_flag=True,
+    help="Update only installed Connic skills and client plugins",
+)
 @click.option(
     "--enable-reminders",
     is_flag=True,
     help="Show automatic update reminders again",
 )
 def update(check: bool, sdk_only: bool, skill_only: bool, enable_reminders: bool):
-    """Check for or install SDK and skill updates."""
+    """Check for or install SDK, skill, and client-plugin updates."""
     _h1("Update")
 
     if check and (sdk_only or skill_only):
@@ -910,7 +1048,7 @@ def update(check: bool, sdk_only: bool, skill_only: bool, enable_reminders: bool
             if status.has_updates:
                 click.echo(_format_update_message(status))
             else:
-                _ok("SDK and installed skill are up to date")
+                _report_current_versions(status)
         _done("Update check complete.")
         return
 
@@ -930,7 +1068,7 @@ def update(check: bool, sdk_only: bool, skill_only: bool, enable_reminders: bool
         _require_complete_update_check(status)
         action = status.action
         if action == UpdateAction.NONE:
-            _ok("SDK and installed skill are up to date")
+            _report_current_versions(status)
             _done("No updates needed.")
             return
 

@@ -15,6 +15,11 @@ from click.testing import CliRunner
 from connic import cli, update_check
 
 
+@pytest.fixture(autouse=True)
+def hide_installed_plugin_clients(monkeypatch):
+    monkeypatch.setattr(update_check.shutil, "which", lambda executable: None)
+
+
 def _write_minimal_support_agent(project: Path) -> None:
     (project / "agents").mkdir(exist_ok=True)
     (project / "agents" / "support.yaml").write_text(
@@ -467,7 +472,11 @@ def test_global_skill_update_runs_before_and_then_continues_command(tmp_path, mo
     monkeypatch.chdir(tmp_path)
     calls = []
     monkeypatch.setattr(cli, "print_update_hint", lambda: cli.UpdateAction.SKILL)
-    monkeypatch.setattr(cli, "_install_skill_from_github", lambda: calls.append("skill"))
+    monkeypatch.setattr(
+        cli,
+        "_update_skill_installations",
+        lambda: calls.append("skill") or True,
+    )
 
     result = CliRunner().invoke(cli.main, ["init", "my-agents"])
 
@@ -492,7 +501,11 @@ def test_global_combined_update_installs_skill_before_sdk(tmp_path, monkeypatch)
     monkeypatch.chdir(tmp_path)
     calls = []
     monkeypatch.setattr(cli, "print_update_hint", lambda: cli.UpdateAction.BOTH)
-    monkeypatch.setattr(cli, "_install_skill_from_github", lambda: calls.append("skill"))
+    monkeypatch.setattr(
+        cli,
+        "_update_skill_installations",
+        lambda: calls.append("skill") or True,
+    )
     monkeypatch.setattr(cli, "update_sdk", lambda: calls.append("sdk") or True)
 
     result = CliRunner().invoke(cli.main, ["init", "my-agents"])
@@ -500,6 +513,134 @@ def test_global_combined_update_installs_skill_before_sdk(tmp_path, monkeypatch)
     assert result.exit_code == 0, result.output
     assert calls == ["skill", "sdk"]
     assert not (tmp_path / "my-agents").exists()
+
+
+def test_skill_update_updates_only_installed_project_and_plugin_surfaces(
+    tmp_path,
+    monkeypatch,
+):
+    monkeypatch.chdir(tmp_path)
+    installed_skill = tmp_path / cli.SKILL_DESTINATION
+    installed_skill.mkdir(parents=True)
+    (installed_skill / "SKILL.md").write_text("# Old\n")
+    source = tmp_path / "source"
+    source.mkdir()
+    (source / "SKILL.md").write_text("# Current\n")
+    monkeypatch.setattr(cli, "_fetch_skill_from_github", lambda: source)
+
+    project_path = tmp_path / "claude-project"
+    local_path = tmp_path / "claude-local"
+    project_path.mkdir()
+    local_path.mkdir()
+    installations = (
+        update_check.PluginInstallation("Codex", "codex", "1.1.0"),
+        update_check.PluginInstallation(
+            "Claude Code",
+            "claude",
+            "1.0.0",
+            scope="user",
+        ),
+        update_check.PluginInstallation(
+            "Claude Code",
+            "claude",
+            "1.0.0",
+            scope="project",
+            project_path=project_path,
+        ),
+        update_check.PluginInstallation(
+            "Claude Code",
+            "claude",
+            "1.0.0",
+            scope="local",
+            project_path=local_path,
+        ),
+        update_check.PluginInstallation(
+            "Claude Code",
+            "claude",
+            "1.0.0",
+            scope="managed",
+        ),
+    )
+    monkeypatch.setattr(cli, "get_installed_plugins", lambda: (installations, ()))
+    calls = []
+
+    def run(command, **kwargs):
+        calls.append((tuple(command), kwargs))
+        stdout = json.dumps({"errors": []}) if command[0] == "codex" else ""
+        return cli.subprocess.CompletedProcess(command, 0, stdout=stdout)
+
+    monkeypatch.setattr(cli.subprocess, "run", run)
+
+    assert cli._update_skill_installations() is True
+    assert (installed_skill / "SKILL.md").read_text() == "# Current\n"
+    assert not (tmp_path / cli.CLAUDE_SKILL_DESTINATION).exists()
+    assert [command for command, _ in calls] == [
+        ("codex", "plugin", "marketplace", "upgrade", "connic", "--json"),
+        ("claude", "plugin", "marketplace", "update", "connic"),
+        ("claude", "plugin", "update", "connic@connic", "--scope", "user"),
+        ("claude", "plugin", "update", "connic@connic", "--scope", "project"),
+        ("claude", "plugin", "update", "connic@connic", "--scope", "local"),
+        ("claude", "plugin", "update", "connic@connic", "--scope", "managed"),
+    ]
+    assert [kwargs["cwd"] for _, kwargs in calls] == [
+        None,
+        None,
+        None,
+        project_path,
+        local_path,
+        None,
+    ]
+
+
+def test_automatic_update_check_probes_plugins_before_each_regular_command(
+    tmp_path,
+    monkeypatch,
+):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("CONNIC_NO_UPDATE_CHECK", raising=False)
+    monkeypatch.setattr(update_check, "CACHE_FILE", tmp_path / "cache.json")
+    monkeypatch.setattr(
+        update_check,
+        "_fetch_remote_versions",
+        lambda **kwargs: (
+            update_check.__version__,
+            "1.2.0",
+            "1.2.0",
+            True,
+            True,
+            True,
+        ),
+    )
+    monkeypatch.setattr(
+        update_check.shutil,
+        "which",
+        lambda executable: f"/usr/bin/{executable}",
+    )
+    calls = []
+
+    def run(command, **kwargs):
+        calls.append((tuple(command), kwargs))
+        payload = (
+            {"installed": [{"pluginId": "connic@connic", "version": "1.2.0"}]}
+            if command[0] == "codex"
+            else [{"id": "connic@connic", "version": "1.2.0", "scope": "user"}]
+        )
+        return cli.subprocess.CompletedProcess(command, 0, stdout=json.dumps(payload))
+
+    monkeypatch.setattr(update_check.subprocess, "run", run)
+
+    first = CliRunner().invoke(cli.main, ["init", "one"])
+    second = CliRunner().invoke(cli.main, ["init", "two"])
+
+    assert first.exit_code == 0, first.output
+    assert second.exit_code == 0, second.output
+    assert [command for command, _ in calls] == [
+        ("codex", "plugin", "list", "--json"),
+        ("claude", "plugin", "list", "--json"),
+        ("codex", "plugin", "list", "--json"),
+        ("claude", "plugin", "list", "--json"),
+    ]
+    assert "update available" not in (first.output + second.output).lower()
 
 
 def test_update_check_reports_without_installing(monkeypatch):
@@ -529,6 +670,58 @@ def test_update_check_reports_without_installing(monkeypatch):
     assert result.exit_code == 0, result.output
     assert "SDK    1.0.0 → 2.0.0" in result.output
     assert "Update check complete" in result.output
+
+
+def test_update_check_reports_client_plugin_versions(monkeypatch):
+    status = update_check.UpdateStatus(
+        current_sdk_version="1.0.0",
+        latest_sdk_version="1.0.0",
+        current_skill_version=None,
+        latest_skill_version="1.2.0",
+        sdk_update_available=False,
+        skill_update_available=True,
+        installed_skill_paths=(),
+        missing_skill_paths=(),
+        latest_plugin_version="1.2.0",
+        installed_plugins=(
+            update_check.PluginInstallation("Codex", "codex", "1.1.0"),
+            update_check.PluginInstallation(
+                "Claude Code",
+                "claude",
+                "1.0.0",
+                scope="user",
+            ),
+        ),
+    )
+    monkeypatch.setattr(cli, "get_manual_update_status", lambda: status)
+
+    result = CliRunner().invoke(cli.main, ["update", "--check"])
+
+    assert result.exit_code == 0, result.output
+    assert "Codex plugin  1.1.0 → 1.2.0" in result.output
+    assert "Claude plugin (user)  1.0.0 → 1.2.0" in result.output
+
+
+def test_update_check_reports_client_probe_failure(monkeypatch):
+    status = update_check.UpdateStatus(
+        current_sdk_version="1.0.0",
+        latest_sdk_version="1.0.0",
+        current_skill_version=None,
+        latest_skill_version="1.2.0",
+        sdk_update_available=False,
+        skill_update_available=False,
+        installed_skill_paths=(),
+        missing_skill_paths=(),
+        latest_plugin_version="1.2.0",
+        client_check_failures=("Codex",),
+    )
+    monkeypatch.setattr(cli, "get_manual_update_status", lambda: status)
+
+    result = CliRunner().invoke(cli.main, ["update", "--check"])
+
+    assert result.exit_code == 1
+    assert "Could not check for Codex plugin updates" in result.output
+    assert "up to date" not in result.output
 
 
 @pytest.mark.parametrize("arguments", [["update"], ["update", "--check"]])
@@ -653,7 +846,7 @@ def test_update_without_flags_does_not_install_when_versions_are_current(monkeyp
     result = CliRunner().invoke(cli.main, ["update"])
 
     assert result.exit_code == 0, result.output
-    assert "SDK and installed skill are up to date" in result.output
+    assert "SDK and detected Connic skill/plugin installations are up to date" in result.output
     assert "No updates needed" in result.output
 
 

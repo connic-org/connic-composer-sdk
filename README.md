@@ -74,11 +74,13 @@ connic skill
 
 In an interactive terminal, both commands detect Codex and Claude Code and ask whether to install the full Connic plugin for each detected client. The plugin bundles the same skill with Connic MCP. Declining leaves the project-local skill installation unchanged. See [AI agent setup](https://connic.co/docs/v1/ai-agent-setup) for manual and client-specific paths.
 
-The CLI checks for SDK and installed-skill updates when commands run. To check without updating, including from an AI coding-agent session, run:
+The CLI silently checks for SDK, project skill, Codex plugin, and Claude Code plugin updates when commands run. It checks every installed Claude Code scope separately. To check without updating, including from an AI coding-agent session, run:
 
 ```bash
 connic update --check
 ```
+
+`connic update --skill` updates only the project skill copies and client plugins that are already installed; it does not add missing integrations.
 
 ## Example Project
 

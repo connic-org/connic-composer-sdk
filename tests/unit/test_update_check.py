@@ -1,6 +1,7 @@
 import json
 import subprocess
 import sys
+from pathlib import Path
 
 import pytest
 
@@ -11,6 +12,7 @@ from connic import update_check
 def isolated_update_state(monkeypatch, tmp_path):
     monkeypatch.delenv("CONNIC_NO_UPDATE_CHECK", raising=False)
     monkeypatch.setattr(update_check, "CACHE_FILE", tmp_path / "cache.json")
+    monkeypatch.setattr(update_check.shutil, "which", lambda executable: None)
     monkeypatch.chdir(tmp_path)
 
 
@@ -29,6 +31,7 @@ def _status(*, sdk=False, skill=False):
         skill_update_available=skill,
         installed_skill_paths=(),
         missing_skill_paths=(),
+        local_skill_update_available=skill,
     )
 
 
@@ -59,7 +62,8 @@ def test_reminder_preference_blocks_automatic_but_not_manual_check(monkeypatch):
     monkeypatch.setattr(
         update_check,
         "_fetch_remote_versions",
-        lambda **kwargs: calls.append(kwargs) or ("2.0.0", "1.0.0", True, True),
+        lambda **kwargs: calls.append(kwargs)
+        or ("2.0.0", "1.0.0", "1.0.0", True, True, True),
     )
 
     assert update_check.get_update_status() is None
@@ -83,6 +87,8 @@ def test_fresh_legacy_cache_is_migrated_without_network(monkeypatch):
             {
                 "last_check": 9999,
                 "latest_version": "99.0.0",
+                "latest_plugin_version": "1.0.0",
+                "plugin_check_succeeded": True,
             }
         )
     )
@@ -120,21 +126,33 @@ def test_remote_sdk_and_skill_versions_are_cached(monkeypatch):
         requested.append((url, timeout))
         if url == update_check.PYPI_URL:
             return Response(data={"info": {"version": "2.0.0"}})
-        return Response(text=_skill("3.0.0"))
+        if url == update_check.SKILL_URL:
+            return Response(text=_skill("3.0.0"))
+        return Response(data={"version": "4.0.0"})
 
     monkeypatch.setattr(update_check.httpx, "get", get)
 
-    assert update_check._fetch_remote_versions() == ("2.0.0", "3.0.0", True, True)
+    assert update_check._fetch_remote_versions() == (
+        "2.0.0",
+        "3.0.0",
+        "4.0.0",
+        True,
+        True,
+        True,
+    )
     assert requested == [
         (update_check.PYPI_URL, 3),
         (update_check.SKILL_URL, 3),
+        (update_check.PLUGIN_URL, 3),
     ]
     assert json.loads(update_check.CACHE_FILE.read_text()) == {
         "last_check": 1234,
         "latest_sdk_version": "2.0.0",
         "latest_skill_version": "3.0.0",
+        "latest_plugin_version": "4.0.0",
         "sdk_check_succeeded": True,
         "skill_check_succeeded": True,
+        "plugin_check_succeeded": True,
     }
 
 
@@ -145,6 +163,8 @@ def test_fresh_cache_is_used_for_both_remote_versions(monkeypatch):
                 "last_check": 9999,
                 "latest_sdk_version": "2.0.0",
                 "latest_skill_version": "3.0.0",
+                "latest_plugin_version": "4.0.0",
+                "plugin_check_succeeded": True,
             }
         )
     )
@@ -155,7 +175,14 @@ def test_fresh_cache_is_used_for_both_remote_versions(monkeypatch):
         lambda *args, **kwargs: pytest.fail("fresh cache must not fetch"),
     )
 
-    assert update_check._fetch_remote_versions() == ("2.0.0", "3.0.0", True, True)
+    assert update_check._fetch_remote_versions() == (
+        "2.0.0",
+        "3.0.0",
+        "4.0.0",
+        True,
+        True,
+        True,
+    )
 
 
 def test_network_failures_are_cached_to_avoid_delaying_every_command(monkeypatch):
@@ -182,7 +209,14 @@ def test_network_failures_are_cached_to_avoid_delaying_every_command(monkeypatch
         "get",
         lambda *args, **kwargs: pytest.fail("fresh failed checks must be throttled"),
     )
-    assert update_check._fetch_remote_versions() == (None, None, False, False)
+    assert update_check._fetch_remote_versions() == (
+        None,
+        None,
+        None,
+        False,
+        False,
+        False,
+    )
 
 
 def test_failed_refresh_keeps_cached_versions_but_marks_them_unverified(monkeypatch):
@@ -192,8 +226,10 @@ def test_failed_refresh_keeps_cached_versions_but_marks_them_unverified(monkeypa
                 "last_check": 100,
                 "latest_sdk_version": "2.0.0",
                 "latest_skill_version": "3.0.0",
+                "latest_plugin_version": "4.0.0",
                 "sdk_check_succeeded": True,
                 "skill_check_succeeded": True,
+                "plugin_check_succeeded": True,
             }
         )
     )
@@ -210,6 +246,7 @@ def test_failed_refresh_keeps_cached_versions_but_marks_them_unverified(monkeypa
     assert status is not None
     assert status.latest_sdk_version == "2.0.0"
     assert status.latest_skill_version == "3.0.0"
+    assert status.latest_plugin_version == "4.0.0"
     assert status.check_complete is False
     assert status.sdk_check_succeeded is False
     assert status.skill_check_succeeded is False
@@ -224,7 +261,7 @@ def test_absent_skill_does_not_offer_skill_install(monkeypatch):
     monkeypatch.setattr(
         update_check,
         "_fetch_remote_versions",
-        lambda **kwargs: (update_check.__version__, None, True, False),
+        lambda **kwargs: (update_check.__version__, None, None, True, False, False),
     )
 
     status = update_check.get_update_status()
@@ -233,6 +270,158 @@ def test_absent_skill_does_not_offer_skill_install(monkeypatch):
     assert status.check_complete is True
     assert status.installed_skill_paths == ()
     assert status.missing_skill_paths == ()
+
+
+def test_installed_plugins_include_codex_and_every_claude_scope(
+    monkeypatch,
+    tmp_path,
+    capsys,
+):
+    project_one = tmp_path / "one"
+    project_two = tmp_path / "two"
+    project_one.mkdir()
+    project_two.mkdir()
+    payloads = {
+        "codex": {
+            "installed": [
+                {
+                    "pluginId": "connic@connic",
+                    "version": "1.1.0",
+                    "enabled": False,
+                }
+            ]
+        },
+        "claude": [
+            {"id": "connic@connic", "version": "1.0.0", "scope": "user"},
+            {
+                "id": "connic@connic",
+                "version": "1.0.1",
+                "scope": "project",
+                "projectPath": str(project_one),
+            },
+            {
+                "id": "connic@connic",
+                "version": "1.0.2",
+                "scope": "project",
+                "projectPath": str(project_two),
+            },
+            {
+                "id": "connic@connic",
+                "version": "1.0.3",
+                "scope": "local",
+                "projectPath": str(project_one),
+            },
+            {"id": "connic@connic", "version": "1.0.4", "scope": "managed"},
+        ],
+    }
+    calls = []
+    monkeypatch.setattr(
+        update_check.shutil,
+        "which",
+        lambda executable: f"/usr/bin/{executable}",
+    )
+
+    def run(command, **kwargs):
+        calls.append((tuple(command), kwargs))
+        return subprocess.CompletedProcess(command, 0, stdout=json.dumps(payloads[command[0]]))
+
+    monkeypatch.setattr(update_check.subprocess, "run", run)
+
+    installations, failures = update_check.get_installed_plugins()
+
+    assert failures == ()
+    assert [(item.client, item.scope, item.project_path) for item in installations] == [
+        ("Codex", None, None),
+        ("Claude Code", "user", None),
+        ("Claude Code", "project", project_one),
+        ("Claude Code", "project", project_two),
+        ("Claude Code", "local", project_one),
+        ("Claude Code", "managed", None),
+    ]
+    assert [command for command, _ in calls] == [
+        ("codex", "plugin", "list", "--json"),
+        ("claude", "plugin", "list", "--json"),
+    ]
+    assert all(
+        kwargs
+        == {
+            "check": False,
+            "capture_output": True,
+            "text": True,
+            "timeout": 3,
+        }
+        for _, kwargs in calls
+    )
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert captured.err == ""
+
+
+def test_plugin_updates_are_reported_per_installation():
+    current_project = update_check.PluginInstallation(
+        client="Claude Code",
+        executable="claude",
+        version="1.2.0",
+        scope="project",
+        project_path=Path("/tmp/current"),
+    )
+    status = update_check.UpdateStatus(
+        current_sdk_version="1.0.0",
+        latest_sdk_version="1.0.0",
+        current_skill_version=None,
+        latest_skill_version="1.2.0",
+        sdk_update_available=False,
+        skill_update_available=True,
+        installed_skill_paths=(),
+        missing_skill_paths=(),
+        latest_plugin_version="1.2.0",
+        installed_plugins=(
+            update_check.PluginInstallation("Codex", "codex", "1.1.0"),
+            update_check.PluginInstallation(
+                "Claude Code",
+                "claude",
+                "1.0.0",
+                scope="user",
+            ),
+            current_project,
+        ),
+    )
+
+    message = update_check._format_update_message(status)
+
+    assert "Codex plugin  1.1.0 → 1.2.0" in message
+    assert "Claude plugin (user)  1.0.0 → 1.2.0" in message
+    assert current_project.label not in message
+
+
+def test_failed_plugin_probe_stays_silent_during_automatic_check(monkeypatch, capsys):
+    monkeypatch.setattr(
+        update_check,
+        "_fetch_remote_versions",
+        lambda **kwargs: (
+            update_check.__version__,
+            "1.0.0",
+            "1.0.0",
+            True,
+            True,
+            True,
+        ),
+    )
+    monkeypatch.setattr(
+        update_check.shutil,
+        "which",
+        lambda executable: "/usr/bin/codex" if executable == "codex" else None,
+    )
+    monkeypatch.setattr(
+        update_check.subprocess,
+        "run",
+        lambda *args, **kwargs: subprocess.CompletedProcess(args[0], 1, stdout="", stderr="failed"),
+    )
+
+    assert update_check.print_update_hint() == update_check.UpdateAction.NONE
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert captured.err == ""
 
 
 def test_invalid_remote_versions_are_not_treated_as_successful_checks(monkeypatch):
@@ -247,7 +436,14 @@ def test_invalid_remote_versions_are_not_treated_as_successful_checks(monkeypatc
 
     monkeypatch.setattr(update_check.httpx, "get", lambda *args, **kwargs: Response())
 
-    assert update_check._fetch_remote_versions(force=True) == (None, None, False, False)
+    assert update_check._fetch_remote_versions(force=True) == (
+        None,
+        None,
+        None,
+        False,
+        False,
+        False,
+    )
 
 
 def test_unversioned_remote_skill_is_a_failed_component_check(monkeypatch):
@@ -265,31 +461,42 @@ def test_unversioned_remote_skill_is_a_failed_component_check(monkeypatch):
     def get(url, timeout):
         if url == update_check.PYPI_URL:
             return Response(data={"info": {"version": "2.0.0"}})
-        return Response(text=_skill(None))
+        if url == update_check.SKILL_URL:
+            return Response(text=_skill(None))
+        return Response(data={"version": "3.0.0"})
 
     monkeypatch.setattr(update_check.httpx, "get", get)
 
     assert update_check._fetch_remote_versions(force=True) == (
         "2.0.0",
         None,
+        "3.0.0",
         True,
         False,
+        True,
     )
 
 
-def test_missing_claude_destination_requires_skill_sync(monkeypatch, tmp_path):
+def test_missing_project_skill_destination_is_not_installed_by_update(monkeypatch, tmp_path):
     agents_skill = tmp_path / update_check.SKILL_PATHS[0]
     agents_skill.parent.mkdir(parents=True)
     agents_skill.write_text(_skill("2.0.0"))
     monkeypatch.setattr(
         update_check,
         "_fetch_remote_versions",
-        lambda **kwargs: (update_check.__version__, "2.0.0", True, True),
+        lambda **kwargs: (
+            update_check.__version__,
+            "2.0.0",
+            "2.0.0",
+            True,
+            True,
+            True,
+        ),
     )
 
     status = update_check.get_update_status(project_root=tmp_path)
 
-    assert status.skill_update_available is True
+    assert status.skill_update_available is False
     assert status.current_skill_version == "2.0.0"
     assert status.installed_skill_paths == (agents_skill,)
     assert status.missing_skill_paths == (tmp_path / update_check.SKILL_PATHS[1],)
@@ -303,7 +510,14 @@ def test_legacy_installed_skill_is_outdated_when_remote_is_versioned(monkeypatch
     monkeypatch.setattr(
         update_check,
         "_fetch_remote_versions",
-        lambda **kwargs: (update_check.__version__, "1.0.0", True, True),
+        lambda **kwargs: (
+            update_check.__version__,
+            "1.0.0",
+            "1.0.0",
+            True,
+            True,
+            True,
+        ),
     )
 
     status = update_check.get_update_status(project_root=tmp_path)
@@ -321,7 +535,14 @@ def test_older_or_mismatched_installed_skills_are_outdated(monkeypatch, tmp_path
     monkeypatch.setattr(
         update_check,
         "_fetch_remote_versions",
-        lambda **kwargs: (update_check.__version__, "2.0.0", True, True),
+        lambda **kwargs: (
+            update_check.__version__,
+            "2.0.0",
+            "2.0.0",
+            True,
+            True,
+            True,
+        ),
     )
 
     status = update_check.get_update_status(project_root=tmp_path)
@@ -338,7 +559,14 @@ def test_current_skill_in_both_destinations_needs_no_update(monkeypatch, tmp_pat
     monkeypatch.setattr(
         update_check,
         "_fetch_remote_versions",
-        lambda **kwargs: (update_check.__version__, "2.0.0", True, True),
+        lambda **kwargs: (
+            update_check.__version__,
+            "2.0.0",
+            "2.0.0",
+            True,
+            True,
+            True,
+        ),
     )
 
     status = update_check.get_update_status(project_root=tmp_path)
@@ -354,7 +582,7 @@ def test_check_for_updates_keeps_formatted_message_api(monkeypatch):
 
     assert "Updates available:" in message
     assert "SDK    1.0.0 → 2.0.0" in message
-    assert "Skill  1.0.0 → 2.0.0" in message
+    assert "Project skill  1.0.0 → 2.0.0" in message
 
 
 def test_failed_refresh_never_offers_a_stale_cached_update(monkeypatch, capsys):
@@ -435,7 +663,7 @@ def test_both_update_prompt_has_exact_options(monkeypatch, capsys, choice, expec
     assert "2 Skip for now\n" in output
     assert "3 Skip and don't remind me again\n" in output
     assert "4 Only update SDK\n" in output
-    assert "5 Only update skill\n" in output
+    assert "5 Only update skill/plugins\n" in output
     assert update_check.reminders_enabled() is (choice != "3")
 
 
@@ -537,7 +765,7 @@ def test_cache_write_errors_do_not_break_update_check(monkeypatch, tmp_path):
     monkeypatch.setattr(
         update_check,
         "_fetch_remote_versions",
-        lambda **kwargs: (update_check.__version__, None, True, False),
+        lambda **kwargs: (update_check.__version__, None, None, True, False, False),
     )
 
     assert update_check.check_for_updates() is None
