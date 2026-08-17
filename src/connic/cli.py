@@ -318,17 +318,20 @@ def _validate_project_files() -> tuple[bool, str, list[Path]]:
 
     for dirname in dirs_to_check:
         dirpath = Path(dirname)
+        if dirpath.is_symlink():
+            return False, f"Symbolic links are not allowed: {dirpath}", []
         if not dirpath.exists():
             continue
 
         for filepath in dirpath.rglob("*"):
-            if not filepath.is_file():
-                continue
-
             # Skip hidden files and __pycache__
             if any(part.startswith(".") for part in filepath.parts):
                 continue
             if "__pycache__" in str(filepath) or filepath.suffix == ".pyc":
+                continue
+            if filepath.is_symlink():
+                return False, f"Symbolic links are not allowed: {filepath}", []
+            if not filepath.is_file():
                 continue
 
             try:
@@ -376,6 +379,8 @@ def _validate_project_files() -> tuple[bool, str, list[Path]]:
 
     # Check requirements.txt
     req_file = Path("requirements.txt")
+    if req_file.is_symlink():
+        return False, f"Symbolic links are not allowed: {req_file}", []
     if req_file.exists():
         try:
             content = req_file.read_bytes()
@@ -391,6 +396,20 @@ def _validate_project_files() -> tuple[bool, str, list[Path]]:
             valid_files.append(req_file)
         except IOError as e:
             return False, f"Could not read requirements.txt: {e}", []
+
+    hard_links: dict[tuple[int, int], Path] = {}
+    for filepath in valid_files:
+        try:
+            file_stat = filepath.lstat()
+        except OSError as e:
+            return False, f"Could not inspect {filepath}: {e}", []
+        if file_stat.st_nlink <= 1 or file_stat.st_ino == 0:
+            continue
+        inode = file_stat.st_ino, file_stat.st_dev
+        linked_path = hard_links.get(inode)
+        if linked_path is not None:
+            return False, f"Hard links are not allowed: {filepath} links to {linked_path}", []
+        hard_links[inode] = filepath
 
     return True, "", valid_files
 

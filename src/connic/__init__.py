@@ -41,11 +41,12 @@ from .core import (
     SessionHistoryCompactionConfig,
     StopProcessing,
     Tool,
+    ToolFile,
     ToolHook,
 )
 from .loader import ProjectLoader
 
-__version__ = "0.1.41"
+__version__ = "0.1.42"
 
 __all__ = [
     "AbortTool",
@@ -54,6 +55,7 @@ __all__ = [
     "ContextCompressionConfig",
     "SessionHistoryCompactionConfig",
     "Tool",
+    "ToolFile",
     "ToolHook",
     "RetryOptions",
     "Middleware",

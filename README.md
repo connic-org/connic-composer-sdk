@@ -171,6 +171,24 @@ See [Agent Configuration](https://connic.co/docs/v1/build/agent-configuration) f
 
 Custom tools are plain Python functions discovered from `tools/`, including nested modules. Type hints and docstrings are used to generate tool schemas automatically. Positional-only parameters, `*args`, and `**kwargs` are not supported. See [Writing Tools](https://connic.co/docs/v1/build/tools) for details.
 
+To return a file from a tool, wrap one explicit source in `ToolFile`:
+
+```python
+from connic import ToolFile
+
+
+def export_invoice(invoice_id: str) -> ToolFile:
+    """Generate an invoice PDF."""
+    pdf = build_invoice_pdf(invoice_id)
+    return ToolFile(
+        mime_type="application/pdf",
+        name=f"invoice-{invoice_id}.pdf",
+        data=pdf,
+    )
+```
+
+`ToolFile` accepts exactly one of `data` (inline bytes) or `uri`. It also carries an optional `name` and `size_bytes`; inline byte size is inferred and an explicitly supplied size must match. A tool may return one `ToolFile` or include files alongside JSON and text values in a list or tuple. Raw `bytes` are rejected because they do not identify a MIME type; wrap them in `ToolFile(data=..., mime_type=...)`.
+
 The SDK also exposes predefined Connic tools such as the ones documented in [Predefined Tools](https://connic.co/docs/v1/build/tools):
 
 - `trigger_agent`

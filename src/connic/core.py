@@ -1,4 +1,5 @@
 import asyncio
+from dataclasses import dataclass
 from enum import Enum
 from typing import Any, Callable, Dict, List, Literal, Optional, Union
 
@@ -10,6 +11,45 @@ class AgentType(str, Enum):
     LLM = "llm"           # Standard LLM agent (default)
     SEQUENTIAL = "sequential"  # Chain of agents
     TOOL = "tool"         # Direct tool execution
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class ToolFile:
+    """A file returned by a custom tool.
+
+    Set exactly one of ``data`` or ``uri``. ``size_bytes`` is inferred for
+    inline ``data`` and may be supplied for referenced files.
+    """
+
+    mime_type: str
+    name: str | None = None
+    size_bytes: int | None = None
+    data: bytes | None = None
+    uri: str | None = None
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.mime_type, str) or not self.mime_type:
+            raise ValueError("mime_type must be a non-empty string")
+        if self.name is not None and (not isinstance(self.name, str) or not self.name):
+            raise ValueError("name must be a non-empty string when provided")
+        if self.size_bytes is not None and (
+            isinstance(self.size_bytes, bool) or not isinstance(self.size_bytes, int) or self.size_bytes < 0
+        ):
+            raise ValueError("size_bytes must be a non-negative integer when provided")
+        if self.data is not None and not isinstance(self.data, bytes):
+            raise TypeError("data must be bytes")
+        if self.uri is not None and (not isinstance(self.uri, str) or not self.uri):
+            raise ValueError("uri must be a non-empty string when provided")
+        sources = sum(source is not None for source in (self.data, self.uri))
+        if sources != 1:
+            raise ValueError("ToolFile requires exactly one of data or uri")
+
+        if self.data is not None:
+            actual_size = len(self.data)
+            if self.size_bytes is None:
+                object.__setattr__(self, "size_bytes", actual_size)
+            elif self.size_bytes != actual_size:
+                raise ValueError("size_bytes must match the data length")
 
 
 class StopProcessing(Exception):
@@ -219,7 +259,7 @@ class ContextCompressionConfig(BaseModel):
     Example YAML:
         context_compression:
           enabled: true
-          model: openai/gpt-5-mini
+          model: connic/gpt-5.6-luna
           keep_recent_messages: 12
           session_history:
             interval: 4

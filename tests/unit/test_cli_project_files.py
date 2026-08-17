@@ -1,6 +1,7 @@
 import base64
 import io
 import json
+import os
 import signal
 import sys
 import tarfile
@@ -55,6 +56,122 @@ def test_validate_project_files_accepts_real_project_tree_and_skips_generated_fi
         "schemas/reply.json",
         "requirements.txt",
     }
+
+
+@pytest.mark.parametrize("project_path", [Path("tools/outside.py"), Path("requirements.txt")])
+def test_package_project_for_tests_rejects_symlinked_files(tmp_path, monkeypatch, project_path):
+    monkeypatch.chdir(tmp_path)
+    outside = tmp_path.parent / f"{tmp_path.name}-outside.py"
+    outside.write_text("SECRET = 'outside project'\n")
+    link = tmp_path / project_path
+    link.parent.mkdir(parents=True, exist_ok=True)
+    link.symlink_to(outside)
+
+    with pytest.raises(ValueError, match="Symbolic links are not allowed"):
+        cli._package_project_for_tests(quiet=True)
+
+
+def test_validate_project_files_rejects_symlinked_project_directory(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    outside_tools = tmp_path.parent / f"{tmp_path.name}-tools"
+    outside_tools.mkdir()
+    (outside_tools / "lookup.py").write_text("def lookup():\n    return 'outside project'\n")
+    (tmp_path / "tools").symlink_to(outside_tools, target_is_directory=True)
+
+    is_valid, error, files = cli._validate_project_files()
+
+    assert is_valid is False
+    assert error == "Symbolic links are not allowed: tools"
+    assert files == []
+
+
+def test_package_project_for_tests_rejects_hard_linked_files(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    source = tmp_path / "tools" / "lookup.py"
+    source.parent.mkdir()
+    source.write_text("def lookup():\n    return {'status': 'ok'}\n")
+    alias = tmp_path / "tools" / "lookup_alias.py"
+    alias.hardlink_to(source)
+
+    with pytest.raises(ValueError, match="Hard links are not allowed"):
+        cli._package_project_for_tests(quiet=True)
+
+
+def test_package_project_for_tests_rejects_requirements_hard_link(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    dependency_list = tmp_path / "tools" / "dependencies.txt"
+    dependency_list.parent.mkdir()
+    dependency_list.write_text("httpx>=0.25\n")
+    (tmp_path / "requirements.txt").hardlink_to(dependency_list)
+
+    with pytest.raises(ValueError, match="Hard links are not allowed"):
+        cli._package_project_for_tests(quiet=True)
+
+
+def test_package_project_for_tests_allows_file_hard_linked_outside_upload(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    shared_source = tmp_path / "shared_lookup.py"
+    shared_source.write_text("def lookup():\n    return {'status': 'ok'}\n")
+    tool = tmp_path / "tools" / "lookup.py"
+    tool.parent.mkdir()
+    tool.hardlink_to(shared_source)
+
+    tar_data, files, _ = cli._package_project_for_tests(quiet=True)
+
+    assert files == [Path("tools/lookup.py")]
+    with tarfile.open(fileobj=io.BytesIO(tar_data), mode="r:gz") as archive:
+        assert archive.getmember("tools/lookup.py").isreg()
+
+
+def test_validate_project_files_reports_file_removed_during_hard_link_check(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    tool = Path("tools/lookup.py")
+    tool.parent.mkdir()
+    tool.write_text("def lookup():\n    return {'status': 'ok'}\n")
+    original_lstat = Path.lstat
+    tool_lstat_calls = 0
+
+    def lstat(path):
+        nonlocal tool_lstat_calls
+        if path == tool:
+            tool_lstat_calls += 1
+            if tool_lstat_calls == 2:
+                raise OSError("file was removed")
+        return original_lstat(path)
+
+    monkeypatch.setattr(Path, "lstat", lstat)
+
+    is_valid, error, files = cli._validate_project_files()
+
+    assert is_valid is False
+    assert error == "Could not inspect tools/lookup.py: file was removed"
+    assert files == []
+
+
+def test_validate_project_files_allows_zero_inode_files(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    source = Path("tools/lookup.py")
+    source.parent.mkdir()
+    source.write_text("def lookup():\n    return {'status': 'ok'}\n")
+    alias = Path("tools/lookup_alias.py")
+    alias.hardlink_to(source)
+    original_lstat = Path.lstat
+
+    def lstat(path):
+        result = original_lstat(path)
+        if path in {source, alias}:
+            values = list(result)
+            values[1] = 0
+            return os.stat_result(values)
+        return result
+
+    monkeypatch.setattr(Path, "lstat", lstat)
+
+    is_valid, error, files = cli._validate_project_files()
+
+    assert is_valid is True
+    assert error == ""
+    assert set(files) == {source, alias}
 
 
 def test_validate_project_files_rejects_unsupported_files_before_upload(tmp_path, monkeypatch):
