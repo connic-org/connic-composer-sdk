@@ -92,6 +92,7 @@ class AgentCandidate:
     tool_candidates: list[ToolCandidate] = field(default_factory=list)
     agent_ref_keys: list[str] = field(default_factory=list)
     notes: list[str] = field(default_factory=list)
+    source_aliases: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -442,6 +443,8 @@ def _dedupe_agent_names(agents: list[AgentCandidate]) -> dict[str, str]:
         agent.name = unique_name
         used.add(unique_name)
         source_key_map[agent.source_id] = unique_name
+        for source_alias in agent.source_aliases:
+            source_key_map.setdefault(source_alias, unique_name)
         source_key_map.setdefault(base_name, unique_name)
     for agent in agents:
         resolved_refs = []
@@ -691,7 +694,16 @@ def _extract_langchain_agents(module_info: ModuleInfo, module_lookup: dict[str, 
     return agents
 
 
-def _resolve_name_list(expr: ast.AST | None, module_info: ModuleInfo, seen: set[str] | None = None) -> list[str]:
+def _python_agent_source_id(path: Path, name: str) -> str:
+    return f"python:{path.resolve()}#{name}"
+
+
+def _resolve_name_list(
+    expr: ast.AST | None,
+    module_info: ModuleInfo,
+    module_lookup: dict[str, Path],
+    seen: set[str] | None = None,
+) -> list[str]:
     if expr is None:
         return []
     if seen is None:
@@ -699,24 +711,46 @@ def _resolve_name_list(expr: ast.AST | None, module_info: ModuleInfo, seen: set[
     if isinstance(expr, (ast.List, ast.Tuple, ast.Set)):
         values = []
         for item in expr.elts:
-            if isinstance(item, ast.Name):
-                values.append(item.id)
-            elif isinstance(item, ast.Constant) and isinstance(item.value, str):
-                values.append(item.value)
+            values.extend(_resolve_name_list(item, module_info, module_lookup, set(seen)))
         return values
+    if isinstance(expr, ast.Constant) and isinstance(expr.value, str):
+        return [expr.value]
     if isinstance(expr, ast.Name):
         if expr.id in seen:
             return []
         seen.add(expr.id)
         assigned = module_info.assignments.get(expr.id)
         if assigned is not None:
-            return _resolve_name_list(assigned, module_info, seen)
+            if isinstance(assigned, ast.Call) and _get_call_name(assigned.func) in {
+                "Agent",
+                "LlmAgent",
+                "SequentialAgent",
+                "ParallelAgent",
+                "LoopAgent",
+            }:
+                return [_python_agent_source_id(module_info.path, expr.id)]
+            return _resolve_name_list(assigned, module_info, module_lookup, seen)
+        binding = module_info.imports.get(expr.id)
+        if binding:
+            source_file, source_name = _resolve_imported_symbol_source(binding, module_info.path, module_lookup)
+            if source_file and source_name:
+                return [_python_agent_source_id(source_file, source_name)]
+        return [expr.id]
+    if isinstance(expr, ast.Attribute):
+        full_name = _get_full_attr_name(expr)
+        root_name = full_name.split(".", 1)[0] if full_name else None
+        binding = module_info.imports.get(root_name) if root_name else None
+        if binding:
+            source_file = _resolve_module_alias_source(binding, module_info.path, module_lookup)
+            if source_file:
+                return [_python_agent_source_id(source_file, expr.attr)]
     return []
 
 
 def _extract_adk_agents(module_info: ModuleInfo, module_lookup: dict[str, Path]) -> list[AgentCandidate]:
     agents: list[AgentCandidate] = []
     module_cache: dict[Path, ModuleInfo | None] = {module_info.path: module_info}
+    module_names = [name for name, path in module_lookup.items() if path == module_info.path]
     supported_calls = {"Agent", "LlmAgent", "SequentialAgent", "ParallelAgent", "LoopAgent"}
     for node in module_info.tree.body:
         if not isinstance(node, ast.Assign) or not isinstance(node.value, ast.Call):
@@ -737,7 +771,11 @@ def _extract_adk_agents(module_info: ModuleInfo, module_lookup: dict[str, Path])
         model = _normalize_model_name(_resolve_string_expr(_get_keyword(node.value, "model"), module_info, module_lookup, module_cache))
         notes: list[str] = []
         tools = _resolve_tool_candidates(_get_keyword(node.value, "tools"), module_info, module_lookup, notes)
-        sub_agents = _resolve_name_list(_get_keyword(node.value, "sub_agents") or _get_keyword(node.value, "agents"), module_info)
+        sub_agents = _resolve_name_list(
+            _get_keyword(node.value, "sub_agents") or _get_keyword(node.value, "agents"),
+            module_info,
+            module_lookup,
+        )
         agent_type = "llm"
         if call_name in {"SequentialAgent", "ParallelAgent", "LoopAgent"} and sub_agents:
             agent_type = "sequential"
@@ -755,7 +793,7 @@ def _extract_adk_agents(module_info: ModuleInfo, module_lookup: dict[str, Path])
         fallback_description = description or f"Migrated from ADK agent '{source_name}'."
         agents.append(
             AgentCandidate(
-                source_id=target_name,
+                source_id=_python_agent_source_id(module_info.path, target_name),
                 framework="adk",
                 source_file=module_info.path,
                 name=source_name,
@@ -766,9 +804,14 @@ def _extract_adk_agents(module_info: ModuleInfo, module_lookup: dict[str, Path])
                 tool_candidates=tools,
                 agent_ref_keys=sub_agents,
                 notes=notes,
+                source_aliases=[target_name, *(f"code:{module_name}.{target_name}" for module_name in module_names)],
             )
         )
     return agents
+
+
+def _adk_yaml_source_id(path: Path) -> str:
+    return f"yaml:{path.resolve()}"
 
 
 def _extract_adk_yaml_agents(yaml_files: list[Path]) -> list[AgentCandidate]:
@@ -796,18 +839,42 @@ def _extract_adk_yaml_agents(yaml_files: list[Path]) -> list[AgentCandidate]:
         raw_tools = data.get("tools")
         if isinstance(raw_tools, list):
             for item in raw_tools:
-                if isinstance(item, str):
-                    predefined = _predefined_tool_candidate(item)
-                    if predefined:
-                        tool_candidates.append(predefined)
-                    else:
-                        notes.append(f"Could not migrate YAML tool reference '{item}'.")
+                tool_name = item.get("name") if isinstance(item, dict) else item
+                if not isinstance(tool_name, str):
+                    continue
+                predefined = _predefined_tool_candidate(tool_name)
+                if predefined:
+                    tool_candidates.append(predefined)
+                else:
+                    notes.append(f"Could not migrate YAML tool reference '{tool_name}'.")
         raw_agent_refs = data.get("sub_agents") or data.get("agents") or []
-        agent_refs = [item for item in raw_agent_refs if isinstance(item, str)] if isinstance(raw_agent_refs, list) else []
-        agent_type = "sequential" if agent_refs else "llm"
+        agent_refs = []
+        if isinstance(raw_agent_refs, list):
+            for item in raw_agent_refs:
+                if isinstance(item, str):
+                    agent_refs.append(item)
+                elif isinstance(item, dict) and isinstance(item.get("config_path"), str):
+                    agent_refs.append(_adk_yaml_source_id(yaml_file.parent / item["config_path"]))
+                elif isinstance(item, dict) and isinstance(item.get("code"), str):
+                    agent_refs.append(f"code:{item['code']}")
+        raw_agent_class = data.get("agent_class")
+        agent_class = raw_agent_class.rsplit(".", 1)[-1] if isinstance(raw_agent_class, str) else None
+        workflow_classes = {"SequentialAgent", "ParallelAgent", "LoopAgent"}
+        is_llm_with_children = bool(agent_refs) and (agent_class in {"Agent", "LlmAgent"} or model)
+        agent_type = "llm" if is_llm_with_children or not agent_refs else "sequential"
+        if agent_class in workflow_classes:
+            agent_type = "sequential"
+            if agent_class != "SequentialAgent":
+                notes.append(f"Original ADK YAML agent used {agent_class}; migrated as a sequential Connic agent for review.")
+        elif agent_refs and agent_type == "llm":
+            notes.append(
+                "Mapped ADK sub_agents to Connic trigger_agent for delegation. "
+                "Review the listed agent refs and update prompts as needed."
+            )
+            tool_candidates.append(ToolCandidate(function_name="trigger_agent", ref="trigger_agent"))
         agents.append(
             AgentCandidate(
-                source_id=f"yaml:{yaml_file.stem}",
+                source_id=_adk_yaml_source_id(yaml_file),
                 framework="adk",
                 source_file=yaml_file,
                 name=name,
@@ -1081,6 +1148,15 @@ def _render_langchain_agent_wrapper(
     return "\n".join(lines)
 
 
+def _find_assignment_node(module_info: ModuleInfo, name: str) -> ast.Assign | ast.AnnAssign | None:
+    for node in module_info.tree.body:
+        if isinstance(node, ast.Assign) and any(isinstance(target, ast.Name) and target.id == name for target in node.targets):
+            return node
+        if isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name) and node.target.id == name:
+            return node
+    return None
+
+
 def _extract_module_subset(
     module_info: ModuleInfo,
     function_names: set[str],
@@ -1100,7 +1176,8 @@ def _extract_module_subset(
         if assignment is None:
             return
         selected_assignments.add(name)
-        for dependency in _gather_local_dependency_names(module_info, assignment):
+        assignment_node = _find_assignment_node(module_info, name)
+        for dependency in _gather_local_dependency_names(module_info, assignment_node or assignment):
             if dependency in module_info.functions:
                 collect_function(dependency)
             elif dependency in module_info.assignments:
@@ -1156,7 +1233,7 @@ def _extract_module_subset(
         if not isinstance(node, (ast.Import, ast.ImportFrom)):
             continue
         aliases = [alias.asname or alias.name.split(".")[0] for alias in node.names]
-        if used_import_names.intersection(aliases):
+        if (isinstance(node, ast.ImportFrom) and node.module == "__future__") or used_import_names.intersection(aliases):
             import_nodes.append(node)
 
     ordered_nodes: list[tuple[int, str]] = []
@@ -1169,22 +1246,11 @@ def _extract_module_subset(
             )
         segment = ast.get_source_segment(module_info.source, node)
         if segment:
-            ordered_nodes.append((node.lineno, segment))
+            order = -1 if isinstance(node, ast.ImportFrom) and node.module == "__future__" else node.lineno
+            ordered_nodes.append((order, segment))
 
     for name in selected_assignments:
-        assignment = module_info.assignments.get(name)
-        if assignment is None:
-            continue
-        parent = next(
-            (
-                node
-                for node in module_info.tree.body
-                if isinstance(node, (ast.Assign, ast.AnnAssign))
-                and ((isinstance(node, ast.Assign) and any(isinstance(target, ast.Name) and target.id == name for target in node.targets))
-                     or (isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name) and node.target.id == name))
-            ),
-            None,
-        )
+        parent = _find_assignment_node(module_info, name)
         if parent is None:
             continue
         segment = ast.get_source_segment(module_info.source, parent)
@@ -1475,8 +1541,7 @@ def _build_migration_candidates(source_root: Path) -> tuple[str, list[str], list
     if framework == "adk" or (framework == "unknown" and not candidates):
         for module_info in module_infos.values():
             candidates.extend(_extract_adk_agents(module_info, module_lookup))
-        if not candidates:
-            candidates.extend(_extract_adk_yaml_agents(yaml_files))
+        candidates.extend(_extract_adk_yaml_agents(yaml_files))
         if not candidates:
             detection_notes.extend(_detect_custom_adk_patterns(module_infos))
 

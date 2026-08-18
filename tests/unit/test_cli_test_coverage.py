@@ -71,6 +71,19 @@ def _write_test_file(project: Path, agent_name: str, expected_calls_per_case: li
     _write(project / "tests" / f"{agent_name}.yaml", "\n".join(lines) + "\n")
 
 
+def _write_orphaned_invalid_split_suite(project: Path) -> None:
+    _write(
+        project / "tests" / "math-agent-invalid.yaml",
+        """
+        version: "1.0"
+        agent: 42
+        tests:
+          - name: rejects_non_string_agent
+            payload: '{"x": 1}'
+        """,
+    )
+
+
 # ---------------------------------------------------------------------------
 # _compute_local_coverage
 # ---------------------------------------------------------------------------
@@ -408,6 +421,20 @@ def test_invalid_split_suite_is_reported_for_its_explicit_agent(tmp_path):
     assert "at least 1 item" in agent["parse_error"]
 
 
+def test_invalid_split_suite_with_non_string_agent_is_reported(tmp_path):
+    _write_calculator_tool(tmp_path)
+    _write_llm_agent(tmp_path, "math-agent", tools=["calculator.add"])
+    _write_test_file(tmp_path, "math-agent", [["calculator.add"]])
+    _write_orphaned_invalid_split_suite(tmp_path)
+
+    report = cli._compute_local_coverage(tmp_path)
+
+    assert [agent["name"] for agent in report["agents"]] == ["math-agent"]
+    assert report["agents"][0]["parse_error"] is None
+    assert "tests/math-agent-invalid.yaml" in report["error"]
+    assert "agent" in report["error"]
+
+
 def test_compute_local_coverage_returns_error_when_agents_dir_is_missing(tmp_path):
     report = cli._compute_local_coverage(tmp_path)
     assert report["agents"] == []
@@ -514,6 +541,21 @@ def test_test_command_with_coverage_stops_on_unparseable_test_file(tmp_path, mon
     assert "Overall coverage" not in result.output
 
 
+def test_test_command_with_coverage_stops_on_orphaned_invalid_split_suite(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    _write_calculator_tool(tmp_path)
+    _write_llm_agent(tmp_path, "math-agent", tools=["calculator.add"])
+    _write_test_file(tmp_path, "math-agent", [["calculator.add"]])
+    _write_orphaned_invalid_split_suite(tmp_path)
+
+    result = CliRunner().invoke(cli.main, ["test", "--coverage"])
+
+    assert result.exit_code != 0
+    assert "Test files failed to parse" in result.output
+    assert "tests/math-agent-invalid.yaml" in result.output
+    assert "Overall coverage" not in result.output
+
+
 def test_test_command_with_coverage_stops_on_unloadable_agent_file(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     _write_calculator_tool(tmp_path)
@@ -561,6 +603,21 @@ def test_test_command_with_coverage_json_reports_unloadable_agent_file(tmp_path,
     payload = json.loads(result.output)
     assert "agents/broken-agent.yaml" in payload["error"]
     assert "missing required field(s): name" in payload["error"]
+
+
+def test_test_command_with_coverage_json_reports_orphaned_invalid_split_suite(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    _write_calculator_tool(tmp_path)
+    _write_llm_agent(tmp_path, "math-agent", tools=["calculator.add"])
+    _write_test_file(tmp_path, "math-agent", [["calculator.add"]])
+    _write_orphaned_invalid_split_suite(tmp_path)
+
+    result = CliRunner().invoke(cli.main, ["test", "--coverage", "--json"])
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    assert "tests/math-agent-invalid.yaml" in payload["error"]
+    assert [agent["name"] for agent in payload["agents"]] == ["math-agent"]
 
 
 def test_test_command_with_coverage_and_json_emits_machine_readable_report(tmp_path, monkeypatch):

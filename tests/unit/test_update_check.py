@@ -21,17 +21,20 @@ def _skill(version: str | None) -> str:
     return f"---\nname: connic{metadata}\n---\n\n# Connic\n"
 
 
-def _status(*, sdk=False, skill=False):
+def _status(*, sdk=False, skill=False, plugin=False):
+    installed_plugins = (update_check.PluginInstallation("Codex", "codex", "1.0.0"),) if plugin else ()
     return update_check.UpdateStatus(
         current_sdk_version="1.0.0",
         latest_sdk_version="2.0.0" if sdk else "1.0.0",
         current_skill_version="1.0.0" if skill else None,
         latest_skill_version="2.0.0" if skill else "1.0.0",
         sdk_update_available=sdk,
-        skill_update_available=skill,
+        skill_update_available=skill or plugin,
         installed_skill_paths=(),
         missing_skill_paths=(),
         local_skill_update_available=skill,
+        latest_plugin_version="2.0.0" if plugin else None,
+        installed_plugins=installed_plugins,
     )
 
 
@@ -357,6 +360,110 @@ def test_installed_plugins_include_codex_and_every_claude_scope(
     assert captured.err == ""
 
 
+@pytest.mark.parametrize("scenario", ["timeout", "malformed_json", "wrong_shape"])
+def test_plugin_client_probe_rejects_unusable_cli_output(monkeypatch, scenario):
+    monkeypatch.setattr(update_check.shutil, "which", lambda executable: f"/usr/bin/{executable}")
+
+    def run(command, **kwargs):
+        if scenario == "timeout":
+            raise subprocess.TimeoutExpired(command, kwargs["timeout"])
+        stdout = "not json" if scenario == "malformed_json" else json.dumps({"installed": []})
+        return subprocess.CompletedProcess(command, 0, stdout=stdout)
+
+    monkeypatch.setattr(update_check.subprocess, "run", run)
+
+    assert update_check._installed_plugins_for_client("Claude Code", "claude") == ((), False)
+
+
+def test_claude_plugin_probe_filters_disabled_rows_and_deduplicates_scopes(
+    monkeypatch,
+    tmp_path,
+):
+    project_one = tmp_path / "one"
+    project_two = tmp_path / "two"
+    project_one.mkdir()
+    project_two.mkdir()
+    payload = [
+        "ignored warning",
+        {"id": "other@marketplace", "version": "1.0.0", "scope": "user"},
+        {
+            "id": update_check.CONNIC_PLUGIN_ID,
+            "version": "0.9.0",
+            "scope": "managed",
+            "installed": False,
+        },
+        {
+            "id": update_check.CONNIC_PLUGIN_ID,
+            "version": "1.0.0",
+            "scope": "project",
+            "projectPath": str(project_one),
+        },
+        {
+            "id": update_check.CONNIC_PLUGIN_ID,
+            "version": "1.1.0",
+            "scope": "project",
+            "projectPath": str(project_one),
+        },
+        {
+            "id": update_check.CONNIC_PLUGIN_ID,
+            "version": "1.2.0",
+            "scope": "project",
+            "projectPath": str(project_two),
+        },
+        {
+            "id": update_check.CONNIC_PLUGIN_ID,
+            "version": "1.3.0",
+            "scope": "user",
+        },
+    ]
+    monkeypatch.setattr(update_check.shutil, "which", lambda executable: f"/usr/bin/{executable}")
+    monkeypatch.setattr(
+        update_check.subprocess,
+        "run",
+        lambda command, **kwargs: subprocess.CompletedProcess(
+            command,
+            0,
+            stdout=json.dumps(payload),
+        ),
+    )
+
+    installations, succeeded = update_check._installed_plugins_for_client(
+        "Claude Code",
+        "claude",
+    )
+
+    assert succeeded is True
+    assert [(installation.version, installation.scope, installation.project_path) for installation in installations] == [
+        ("1.0.0", "project", project_one),
+        ("1.2.0", "project", project_two),
+        ("1.3.0", "user", None),
+    ]
+
+
+@pytest.mark.parametrize(
+    ("installed_version", "latest_version", "expected"),
+    [
+        ("1.0.0", None, False),
+        (None, "2.0.0", True),
+        ("development", "2.0.0", True),
+        ("2.0.0", "2.0.0", False),
+        ("3.0.0", "2.0.0", False),
+    ],
+)
+def test_plugin_update_detection_handles_version_edge_cases(
+    installed_version,
+    latest_version,
+    expected,
+):
+    installation = update_check.PluginInstallation(
+        "Codex",
+        "codex",
+        installed_version,
+    )
+
+    assert update_check._plugin_needs_update(installation, latest_version) is expected
+
+
 def test_plugin_updates_are_reported_per_installation():
     current_project = update_check.PluginInstallation(
         client="Claude Code",
@@ -638,6 +745,41 @@ def test_noninteractive_skill_update_uses_update_command(monkeypatch, capsys):
     assert capsys.readouterr().err == (
         "Connic skill update available; run `connic update --skill`.\n"
     )
+
+
+@pytest.mark.parametrize(
+    ("status_kwargs", "expected_warning"),
+    [
+        (
+            {"plugin": True},
+            "Connic plugin update available; run `connic update --skill`.\n",
+        ),
+        (
+            {"sdk": True, "skill": True, "plugin": True},
+            "Connic SDK, skill, and plugin update available; run `connic update`.\n",
+        ),
+    ],
+)
+def test_noninteractive_plugin_warnings_name_components_and_supported_command(
+    monkeypatch,
+    capsys,
+    status_kwargs,
+    expected_warning,
+):
+    monkeypatch.setattr(
+        update_check,
+        "get_update_status",
+        lambda **kwargs: _status(**status_kwargs),
+    )
+    monkeypatch.setattr(update_check, "_is_interactive", lambda: False)
+    monkeypatch.setattr(
+        update_check.click,
+        "prompt",
+        lambda *args, **kwargs: pytest.fail("noninteractive check must not prompt"),
+    )
+
+    assert update_check.print_update_hint() == update_check.UpdateAction.NONE
+    assert capsys.readouterr().err == expected_warning
 
 
 @pytest.mark.parametrize(

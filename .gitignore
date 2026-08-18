@@ -47,3 +47,10 @@ htmlcov/
 !/tests/unit/**
 /tests/unit/**/__pycache__/
 /tests/unit/**/*.py[cod]
+!/tests/langchain/
+/tests/langchain/*
+!/tests/langchain/VALIDATION.md
+!/tests/langchain/sources/
+/tests/langchain/sources/*
+!/tests/langchain/sources/official-*/
+!/tests/langchain/sources/official-*/**

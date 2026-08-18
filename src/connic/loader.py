@@ -7,6 +7,7 @@ import json
 import sys
 import types
 from pathlib import Path
+from threading import RLock
 from typing import Any, Dict, List, Optional, Union, get_args, get_origin, get_type_hints
 
 import yaml
@@ -58,6 +59,9 @@ PREDEFINED_TOOL_ALIASES = {
     "kb_list_namespaces": "retrieval_list_namespaces",
 }
 
+_TOOL_IMPORT_LOCK = RLock()
+_ACTIVE_TOOL_PROJECT_PATH: Optional[str] = None
+
 
 def is_predefined_tool_name(name: str) -> bool:
     return name in PREDEFINED_TOOL_NAMES or name in PREDEFINED_TOOL_ALIASES
@@ -71,17 +75,15 @@ def _tool_agent_signature_error(func) -> Optional[str]:
         return None
     if "payload" not in params:
         return "must declare a 'payload' parameter (and optionally 'context')"
-    extra_required = [
+    extra_params = [
         name
-        for name, param in params.items()
+        for name in params
         if name not in ("payload", "context")
-        and param.default is inspect.Parameter.empty
-        and param.kind not in (param.VAR_POSITIONAL, param.VAR_KEYWORD)
     ]
-    if extra_required:
+    if extra_params:
         return (
-            "is only called with 'payload' (and optionally 'context'); "
-            f"give these parameters defaults or remove them: {', '.join(extra_required)}"
+            "may only declare 'payload' and optional 'context'; "
+            f"remove these parameters: {', '.join(extra_params)}"
         )
     return None
 
@@ -106,6 +108,7 @@ class ProjectLoader:
 
         # Cache for loaded modules to avoid reloading
         self._loaded_modules: Dict[str, Any] = {}
+        self._runtime_tool_modules: Dict[str, Any] = {}
         # Cache for loaded middlewares
         self._loaded_middlewares: Dict[str, Optional[Middleware]] = {}
         # Cache for loaded schemas
@@ -123,10 +126,6 @@ class ProjectLoader:
         self._api_spec_warnings: List[str] = []
 
         self._api_spec_tools: Dict[str, Dict[str, Any]] = api_spec_tools or {}
-
-        # Ensure project root is in sys.path for imports
-        if str(self.project_root) not in sys.path:
-            sys.path.insert(0, str(self.project_root))
 
     def _discover_agent_files(self) -> List[Path]:
         """Discover agent YAML files recursively under agents/."""
@@ -225,7 +224,53 @@ class ProjectLoader:
                     f"Expected a base agent named '{name.split('-test-')[0]}' to exist."
                 )
 
+        cycle = self._find_sequential_dependency_cycle(agents)
+        if cycle:
+            self._load_errors.append(
+                "Sequential agent dependency cycle detected: " + " -> ".join(cycle)
+            )
+
         return agents
+
+    @staticmethod
+    def _find_sequential_dependency_cycle(agents: List[Agent]) -> Optional[List[str]]:
+        sequential_agents = {
+            agent.config.name: agent.config
+            for agent in agents
+            if agent.config.type == AgentType.SEQUENTIAL
+        }
+        graph = {
+            name: [ref for ref in config.agents if ref in sequential_agents]
+            for name, config in sequential_agents.items()
+        }
+        states: Dict[str, int] = {}
+        path: List[str] = []
+        path_indices: Dict[str, int] = {}
+
+        def visit(name: str) -> Optional[List[str]]:
+            states[name] = 1
+            path_indices[name] = len(path)
+            path.append(name)
+
+            for dependency in graph[name]:
+                if states.get(dependency) == 1:
+                    return path[path_indices[dependency]:] + [dependency]
+                if states.get(dependency, 0) == 0:
+                    cycle = visit(dependency)
+                    if cycle:
+                        return cycle
+
+            path.pop()
+            path_indices.pop(name)
+            states[name] = 2
+            return None
+
+        for name in sorted(graph):
+            if states.get(name, 0) == 0:
+                cycle = visit(name)
+                if cycle:
+                    return cycle
+        return None
 
     def load_agent(self, name: str) -> Agent:
         """
@@ -1034,30 +1079,117 @@ class ProjectLoader:
         Returns:
             The loaded module object
         """
-        if module_name in self._loaded_modules:
-            return self._loaded_modules[module_name]
-
         tool_modules = self._discover_tool_modules()
         file_path = tool_modules.get(module_name)
         if file_path is None:
             raise FileNotFoundError(f"Tool module '{module_name}' not found under {self.tools_dir}")
 
         if self._validation_only:
+            if module_name in self._loaded_modules:
+                return self._loaded_modules[module_name]
             return self._load_tool_module_from_ast(module_name, file_path)
 
-        import_name = f"tools.{module_name}"
-        spec = importlib.util.spec_from_file_location(import_name, file_path)
-        if not spec or not spec.loader:
-            raise ImportError(f"Could not load module spec for {file_path}")
+        with _TOOL_IMPORT_LOCK:
+            self._activate_tool_imports()
+            if module_name in self._loaded_modules:
+                return self._loaded_modules[module_name]
 
-        module = importlib.util.module_from_spec(spec)
+            import_name = f"tools.{module_name}"
+            spec = importlib.util.spec_from_file_location(import_name, file_path)
+            if not spec or not spec.loader:
+                raise ImportError(f"Could not load module spec for {file_path}")
 
-        # Add to sys.modules so imports inside the module work
-        sys.modules[import_name] = module
+            module = importlib.util.module_from_spec(spec)
+            sys.modules[import_name] = module
 
-        spec.loader.exec_module(module)
-        self._loaded_modules[module_name] = module
-        return module
+            try:
+                spec.loader.exec_module(module)
+            except Exception:
+                if sys.modules.get(import_name) is module:
+                    del sys.modules[import_name]
+                raise
+
+            self._loaded_modules[module_name] = module
+            self._remember_runtime_tool_modules()
+            return module
+
+    def _activate_tool_imports(self) -> None:
+        global _ACTIVE_TOOL_PROJECT_PATH
+
+        project_path = str(self.project_root)
+        if _ACTIVE_TOOL_PROJECT_PATH == project_path:
+            return
+
+        if _ACTIVE_TOOL_PROJECT_PATH is not None:
+            try:
+                sys.path.remove(_ACTIVE_TOOL_PROJECT_PATH)
+            except ValueError:
+                pass
+        sys.path.insert(0, project_path)
+
+        for name in list(sys.modules):
+            if name == "tools" or name.startswith("tools."):
+                del sys.modules[name]
+
+        importlib.invalidate_caches()
+        for name, module in sorted(
+            self._runtime_tool_modules.items(),
+            key=lambda item: item[0].count("."),
+        ):
+            sys.modules[name] = module
+
+        try:
+            self._ensure_tool_package()
+        except Exception:
+            sys.path.remove(project_path)
+            _ACTIVE_TOOL_PROJECT_PATH = None
+            raise
+
+        _ACTIVE_TOOL_PROJECT_PATH = project_path
+
+    def _ensure_tool_package(self) -> None:
+        tools_path = str(self.tools_dir.resolve())
+        package = sys.modules.get("tools")
+        if package is None:
+            init_file = self.tools_dir / "__init__.py"
+            if init_file.is_file():
+                spec = importlib.util.spec_from_file_location(
+                    "tools",
+                    init_file,
+                    submodule_search_locations=[tools_path],
+                )
+            else:
+                spec = importlib.util.spec_from_loader("tools", loader=None, is_package=True)
+
+            package = importlib.util.module_from_spec(spec)
+            package.__path__ = [tools_path]
+            spec.submodule_search_locations = package.__path__
+            sys.modules["tools"] = package
+            if spec.loader is not None:
+                try:
+                    spec.loader.exec_module(package)
+                except Exception:
+                    if sys.modules.get("tools") is package:
+                        del sys.modules["tools"]
+                    raise
+        else:
+            package.__path__ = [tools_path]
+            package.__spec__.submodule_search_locations = package.__path__
+
+        self._runtime_tool_modules["tools"] = package
+        self._remember_runtime_tool_modules()
+
+    def _remember_runtime_tool_modules(self) -> None:
+        tools_root = self.tools_dir.resolve()
+        for name, module in list(sys.modules.items()):
+            if name != "tools" and not name.startswith("tools."):
+                continue
+            module_paths = []
+            if getattr(module, "__file__", None):
+                module_paths.append(module.__file__)
+            module_paths.extend(getattr(module, "__path__", []))
+            if any(Path(path).resolve().is_relative_to(tools_root) for path in module_paths):
+                self._runtime_tool_modules[name] = module
 
     def _load_tool_module_from_ast(self, module_name: str, file_path: Path):
         """
@@ -1082,7 +1214,6 @@ class ProjectLoader:
             stub = self._create_ast_stub(node, import_name)
             setattr(module, node.name, stub)
 
-        sys.modules[import_name] = module
         self._loaded_modules[module_name] = module
         return module
 

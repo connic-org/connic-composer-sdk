@@ -1,6 +1,7 @@
 import ast
 import asyncio
 import inspect
+import sys
 from textwrap import dedent
 from typing import Any, Dict, List, Optional, Union
 
@@ -237,6 +238,212 @@ def test_loads_realistic_support_agent_config(tmp_path):
 
     assert [tool.name for tool in agent.discoverable_tools] == ["search_policy"]
     assert agent.discoverable_tools[0].parameters["required"] == ["query"]
+
+
+def test_project_loaders_isolate_runtime_and_validation_tool_modules(tmp_path):
+    def write_project(project_root, project_name):
+        write_file(
+            project_root / "tools" / "shared.py",
+            f'''
+            PROJECT_NAME = "{project_name}"
+
+
+            def project_marker() -> str:
+                return PROJECT_NAME
+            ''',
+        )
+        write_file(
+            project_root / "tools" / "identity.py",
+            '''
+            from tools.shared import PROJECT_NAME
+
+
+            def current_project() -> str:
+                return PROJECT_NAME
+            ''',
+        )
+        write_file(
+            project_root / "tools" / "reporter.py",
+            '''
+            from tools.shared import PROJECT_NAME
+
+
+            def report_project() -> str:
+                return PROJECT_NAME
+            ''',
+        )
+        write_file(
+            project_root / "agents" / "assistant.yaml",
+            '''
+            version: "1.0"
+            name: assistant
+            type: llm
+            model: openai/gpt-5.2
+            description: "Reports which project supplied its tools."
+            system_prompt: "Report the active project."
+            tools:
+              - identity.current_project
+              - shared.project_marker
+            ''',
+        )
+        write_file(
+            project_root / "agents" / "reporter.yaml",
+            '''
+            version: "1.0"
+            name: reporter
+            type: llm
+            model: openai/gpt-5.2
+            description: "Reports the project after another loader becomes active."
+            system_prompt: "Report the active project."
+            tools:
+              - reporter.report_project
+            ''',
+        )
+
+    first_project = tmp_path / "first-project"
+    second_project = tmp_path / "second-project"
+    third_project = tmp_path / "third-project"
+    write_project(first_project, "first")
+    write_project(second_project, "second")
+    write_project(third_project, "third")
+
+    first_loader = ProjectLoader(str(first_project))
+    first_agent = first_loader.load_agent("assistant")
+    second_agent = ProjectLoader(str(second_project)).load_agent("assistant")
+    ProjectLoader(str(first_project), validation_only=True).load_agent("assistant")
+    third_agent = ProjectLoader(str(third_project)).load_agent("assistant")
+    first_reporter = first_loader.load_agent("reporter")
+
+    assert {tool.func() for tool in first_agent.tools} == {"first"}
+    assert {tool.func() for tool in second_agent.tools} == {"second"}
+    assert {tool.func() for tool in third_agent.tools} == {"third"}
+    assert first_reporter.tools[0].func() == "first"
+    assert sys.path[0] == str(first_project.resolve())
+    assert str(second_project.resolve()) not in sys.path
+    assert str(third_project.resolve()) not in sys.path
+
+
+def test_tool_imports_do_not_fall_back_to_another_project(tmp_path, monkeypatch):
+    other_project = tmp_path / "other-project"
+    active_project = tmp_path / "active-project"
+    write_file(
+        other_project / "tools" / "shared.py",
+        '''PROJECT_NAME = "other"''',
+    )
+    write_file(
+        active_project / "tools" / "identity.py",
+        '''
+        from tools.shared import PROJECT_NAME
+
+
+        def current_project() -> str:
+            return PROJECT_NAME
+        ''',
+    )
+    write_file(
+        active_project / "agents" / "assistant.yaml",
+        '''
+        version: "1.0"
+        name: assistant
+        type: llm
+        model: openai/gpt-5.2
+        description: "Uses only dependencies from its own project."
+        system_prompt: "Report the active project."
+        tools:
+          - identity.current_project
+        ''',
+    )
+    monkeypatch.syspath_prepend(str(other_project))
+
+    loader = ProjectLoader(str(active_project))
+    agent = loader.load_agent("assistant")
+
+    assert agent.tools == []
+    assert "No module named 'tools.shared'" in loader._load_errors[0]
+
+
+def test_tool_module_can_import_from_project_package_init(tmp_path):
+    write_file(
+        tmp_path / "tools" / "__init__.py",
+        '''PROJECT_NAME = "package-init"''',
+    )
+    write_file(
+        tmp_path / "tools" / "identity.py",
+        '''
+        from tools import PROJECT_NAME
+
+
+        def current_project() -> str:
+            return PROJECT_NAME
+        ''',
+    )
+    write_file(
+        tmp_path / "agents" / "assistant.yaml",
+        '''
+        version: "1.0"
+        name: assistant
+        type: llm
+        model: openai/gpt-5.2
+        description: "Uses configuration from its tools package."
+        system_prompt: "Report the active project."
+        tools:
+          - identity.current_project
+        ''',
+    )
+
+    agent = ProjectLoader(str(tmp_path)).load_agent("assistant")
+
+    assert agent.tools[0].func() == "package-init"
+
+
+def test_broken_tool_package_does_not_poison_next_project(tmp_path):
+    broken_project = tmp_path / "broken-project"
+    healthy_project = tmp_path / "healthy-project"
+    write_file(
+        broken_project / "tools" / "__init__.py",
+        '''raise RuntimeError("broken tools package")''',
+    )
+    write_file(
+        broken_project / "tools" / "identity.py",
+        '''
+        def current_project() -> str:
+            return "broken"
+        ''',
+    )
+    write_file(
+        healthy_project / "tools" / "identity.py",
+        '''
+        def current_project() -> str:
+            return "healthy"
+        ''',
+    )
+    for project_root in (broken_project, healthy_project):
+        write_file(
+            project_root / "agents" / "assistant.yaml",
+            '''
+            version: "1.0"
+            name: assistant
+            type: llm
+            model: openai/gpt-5.2
+            description: "Reports which project supplied its tools."
+            system_prompt: "Report the active project."
+            tools:
+              - identity.current_project
+            ''',
+        )
+
+    healthy_loader = ProjectLoader(str(healthy_project))
+    healthy_agent = healthy_loader.load_agent("assistant")
+    broken_loader = ProjectLoader(str(broken_project))
+    broken_agent = broken_loader.load_agent("assistant")
+    reloaded_healthy_agent = healthy_loader.load_agent("assistant")
+
+    assert broken_agent.tools == []
+    assert "broken tools package" in broken_loader._load_errors[0]
+    assert healthy_agent.tools[0].func() == "healthy"
+    assert reloaded_healthy_agent.tools[0].func() == "healthy"
+    assert str(broken_project.resolve()) not in sys.path
+    assert sys.path[0] == str(healthy_project.resolve())
 
 
 def test_loads_mcp_server_with_bridge(tmp_path):
@@ -1264,14 +1471,22 @@ def test_tool_agent_rejects_non_custom_tool_name(tmp_path, tool_name, expected):
     assert any(expected in error for error in loader._load_errors)
 
 
+@pytest.mark.parametrize("validation_only", [False, True])
 @pytest.mark.parametrize(
     ("signature", "expected"),
     [
         ("to: str, subject: str", "must declare a 'payload' parameter"),
-        ("payload: dict, to: str", "give these parameters defaults or remove them: to"),
+        ("payload: dict, to: str", "remove these parameters: to"),
+        ("payload: dict, *args", "unsupported parameters: args (*args)"),
+        ("payload: dict, **kwargs", "unsupported parameters: kwargs (**kwargs)"),
     ],
 )
-def test_tool_agent_rejects_function_without_payload_signature(tmp_path, signature, expected):
+def test_tool_agent_rejects_invalid_function_signature(
+    tmp_path,
+    signature,
+    expected,
+    validation_only,
+):
     write_file(
         tmp_path / "tools" / "notifier.py",
         f"""
@@ -1290,12 +1505,13 @@ def test_tool_agent_rejects_function_without_payload_signature(tmp_path, signatu
         """,
     )
 
-    loader = ProjectLoader(str(tmp_path))
+    loader = ProjectLoader(str(tmp_path), validation_only=validation_only)
     loader.load_agents()
     assert any(expected in error for error in loader._load_errors)
 
 
-def test_tool_agent_allows_payload_with_defaulted_extras(tmp_path):
+@pytest.mark.parametrize("validation_only", [False, True])
+def test_tool_agent_rejects_payload_with_defaulted_extras(tmp_path, validation_only):
     write_file(
         tmp_path / "tools" / "notifier.py",
         """
@@ -1314,9 +1530,9 @@ def test_tool_agent_allows_payload_with_defaulted_extras(tmp_path):
         """,
     )
 
-    loader = ProjectLoader(str(tmp_path))
+    loader = ProjectLoader(str(tmp_path), validation_only=validation_only)
     loader.load_agents()
-    assert loader._load_errors == []
+    assert any("remove these parameters: retries" in error for error in loader._load_errors)
 
 
 # ---------------------------------------------------------------------------
@@ -1341,6 +1557,104 @@ def test_sequential_agent_loads_without_tools(tmp_path):
     assert agent.config.type.value == "sequential"
     assert agent.tools == []
     assert agent.config.agents == ["classify", "respond"]
+
+
+@pytest.mark.parametrize("validation_only", [False, True])
+def test_sequential_agent_rejects_self_reference(tmp_path, validation_only):
+    write_file(
+        tmp_path / "agents" / "order-pipeline.yaml",
+        """
+        version: "1.0"
+        name: order-pipeline
+        type: sequential
+        description: "Process an order"
+        agents:
+          - order-pipeline
+        """,
+    )
+
+    loader = ProjectLoader(str(tmp_path), validation_only=validation_only)
+    loader.load_agents()
+
+    assert loader._load_errors == [
+        "Sequential agent dependency cycle detected: order-pipeline -> order-pipeline"
+    ]
+
+
+@pytest.mark.parametrize("validation_only", [False, True])
+def test_sequential_agents_reject_indirect_dependency_cycle(tmp_path, validation_only):
+    for name, dependency in (
+        ("collect-order", "price-order"),
+        ("price-order", "confirm-order"),
+        ("confirm-order", "collect-order"),
+    ):
+        write_file(
+            tmp_path / "agents" / f"{name}.yaml",
+            f"""
+            version: "1.0"
+            name: {name}
+            type: sequential
+            description: "Run the {name} stage"
+            agents:
+              - {dependency}
+            """,
+        )
+
+    loader = ProjectLoader(str(tmp_path), validation_only=validation_only)
+    loader.load_agents()
+
+    assert loader._load_errors == [
+        "Sequential agent dependency cycle detected: collect-order -> price-order -> confirm-order -> collect-order"
+    ]
+
+
+@pytest.mark.parametrize("validation_only", [False, True])
+def test_sequential_agents_allow_shared_dependency_dag(tmp_path, validation_only):
+    for name in ("billing-workflow", "support-workflow"):
+        write_file(
+            tmp_path / "agents" / f"{name}.yaml",
+            f"""
+            version: "1.0"
+            name: {name}
+            type: sequential
+            description: "Run the {name}"
+            agents:
+              - shared-enrichment
+            """,
+        )
+    write_file(
+        tmp_path / "agents" / "shared-enrichment.yaml",
+        """
+        version: "1.0"
+        name: shared-enrichment
+        type: sequential
+        description: "Enrich data for multiple workflows"
+        agents:
+          - format-response
+        """,
+    )
+    write_file(
+        tmp_path / "agents" / "format-response.yaml",
+        """
+        version: "1.0"
+        name: format-response
+        type: llm
+        model: openai/gpt-5.2
+        description: "Format the final response"
+        system_prompt: "Format the enriched data."
+        """,
+    )
+
+    loader = ProjectLoader(str(tmp_path), validation_only=validation_only)
+    agents = loader.load_agents()
+
+    assert {agent.config.name for agent in agents} == {
+        "billing-workflow",
+        "support-workflow",
+        "shared-enrichment",
+        "format-response",
+    }
+    assert loader._load_errors == []
 
 
 # ---------------------------------------------------------------------------

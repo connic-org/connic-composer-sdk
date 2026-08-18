@@ -26,6 +26,18 @@ def test_tool_file_infers_inline_data_size():
     assert file.uri is None
 
 
+def test_tool_file_accepts_matching_inline_data_size():
+    file = ToolFile(
+        mime_type="application/pdf",
+        name="invoice.pdf",
+        size_bytes=8,
+        data=b"pdf-data",
+    )
+
+    assert file.data == b"pdf-data"
+    assert file.size_bytes == 8
+
+
 def test_tool_file_supports_uri_source():
     file = ToolFile(
         mime_type="application/pdf",

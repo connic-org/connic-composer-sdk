@@ -1,3 +1,4 @@
+from pathlib import Path
 from textwrap import dedent
 
 import click
@@ -23,6 +24,48 @@ def make_migrate_cli(run_lint=lambda **kwargs: True):
     group = click.Group()
     migrate.register_migrate_command(group, no_scaffold, run_lint)
     return group
+
+
+@pytest.mark.parametrize(
+    ("fixture_name", "expected_agent_names"),
+    [
+        pytest.param("official-overview-agent", {"agent"}, id="overview"),
+        pytest.param("official-rag-agent", {"agent"}, id="rag"),
+        pytest.param(
+            "official-supervisor-agent",
+            {"calendar-agent", "email-agent", "supervisor-agent"},
+            id="supervisor",
+        ),
+    ],
+)
+def test_official_langchain_fixture_migrates_loads_and_lints(
+    tmp_path,
+    monkeypatch,
+    fixture_name,
+    expected_agent_names,
+):
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    source = Path(__file__).parents[1] / "langchain" / "sources" / fixture_name
+    destination = tmp_path / fixture_name
+
+    framework, detection_notes, agents, module_infos = migrate._build_migration_candidates(source)
+    migrate._generate_migrated_project(
+        source,
+        destination,
+        framework,
+        detection_notes,
+        agents,
+        module_infos,
+        no_scaffold,
+    )
+
+    loader = ProjectLoader(str(destination))
+    migrated_agents = loader.load_agents()
+
+    assert framework == "langchain"
+    assert loader._load_errors == []
+    assert {agent.config.name for agent in migrated_agents} == expected_agent_names
+    assert _run_lint(quiet=True, project_root=str(destination)) is True
 
 
 def test_langchain_migration_generates_agent_yaml_and_extracted_tools(tmp_path):
@@ -513,6 +556,66 @@ def test_adk_migration_matches_docs_for_llm_agent_with_wrapped_tools_and_google_
     assert "def summarize" in migrated_tools
 
 
+def test_adk_migration_resolves_reusable_static_tool_list(tmp_path):
+    source = tmp_path / "adk-shared-tools"
+    destination = tmp_path / "connic-app"
+    write(
+        source / "tools.py",
+        '''
+        def search_docs(query: str) -> dict:
+            return {"query": query, "matches": ["refund policy"]}
+        ''',
+    )
+    write(
+        source / "root_agent.py",
+        '''
+        from google.adk.agents import LlmAgent
+        from google.adk.tools import FunctionTool, google_search
+        from tools import search_docs
+
+
+        SUPPORT_TOOLS = [
+            FunctionTool(func=search_docs),
+            google_search,
+        ]
+
+
+        support_agent = LlmAgent(
+            name="support-agent",
+            model="gemini-2.5-flash",
+            instruction="Answer support questions using current product documentation.",
+            tools=SUPPORT_TOOLS,
+        )
+        ''',
+    )
+
+    framework, detection_notes, agents, module_infos = migrate._build_migration_candidates(source)
+    report_notes = migrate._generate_migrated_project(
+        source,
+        destination,
+        framework,
+        detection_notes,
+        agents,
+        module_infos,
+        no_scaffold,
+    )
+
+    agent_yaml = yaml.safe_load((destination / "agents" / "support-agent.yaml").read_text())
+    loader = ProjectLoader(str(destination))
+    migrated_agents = loader.load_agents()
+    migrated_tools = {tool.name: tool for tool in migrated_agents[0].tools}
+
+    assert framework == "adk"
+    assert agent_yaml["tools"] == ["tools.search_docs", "web_search"]
+    assert not any("dynamic tool expression" in note for note in report_notes)
+    assert _run_lint(quiet=True, project_root=str(destination)) is True
+    assert loader._load_errors == []
+    assert migrated_tools["search_docs"].func("returns") == {
+        "query": "returns",
+        "matches": ["refund policy"],
+    }
+
+
 def test_adk_agent_with_sub_agents_list_variable_becomes_sequential_workflow(tmp_path):
     source = tmp_path / "adk-variable-workflow"
     destination = tmp_path / "connic-app"
@@ -731,6 +834,75 @@ def test_adk_llm_agent_with_sub_agents_gets_trigger_agent(tmp_path):
     ) in report
 
 
+def test_adk_python_import_refs_distinguish_same_named_agents(tmp_path):
+    source = tmp_path / "adk-module-router"
+    destination = tmp_path / "connic-app"
+    write(
+        source / "billing" / "agents.py",
+        '''
+        from google.adk.agents import Agent
+
+
+        support_agent = Agent(
+            name="Support Agent",
+            model="gemini-2.5-flash",
+            instruction="Resolve billing questions.",
+        )
+        ''',
+    )
+    write(
+        source / "technical" / "agents.py",
+        '''
+        from google.adk.agents import Agent
+
+
+        support_agent = Agent(
+            name="Support Agent",
+            model="gemini-2.5-flash",
+            instruction="Resolve technical questions.",
+        )
+        ''',
+    )
+    write(
+        source / "root_agent.py",
+        '''
+        import billing.agents as billing_agents
+        from google.adk.agents import Agent
+        from technical.agents import support_agent as technical_support
+
+
+        root_agent = Agent(
+            name="Support Router",
+            model="gemini-2.5-flash",
+            instruction="Delegate each request to the right support specialist.",
+            sub_agents=[billing_agents.support_agent, technical_support],
+        )
+        ''',
+    )
+
+    framework, detection_notes, agents, module_infos = migrate._build_migration_candidates(source)
+    migrate._generate_migrated_project(
+        source,
+        destination,
+        framework,
+        detection_notes,
+        agents,
+        module_infos,
+        no_scaffold,
+    )
+
+    router = yaml.safe_load((destination / "agents" / "support-router.yaml").read_text())
+    billing = yaml.safe_load((destination / "agents" / "support-agent.yaml").read_text())
+    technical = yaml.safe_load((destination / "agents" / "support-agent-2.yaml").read_text())
+    report = (destination / "MIGRATION_REPORT.md").read_text()
+
+    assert framework == "adk"
+    assert router["tools"] == ["trigger_agent"]
+    assert billing["system_prompt"] == "Resolve billing questions."
+    assert technical["system_prompt"] == "Resolve technical questions."
+    assert "Agent refs: support-agent, support-agent-2" in report
+
+
 def test_adk_parallel_agent_is_migrated_as_reviewable_sequential_workflow(tmp_path):
     source = tmp_path / "adk-parallel"
     destination = tmp_path / "connic-app"
@@ -784,6 +956,52 @@ def test_adk_parallel_agent_is_migrated_as_reviewable_sequential_workflow(tmp_pa
     assert "Original ADK agent used ParallelAgent; migrated as a sequential Connic agent for review." in report
 
 
+def test_adk_migration_combines_python_and_yaml_agents(tmp_path):
+    source = tmp_path / "mixed-adk-project"
+    destination = tmp_path / "connic-app"
+    write(
+        source / "root_agent.py",
+        '''
+        from google.adk.agents import Agent
+
+
+        root_agent = Agent(
+            name="Python Agent",
+            model="gemini-2.5-flash",
+            instruction="Route requests to the right specialist.",
+        )
+        ''',
+    )
+    write(
+        source / "support_agent.yaml",
+        '''
+        name: YAML Support
+        model: claude-3-5-sonnet
+        instruction: Resolve escalated support requests.
+        ''',
+    )
+
+    framework, detection_notes, agents, module_infos = migrate._build_migration_candidates(source)
+    migrate._generate_migrated_project(
+        source,
+        destination,
+        framework,
+        detection_notes,
+        agents,
+        module_infos,
+        no_scaffold,
+    )
+
+    python_agent = yaml.safe_load((destination / "agents" / "python-agent.yaml").read_text())
+    yaml_agent = yaml.safe_load((destination / "agents" / "yaml-support.yaml").read_text())
+
+    assert framework == "adk"
+    assert [agent.name for agent in agents] == ["python-agent", "yaml-support"]
+    assert python_agent["system_prompt"] == "Route requests to the right specialist."
+    assert yaml_agent["model"] == "anthropic/claude-3-5-sonnet"
+    assert yaml_agent["system_prompt"] == "Resolve escalated support requests."
+
+
 def test_adk_yaml_migration_reports_unresolved_tool_references(tmp_path):
     source = tmp_path / "adk-yaml"
     write(
@@ -807,17 +1025,33 @@ def test_adk_yaml_migration_reports_unresolved_tool_references(tmp_path):
     assert agents[0].notes == ["Could not migrate YAML tool reference 'private_tool_name'."]
 
 
-def test_adk_yaml_workflow_migration_links_child_agents(tmp_path):
+def test_adk_yaml_llm_migration_links_canonical_child_configs(tmp_path):
     source = tmp_path / "adk-yaml-workflow"
     destination = tmp_path / "connic-app"
     write(
+        source / "root_agent.py",
+        '''
+        from google.adk.agents import Agent
+
+
+        triage_agent = Agent(
+            name="Triage Agent",
+            model="gemini-2.5-flash",
+            instruction="Handle Python-defined triage requests.",
+        )
+        ''',
+    )
+    write(
         source / "root_agent.yaml",
         '''
+        agent_class: LlmAgent
         name: Support Flow
+        model: gemini-2.5-flash
         description: Route support tickets before escalation.
+        instruction: Delegate each request to the right support specialist.
         sub_agents:
-          - triage_agent
-          - escalation_agent
+          - config_path: triage_agent.yaml
+          - config_path: escalation_agent.yaml
         ''',
     )
     write(
@@ -827,7 +1061,8 @@ def test_adk_yaml_workflow_migration_links_child_agents(tmp_path):
         model: gemini-2.5-flash
         instruction: Classify the ticket and decide whether escalation is needed.
         tools:
-          - query_knowledge
+          - name: google_search
+          - name: query_knowledge
         ''',
     )
     write(
@@ -872,7 +1107,8 @@ def test_adk_yaml_workflow_migration_links_child_agents(tmp_path):
     )
 
     workflow_yaml = yaml.safe_load((destination / "agents" / "support-flow.yaml").read_text())
-    triage_yaml = yaml.safe_load((destination / "agents" / "triage-agent.yaml").read_text())
+    python_triage_yaml = yaml.safe_load((destination / "agents" / "triage-agent.yaml").read_text())
+    triage_yaml = yaml.safe_load((destination / "agents" / "triage-agent-2.yaml").read_text())
     escalation_yaml = yaml.safe_load((destination / "agents" / "escalation-agent.yaml").read_text())
     report = (destination / "MIGRATION_REPORT.md").read_text()
 
@@ -880,17 +1116,146 @@ def test_adk_yaml_workflow_migration_links_child_agents(tmp_path):
     assert workflow_yaml == {
         "version": "1.0",
         "name": "support-flow",
-        "type": "sequential",
+        "type": "llm",
         "description": "Route support tickets before escalation.",
-        "agents": ["triage-agent", "escalation-agent"],
+        "model": "gemini/gemini-2.5-flash",
+        "system_prompt": "Delegate each request to the right support specialist.",
+        "tools": ["trigger_agent"],
     }
+    assert python_triage_yaml["system_prompt"] == "Handle Python-defined triage requests."
     assert triage_yaml["model"] == "gemini/gemini-2.5-flash"
     assert triage_yaml["system_prompt"] == "Classify the ticket and decide whether escalation is needed."
-    assert triage_yaml["tools"] == ["retrieval_query"]
+    assert triage_yaml["tools"] == ["web_search", "retrieval_query"]
     assert escalation_yaml["model"] == "anthropic/claude-3-5-sonnet"
     assert escalation_yaml["system_prompt"] == "Resolve high-priority customer escalations."
-    assert "- `support-flow` (sequential)" in report
-    assert "Agent refs: triage-agent, escalation-agent" in report
+    assert "- `support-flow` (llm)" in report
+    assert "Agent refs: triage-agent-2, escalation-agent" in report
+
+
+def test_adk_yaml_config_paths_distinguish_nested_same_stem_agents(tmp_path):
+    source = tmp_path / "nested-adk-workflow"
+    destination = tmp_path / "connic-app"
+    write(
+        source / "root_agent.yaml",
+        '''
+        agent_class: SequentialAgent
+        name: Support Workflow
+        sub_agents:
+          - config_path: billing/support.yaml
+          - config_path: technical/support.yaml
+        ''',
+    )
+    write(
+        source / "billing" / "support.yaml",
+        '''
+        name: Billing Support
+        model: gemini-2.5-flash
+        instruction: Resolve billing questions.
+        ''',
+    )
+    write(
+        source / "technical" / "support.yaml",
+        '''
+        name: Technical Support
+        model: gemini-2.5-flash
+        instruction: Resolve technical questions.
+        ''',
+    )
+
+    framework, detection_notes, agents, module_infos = migrate._build_migration_candidates(source)
+    migrate._generate_migrated_project(
+        source,
+        destination,
+        framework,
+        detection_notes,
+        agents,
+        module_infos,
+        no_scaffold,
+    )
+
+    workflow = yaml.safe_load((destination / "agents" / "support-workflow.yaml").read_text())
+
+    assert framework == "adk"
+    assert workflow == {
+        "version": "1.0",
+        "name": "support-workflow",
+        "type": "sequential",
+        "description": "Migrated from ADK YAML agent 'Support Workflow'.",
+        "agents": ["billing-support", "technical-support"],
+    }
+
+
+def test_adk_yaml_code_refs_distinguish_same_named_python_agents(tmp_path):
+    source = tmp_path / "mixed-adk-workflow"
+    destination = tmp_path / "connic-app"
+    write(
+        source / "billing" / "agents.py",
+        '''
+        from google.adk.agents import Agent
+
+
+        support_agent = Agent(
+            name="Support Agent",
+            model="gemini-2.5-flash",
+            instruction="Resolve billing questions.",
+        )
+        ''',
+    )
+    write(
+        source / "technical" / "agents.py",
+        '''
+        from google.adk.agents import Agent
+
+
+        support_agent = Agent(
+            name="Support Agent",
+            model="gemini-2.5-flash",
+            instruction="Resolve technical questions.",
+        )
+        ''',
+    )
+    write(
+        source / "root_agent.yaml",
+        '''
+        agent_class: LlmAgent
+        name: Support Router
+        model: gemini-2.5-flash
+        instruction: Delegate each request to the right support specialist.
+        sub_agents:
+          - code: billing.agents.support_agent
+          - code: technical.agents.support_agent
+        ''',
+    )
+
+    framework, detection_notes, agents, module_infos = migrate._build_migration_candidates(source)
+    migrate._generate_migrated_project(
+        source,
+        destination,
+        framework,
+        detection_notes,
+        agents,
+        module_infos,
+        no_scaffold,
+    )
+
+    router = yaml.safe_load((destination / "agents" / "support-router.yaml").read_text())
+    billing = yaml.safe_load((destination / "agents" / "support-agent.yaml").read_text())
+    technical = yaml.safe_load((destination / "agents" / "support-agent-2.yaml").read_text())
+    report = (destination / "MIGRATION_REPORT.md").read_text()
+
+    assert framework == "adk"
+    assert router == {
+        "version": "1.0",
+        "name": "support-router",
+        "type": "llm",
+        "description": "Migrated from ADK YAML agent 'Support Router'.",
+        "model": "gemini/gemini-2.5-flash",
+        "system_prompt": "Delegate each request to the right support specialist.",
+        "tools": ["trigger_agent"],
+    }
+    assert billing["system_prompt"] == "Resolve billing questions."
+    assert technical["system_prompt"] == "Resolve technical questions."
+    assert "Agent refs: support-agent, support-agent-2" in report
 
 
 def test_adk_yaml_workflow_with_missing_agent_refs_becomes_review_placeholder(tmp_path):
@@ -1608,6 +1973,146 @@ def test_langchain_migration_preserves_decorated_tool_dependencies(tmp_path):
     }
 
 
+def test_langchain_migration_preserves_imports_for_annotated_tool_dependencies(tmp_path):
+    source = tmp_path / "langchain-pricing"
+    destination = tmp_path / "connic-app"
+    write(
+        source / "pricing_tools.py",
+        '''
+        from dataclasses import dataclass
+        from typing import Final
+
+        from langchain.tools import tool
+
+
+        DEFAULT_CURRENCY: Final[str] = "EUR"
+        DEFAULT_TAX_RATE: Final[float] = 0.19
+
+
+        @dataclass(frozen=True)
+        class PricingSettings:
+            currency: str
+            tax_rate: float
+
+
+        SETTINGS: PricingSettings = PricingSettings(
+            currency=DEFAULT_CURRENCY,
+            tax_rate=DEFAULT_TAX_RATE,
+        )
+
+
+        @tool
+        def quote_order(amount: float) -> dict:
+            """Quote an order total using the configured currency and tax rate."""
+            return {
+                "amount": amount,
+                "currency": SETTINGS.currency,
+                "tax": amount * SETTINGS.tax_rate,
+            }
+        ''',
+    )
+    write(
+        source / "agent.py",
+        '''
+        from langchain.agents import create_agent
+        from pricing_tools import quote_order
+
+
+        pricing_agent = create_agent(
+            model="openai:gpt-5.2",
+            tools=[quote_order],
+            system_prompt="Quote customer orders with the configured pricing policy.",
+            name="Pricing Agent",
+        )
+        ''',
+    )
+
+    framework, detection_notes, agents, module_infos = migrate._build_migration_candidates(source)
+    migrate._generate_migrated_project(
+        source,
+        destination,
+        framework,
+        detection_notes,
+        agents,
+        module_infos,
+        no_scaffold,
+    )
+
+    tool_module = (destination / "tools" / "pricing_tools.py").read_text()
+    loader = ProjectLoader(str(destination))
+    migrated_agents = loader.load_agents()
+
+    assert "from typing import Final" in tool_module
+    assert 'DEFAULT_CURRENCY: Final[str] = "EUR"' in tool_module
+    assert "SETTINGS: PricingSettings = PricingSettings(" in tool_module
+    assert loader._load_errors == []
+    assert migrated_agents[0].tools[0].func(100.0) == {
+        "amount": 100.0,
+        "currency": "EUR",
+        "tax": 19.0,
+    }
+
+
+def test_langchain_migration_preserves_future_annotations_for_forward_references(tmp_path):
+    source = tmp_path / "langchain-orders"
+    destination = tmp_path / "connic-app"
+    write(
+        source / "order_tools.py",
+        '''
+        from __future__ import annotations
+
+        from langchain.tools import tool
+
+
+        @tool
+        def describe_order(order: Order) -> dict:
+            """Return the customer-facing identifier for an order."""
+            return {"order_id": order.order_id}
+
+
+        class Order:
+            def __init__(self, order_id: str):
+                self.order_id = order_id
+        ''',
+    )
+    write(
+        source / "agent.py",
+        '''
+        from langchain.agents import create_agent
+        from order_tools import describe_order
+
+
+        order_agent = create_agent(
+            model="openai:gpt-5.2",
+            tools=[describe_order],
+            system_prompt="Answer order questions using the order tools.",
+            name="Order Agent",
+        )
+        ''',
+    )
+
+    framework, detection_notes, agents, module_infos = migrate._build_migration_candidates(source)
+    migrate._generate_migrated_project(
+        source,
+        destination,
+        framework,
+        detection_notes,
+        agents,
+        module_infos,
+        no_scaffold,
+    )
+
+    tool_module = (destination / "tools" / "order_tools.py").read_text()
+    loader = ProjectLoader(str(destination))
+    migrated_agents = loader.load_agents()
+
+    assert tool_module.startswith("from __future__ import annotations\n")
+    assert loader._load_errors == []
+    tool = migrated_agents[0].tools[0]
+    order_type = tool.func.__globals__["Order"]
+    assert tool.func(order_type("order-42")) == {"order_id": "order-42"}
+
+
 def test_langchain_supervisor_agent_wrappers_migrate_to_connic_delegation(tmp_path, monkeypatch):
     source = tmp_path / "official-supervisor-agent"
     destination = tmp_path / "connic-app"
@@ -1615,6 +2120,8 @@ def test_langchain_supervisor_agent_wrappers_migrate_to_connic_delegation(tmp_pa
     write(
         source / "assistant.py",
         '''
+        from __future__ import annotations
+
         from langchain.agents import create_agent
         from langchain.tools import tool
 
@@ -1714,6 +2221,9 @@ def test_langchain_supervisor_agent_wrappers_migrate_to_connic_delegation(tmp_pa
     ]
     assert "async def schedule_event" in tool_module
     assert "async def manage_email" in tool_module
+    assert tool_module.index("from __future__ import annotations") < tool_module.index(
+        "from connic.tools import trigger_agent"
+    )
     assert "langchain" not in tool_module
     assert "create_agent" not in tool_module
     assert "calendar_agent =" not in tool_module

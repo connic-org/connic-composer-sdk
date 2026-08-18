@@ -1634,8 +1634,21 @@ def _compute_local_coverage(project_root: Path) -> dict:
     valid_rows = [r for r in rows if r.get("parse_error") is None]
     overall = sum(r["percent"] for r in valid_rows) / len(valid_rows) if valid_rows else 0.0
     report = {"agents": rows, "overall": overall}
-    if load_error:
-        report["error"] = load_error
+
+    reported_names = {row["name"] for row in rows}
+    unmatched_errors = [
+        error
+        for agent_name, suites in test_suites.items()
+        if agent_name not in reported_names
+        for _, error in suites
+        if error is not None
+    ]
+    report_errors = [load_error] if load_error else []
+    if unmatched_errors:
+        all_parse_errors = [error for suites in test_suites.values() for _, error in suites if error is not None]
+        report_errors.append(f"Test files failed to parse: {'; '.join(all_parse_errors)}")
+    if report_errors:
+        report["error"] = "; ".join(report_errors)
     return report
 
 
@@ -1822,6 +1835,11 @@ def dev(name: str, api_url: str, api_key: str, project_id: str):
     try:
         loader = ProjectLoader(".", validation_only=True)
         agents = loader.load_agents()
+        if loader._load_errors:
+            _step(f"Validation failed with {len(loader._load_errors)} error(s):")
+            for error in loader._load_errors:
+                _err(error)
+            sys.exit(1)
         if not agents:
             _fail_and_exit("No agents found. Run `connic init` first.")
         agent_summaries = [

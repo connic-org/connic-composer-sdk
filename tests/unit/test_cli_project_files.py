@@ -33,6 +33,26 @@ def _write_minimal_support_agent(project: Path) -> None:
     )
 
 
+def _write_cyclic_sequential_project(project: Path) -> None:
+    (project / "agents").mkdir(exist_ok=True)
+    (project / "agents" / "intake.yaml").write_text(
+        'version: "1.0"\n'
+        "name: intake-workflow\n"
+        "description: Collect support context\n"
+        "type: sequential\n"
+        "agents:\n"
+        "  - resolution-workflow\n"
+    )
+    (project / "agents" / "resolution.yaml").write_text(
+        'version: "1.0"\n'
+        "name: resolution-workflow\n"
+        "description: Resolve the support request\n"
+        "type: sequential\n"
+        "agents:\n"
+        "  - intake-workflow\n"
+    )
+
+
 def test_validate_project_files_accepts_real_project_tree_and_skips_generated_files(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     (tmp_path / "agents" / "support").mkdir(parents=True)
@@ -1367,6 +1387,21 @@ def test_lint_command_reports_unknown_sequential_agent_reference(tmp_path, monke
     assert "Validation failed with 1 error(s)" in result.output
 
 
+def test_lint_command_reports_sequential_dependency_cycle(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(cli, "print_update_hint", lambda: None)
+    _write_cyclic_sequential_project(tmp_path)
+
+    result = CliRunner().invoke(cli.main, ["lint"])
+
+    assert result.exit_code == 1
+    assert (
+        "Sequential agent dependency cycle detected: intake-workflow -> "
+        "resolution-workflow -> intake-workflow"
+    ) in result.output
+    assert "Validation failed with 1 error(s)" in result.output
+
+
 def test_run_lint_quiet_reports_compact_success_and_errors(tmp_path, capsys):
     valid_project = tmp_path / "valid"
     valid_project.mkdir()
@@ -1419,6 +1454,31 @@ def test_dev_command_requires_credentials_before_loading_project(tmp_path, monke
 
     assert result.exit_code == 1
     assert "API key required. Set CONNIC_API_KEY or use --api-key" in result.output
+
+
+def test_dev_command_rejects_loader_errors_before_creating_cloud_session(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(cli, "print_update_hint", lambda: None)
+    (tmp_path / ".connic").write_text(
+        json.dumps({"api_key": "cnc_live_secret", "project_id": "proj_123"})
+    )
+    _write_cyclic_sequential_project(tmp_path)
+
+    def fail_if_called(*args, **kwargs):
+        raise AssertionError("dev should not create an HTTP client when project validation fails")
+
+    monkeypatch.setattr(cli.httpx, "Client", fail_if_called)
+
+    result = CliRunner().invoke(cli.main, ["dev"])
+
+    cycle_error = (
+        "Sequential agent dependency cycle detected: intake-workflow -> "
+        "resolution-workflow -> intake-workflow"
+    )
+    assert result.exit_code == 1
+    assert "Validation failed with 1 error(s):" in result.output
+    assert result.output.count(cycle_error) == 1
+    assert "Creating dev session" not in result.output
 
 
 def test_lint_command_prints_sequential_tool_and_runtime_controls(tmp_path, monkeypatch):
@@ -2041,7 +2101,20 @@ def test_login_command_interactive_flow_opens_dashboard_and_saves_pasted_token(t
     assert "Credentials saved to .connic" in result.output
 
 
-def test_deploy_command_packages_project_files_and_uploads_to_default_environment(tmp_path, monkeypatch):
+@pytest.mark.parametrize(
+    ("deploy_args", "expected_skip_tests"),
+    [
+        ([], False),
+        (["--skip-tests"], True),
+    ],
+    ids=["default-test-gate", "skip-tests"],
+)
+def test_deploy_command_packages_project_files_and_uploads_to_default_environment(
+    tmp_path,
+    monkeypatch,
+    deploy_args,
+    expected_skip_tests,
+):
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(cli, "print_update_hint", lambda: None)
     monkeypatch.setattr(cli, "_run_lint", lambda quiet=False, **kwargs: quiet is True)
@@ -2105,7 +2178,7 @@ def test_deploy_command_packages_project_files_and_uploads_to_default_environmen
 
     monkeypatch.setattr(cli.httpx, "Client", FakeClient)
 
-    result = CliRunner().invoke(cli.main, ["deploy"])
+    result = CliRunner().invoke(cli.main, ["deploy", *deploy_args])
 
     assert result.exit_code == 0, result.output
     upload = requests[-1][2]
@@ -2115,6 +2188,7 @@ def test_deploy_command_packages_project_files_and_uploads_to_default_environmen
     ]
     assert requests[-1][0:2] == ("POST", "/projects/proj_123/deploy/upload")
     assert upload["params"] == {"environment_id": "env_prod"}
+    assert upload["json"]["skip_tests"] is expected_skip_tests
     assert len(upload["json"]["files_hash"]) == 12
 
     tar_data = base64.b64decode(upload["json"]["files_data"])
@@ -2131,6 +2205,9 @@ def test_deploy_command_packages_project_files_and_uploads_to_default_environmen
     assert "name: support" in support_config
     assert "Deployment created." in result.output
     assert "https://connic.co/projects/proj_123/deployments/dep_123" in result.output
+    assert (
+        "--skip-tests was set; the test phase will be skipped server-side." in result.output
+    ) is expected_skip_tests
 
 
 def test_deploy_command_rejects_projects_with_connected_git_before_packaging(tmp_path, monkeypatch):
@@ -2924,6 +3001,67 @@ def test_test_command_runs_suite_against_default_test_environment_and_filters_js
     }
 
 
+def test_test_command_emits_cancelled_run_as_json_for_ci(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(cli, "print_update_hint", lambda: None)
+    write_minimal_test_project(tmp_path)
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "tests" / "support.yaml").write_text(
+        "agent: support\n"
+        "tests:\n"
+        "  - name: handles_refund_request\n"
+        "    payload: '{\"message\":\"refund order 123\"}'\n"
+        "    expected_result: status == \"completed\"\n"
+    )
+    requests = []
+
+    class Response:
+        def __init__(self, status_code, payload=None):
+            self.status_code = status_code
+            self._payload = payload
+
+        def json(self):
+            return self._payload
+
+    class FakeClient:
+        def __init__(self, base_url, headers, timeout):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def post(self, path, json=None):
+            requests.append(("POST", path))
+            assert path == "/projects/proj_123/test-runs"
+            assert json["environment_id"] == "env_manual"
+            return Response(202, {"id": "run_cancelled"})
+
+        def get(self, path):
+            requests.append(("GET", path))
+            assert path == "/projects/proj_123/test-runs/run_cancelled"
+            return Response(
+                200,
+                {"status": "cancelled", "phase": "cancelled", "cases": []},
+            )
+
+    monkeypatch.setattr(cli.httpx, "Client", FakeClient)
+
+    result = CliRunner().invoke(
+        cli.main,
+        ["test", "--env", "env_manual", "--json"],
+    )
+
+    assert result.exit_code == 1, result.output
+    assert requests == [
+        ("POST", "/projects/proj_123/test-runs"),
+        ("GET", "/projects/proj_123/test-runs/run_cancelled"),
+    ]
+    assert json.loads(result.output) == {"status": "cancelled", "cases": []}
+
+
 @pytest.mark.parametrize(
     ("failure_stage", "expected_exit_code", "expected_message"),
     [
@@ -2936,6 +3074,7 @@ def test_test_command_runs_suite_against_default_test_environment_and_filters_js
         ("polling_unavailable", 2, "Failed to poll test run: runner status unavailable; giving up."),
         ("polling_network", 2, "Lost contact with backend (network down); giving up."),
         ("terminal_error", 2, "Test run errored: test runner container failed to start"),
+        ("terminal_cancelled", 1, "Test run was cancelled."),
     ],
 )
 def test_test_command_distinguishes_test_failures_from_infrastructure_errors(
@@ -3003,6 +3142,11 @@ def test_test_command_distinguishes_test_failures_from_infrastructure_errors(
                             "error": "test runner container failed to start",
                         },
                     )
+                if failure_stage == "terminal_cancelled":
+                    return Response(
+                        200,
+                        {"status": "cancelled", "phase": "cancelled", "cases": []},
+                    )
             raise AssertionError(f"Unexpected GET {path}")
 
         def post(self, path, json=None):
@@ -3022,6 +3166,9 @@ def test_test_command_distinguishes_test_failures_from_infrastructure_errors(
 
     assert result.exit_code == expected_exit_code, result.output
     assert expected_message in result.output
+    if failure_stage == "terminal_cancelled":
+        assert "cases passed" not in result.output
+        assert "View detailed results in the dashboard" not in result.output
 
 
 def test_test_command_renders_failed_case_and_dashboard_link_for_explicit_environment(tmp_path, monkeypatch):
@@ -3112,6 +3259,9 @@ def test_test_command_renders_failed_run_diagnostics_and_limits_detail_fetches(t
     (tmp_path / "tests" / "support.yaml").write_text(
         "agent: support\n"
         "tests:\n"
+        "  - name: loads_order_context\n"
+        "    payload: '{\"message\":\"load order 123 before refunding\"}'\n"
+        "    expected_result: context.order_id == \"123\"\n"
         "  - name: routes_priority_refunds\n"
         "    payload: '{\"message\":\"refund my priority shipment\"}'\n"
         "    expected_result: output.category == \"refund\"\n"
@@ -3149,8 +3299,19 @@ def test_test_command_renders_failed_run_diagnostics_and_limits_detail_fetches(t
                     {
                         "status": "failed",
                         "phase": "running_tests",
-                        "total_cases": 1,
+                        "total_cases": 2,
                         "cases": [
+                            {
+                                "agent_name": "support",
+                                "test_name": "loads_order_context",
+                                "passed": False,
+                                "successes": 0,
+                                "runs": 1,
+                                "success_threshold": 100,
+                                "failure_reason": "Expected refund context was missing.",
+                                "agent_run_ids": ["run_detail_timeout"],
+                                "agent_run_passed": [False],
+                            },
                             {
                                 "agent_name": "support",
                                 "test_name": "routes_priority_refunds",
@@ -3170,6 +3331,14 @@ def test_test_command_renders_failed_run_diagnostics_and_limits_detail_fetches(t
                             }
                         ],
                     },
+                )
+            if path == "/projects/proj_123/runs/run_detail_timeout":
+                raise cli.httpx.ReadTimeout(
+                    "run detail request timed out",
+                    request=cli.httpx.Request(
+                        "GET",
+                        f"https://api.connic.co{path}",
+                    ),
                 )
             if path == "/projects/proj_123/runs/run_failed_trace":
                 return Response(
@@ -3229,6 +3398,8 @@ def test_test_command_renders_failed_run_diagnostics_and_limits_detail_fetches(t
     )
 
     assert result.exit_code == 1, result.output
+    assert "support::loads_order_context: Expected refund context was missing." in result.output
+    assert "Run run_detail_timeout (could not load: run detail request timed out)" in result.output
     assert "Run run_failed_trace" in result.output
     assert "priority refund " in result.output
     assert "(truncated)" in result.output
@@ -3241,6 +3412,7 @@ def test_test_command_renders_failed_run_diagnostics_and_limits_detail_fetches(t
     assert "Run run_unavailable (could not load: HTTP 503)" in result.output
     assert "Run run_failed_plain" in result.output
     assert "… and 1 more failed run(s) not shown" in result.output
+    assert ("GET", "/projects/proj_123/runs/run_detail_timeout") in requests
     assert ("GET", "/projects/proj_123/runs/run_passed") not in requests
     assert ("GET", "/projects/proj_123/runs/run_failed_omitted") not in requests
 
@@ -3359,6 +3531,79 @@ def test_dev_session_test_runner_warns_when_no_test_files_exist(tmp_path, monkey
     output = capsys.readouterr().out
     assert "1 files, 0 test file(s)" in output
     assert "No tests/ directory found" in output
+
+
+@pytest.mark.parametrize(
+    ("backend_outcome", "expected_message"),
+    [
+        ("submission_unavailable", "Failed to start test run: test runner queue unavailable"),
+        ("polling_unavailable", "Failed to poll test run: runner status unavailable; giving up on this run."),
+        ("terminal_error", "Test run errored: test runner container failed to start"),
+        ("terminal_cancelled", "Test run was cancelled."),
+    ],
+)
+def test_dev_session_test_runner_returns_control_after_unsuccessful_backend_outcomes(
+    tmp_path,
+    monkeypatch,
+    capsys,
+    backend_outcome,
+    expected_message,
+):
+    monkeypatch.chdir(tmp_path)
+    write_minimal_test_project(tmp_path)
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "tests" / "support.yaml").write_text(
+        "agent: support\n"
+        "tests:\n"
+        "  - name: handles_refund\n"
+        "    payload: '{\"message\":\"refund order 123\"}'\n"
+        "    expected_result: status == \"completed\"\n"
+    )
+    requests = []
+
+    class Response:
+        def __init__(self, status_code, payload=None, text=""):
+            self.status_code = status_code
+            self._payload = payload
+            self.text = text
+
+        def json(self):
+            return self._payload
+
+    class FakeClient:
+        def post(self, path, json=None):
+            requests.append(("POST", path))
+            if backend_outcome == "submission_unavailable":
+                return Response(503, text="test runner queue unavailable")
+            return Response(202, {"id": "run_dev_123"})
+
+        def get(self, path):
+            requests.append(("GET", path))
+            if backend_outcome == "polling_unavailable":
+                return Response(503, text="runner status unavailable")
+            if backend_outcome == "terminal_error":
+                return Response(
+                    200,
+                    {
+                        "status": "error",
+                        "phase": "failed",
+                        "error": "test runner container failed to start",
+                    },
+                )
+            return Response(200, {"status": "cancelled", "phase": "cancelled"})
+
+    cli._run_tests_in_dev_session(FakeClient(), "proj_123", "env_active_dev")
+
+    captured = capsys.readouterr()
+    output = captured.out + captured.err
+    assert expected_message in output
+    assert requests[0] == ("POST", "/projects/proj_123/test-runs")
+    if backend_outcome == "submission_unavailable":
+        assert len(requests) == 1
+    else:
+        assert requests[1] == ("GET", "/projects/proj_123/test-runs/run_dev_123")
+    assert "cases passed" not in output
+    assert "View detailed results in the dashboard" not in output
 
 
 def test_dev_interactive_keys_refresh_run_tests_and_quit_with_cleanup(tmp_path, monkeypatch):
