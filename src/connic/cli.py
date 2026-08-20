@@ -2279,9 +2279,9 @@ def test(env: str | None, filter_name: str | None, coverage: bool, as_json: bool
     """
     Run the test suite from ./tests against a Connic environment.
 
-    Discovers `tests/*.yaml` files (one per agent, mirroring `middleware/`),
-    invokes each agent N times in the chosen environment, and asserts on
-    output and tool-call traces. Exits non-zero if any test fails.
+    Discovers `.yaml` and `.yml` suites recursively under `tests/`, invokes
+    each agent N times in the chosen environment, and asserts on output and
+    tool-call traces. Exits non-zero if any test fails.
 
     With ``--coverage`` runs purely locally: discovers agents, scans their
     test files, and reports the share of each agent's tools that appear in

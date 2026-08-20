@@ -177,12 +177,13 @@ class RetryOptions(BaseModel):
         ge=1,
         le=10,
         description=(
-            "Total attempts per selected model or non-LLM operation, including the first attempt; "
-            "a configured fallback may add one primary-model call (max: 10)"
+            "Maximum attempts for the model being retried or a non-LLM operation, including the "
+            "first attempt; with a fallback, the primary is tried once and this budget applies "
+            "to the fallback (max: 10)"
         ),
     )
     initial_delay: float = Field(default=10, ge=0, le=300, description="Initial retry delay in seconds")
-    max_delay: int = Field(default=30, ge=1, le=300, description="Maximum seconds between retries (max: 300s)")
+    max_delay: int = Field(default=30, ge=1, le=300, description="Maximum generated backoff in seconds (max: 300s)")
     rerun_middleware: bool = Field(
         default=False,
         description="Re-execute 'before' middleware for tool and sequential operation retries; ignored by LLM agents",
@@ -642,7 +643,7 @@ class AgentConfig(BaseModel):
     
     # LLM agent fields (required when type=llm)
     model: Optional[str] = Field(default=None, description="The AI model to use (required for LLM agents)")
-    fallback_model: Optional[str] = Field(default=None, description="Fallback AI model to use when the primary model's provider is unavailable (LLM agents only)")
+    fallback_model: Optional[str] = Field(default=None, description="Fallback AI model to use after a failed primary request (LLM agents only)")
     system_prompt: Optional[str] = Field(default=None, description="Instructions that define the agent's behavior")
     temperature: float = Field(default=1.0, ge=0.0, le=2.0, description="Controls randomness in output")
     tools: List[Any] = Field(default_factory=list, description="List of tools the agent can use. Each is a string (always available) or a mapping {tool_ref: condition_expression}. Tool refs must use the exact module path under tools/, such as module.function or directory.module.function.")

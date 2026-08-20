@@ -66,7 +66,7 @@ connic init my-agents --templates=invoice,customer-support --skill
 
 Browse available templates at [connic.co/agents](https://connic.co/agents).
 
-The optional `--skill` flag installs the Connic AI coding-agent skill into both `.agents/skills/connic` and `.claude/skills/connic` so supported coding agents can use the current Connic project layout, YAML fields, CLI flags, connector patterns, and best practices while editing your repo. For an existing project, run:
+The optional `--skill` flag installs the Connic AI coding-agent skill into both `.agents/skills/connic` and `.claude/skills/connic` so supported coding agents can use the Connic project layout, YAML fields, CLI flags, connector patterns, and best practices while editing your repo. For an existing project, run:
 
 ```bash
 connic skill
@@ -74,7 +74,7 @@ connic skill
 
 In an interactive terminal, both commands detect Codex and Claude Code and ask whether to install the full Connic plugin for each detected client. The plugin bundles the same skill with Connic MCP. Declining leaves the project-local skill installation unchanged. See [AI agent setup](https://connic.co/docs/v1/ai-agent-setup) for manual and client-specific paths.
 
-The CLI silently checks for SDK, project skill, Codex plugin, and Claude Code plugin updates when commands run. It checks every installed Claude Code scope separately. To check without updating, including from an AI coding-agent session, run:
+The CLI checks for SDK, project skill, Codex plugin, and Claude Code plugin updates when commands run. It checks every installed Claude Code scope separately. To check without updating, including from an AI coding-agent session, run:
 
 ```bash
 connic update --check
@@ -97,7 +97,7 @@ my-agents/
 └── requirements.txt
 ```
 
-`_defaults.yaml` is optional and can live at any depth under `agents/`. Its values are merged into every agent at that directory level and below (deeper layers and the agent file itself override earlier ones). Lists like `tools`, `mcp_servers`, and `guardrails.input/output` concat with dedup-by-ref so children add to inherited entries. `name` and `description` are not allowed in defaults.
+`_defaults.yaml` is optional and can live at any depth under `agents/`. Its values are merged into every agent at that directory level and below (deeper layers and the agent file itself override earlier ones). Lists like `tools`, `mcp_servers`, and `guardrails.input/output` concat with dedup-by-ref so children add to inherited entries. `name` and `description` are not allowed in defaults. Every agent file must still define `version`, `name`, and `description`.
 
 ### `agents/support-assistant.yaml`
 
@@ -202,6 +202,7 @@ The SDK also exposes predefined Connic tools such as the ones documented in [Pre
 - `db_find`
 - `db_insert`
 - `db_update`
+- `db_upsert`
 - `db_delete`
 - `db_count`
 - `db_list_collections`
@@ -237,10 +238,10 @@ Related docs:
 | `connic init [name] --templates=...`  | Create a project from one or more starter templates             |
 | `connic init [name] --skill`          | Create a project, install the skill, and offer detected client plugins |
 | `connic skill`                        | Install the project skill and offer detected client plugins     |
-| `connic update [--check|--sdk|--skill]` | Check for or install available SDK and skill updates          |
+| `connic update [--check|--sdk|--skill|--enable-reminders]` | Check for or install available SDK and skill updates, or enable reminders |
 | `connic login`                        | Save project credentials in `.connic`                           |
 | `connic lint`                         | Validate agents, tools, middleware, and schemas locally         |
-| `connic tools`                        | List discovered tools and signatures                            |
+| `connic tools`                        | List custom Python tools and signatures                          |
 | `connic dev [name]`                   | Start an isolated cloud dev environment with hot reload         |
 | `connic test`                         | Run declarative test suites from `tests/` against an environment |
 | `connic deploy`                       | Deploy from the CLI to a Connic environment for projects without a connected Git repository |
@@ -262,7 +263,7 @@ Run `connic <command> --help` for flags and examples.
 
 ### Hot-Reload Testing
 
-`connic dev` creates an isolated development environment in Connic cloud, uploads your local files, and re-syncs changes in a few seconds while you iterate.
+`connic dev` creates an isolated development environment in Connic cloud and syncs local changes while you iterate.
 
 This is the main development loop when you need real connectors, predefined tools, and environment-scoped services.
 
@@ -272,8 +273,8 @@ Use `connic test` for one-shot declarative test suites from `tests/`, including 
 
 Deployment targets Connic-managed environments.
 
-- If your Connic project is connected to a Git repository, pushing to the configured branch is the primary deployment flow.
-- `connic deploy` is available for CLI-driven deployments and for projects that do not use a connected repository.
+- If your Connic project is connected to a Git repository, push to the branch configured for the target environment.
+- If the project has no connected Git repository, use `connic deploy`.
 
 ## Documentation
 
