@@ -1680,6 +1680,69 @@ def test_langchain_migration_preserves_tool_defined_in_package_init(tmp_path):
     assert any("No source requirements.txt found" in note for note in report_notes)
 
 
+def test_langchain_migration_follows_package_reexport_to_tool_source(tmp_path):
+    source = tmp_path / "langchain-package-reexport"
+    destination = tmp_path / "connic-app"
+    write(
+        source / "support" / "tools.py",
+        '''
+        POLICY_STATUS = "approved"
+
+
+        def lookup_policy(policy_id: str) -> dict:
+            return {"policy_id": policy_id, "status": POLICY_STATUS}
+        ''',
+    )
+    write(
+        source / "support" / "__init__.py",
+        '''
+        from .tools import lookup_policy
+        ''',
+    )
+    write(
+        source / "agent.py",
+        '''
+        from langchain.agents import create_agent
+        from support import lookup_policy
+
+
+        policy_agent = create_agent(
+            model="openai:gpt-4o-mini",
+            tools=[lookup_policy],
+            system_prompt="Answer policy questions with approved internal policy data.",
+            name="Policy Support",
+        )
+        ''',
+    )
+
+    framework, detection_notes, agents, module_infos = migrate._build_migration_candidates(source)
+    report_notes = migrate._generate_migrated_project(
+        source,
+        destination,
+        framework,
+        detection_notes,
+        agents,
+        module_infos,
+        no_scaffold,
+    )
+
+    agent_yaml = yaml.safe_load((destination / "agents" / "policy-support.yaml").read_text())
+    migrated_tool = (destination / "tools" / "support" / "tools.py").read_text()
+    loader = ProjectLoader(str(destination))
+    migrated_agents = loader.load_agents()
+
+    assert framework == "langchain"
+    assert agent_yaml["tools"] == ["support.tools.lookup_policy"]
+    assert "POLICY_STATUS = \"approved\"" in migrated_tool
+    assert "def lookup_policy" in migrated_tool
+    assert loader._load_errors == []
+    assert migrated_agents[0].get_tool("lookup_policy").func("POL-42") == {
+        "policy_id": "POL-42",
+        "status": "approved",
+    }
+    assert not any("Missing source for tool function 'lookup_policy'" in note for note in report_notes)
+
+
 def test_langchain_migration_resolves_imported_prompt_callable_with_imported_format_values(tmp_path):
     source = tmp_path / "langchain-imported-prompt"
     destination = tmp_path / "connic-app"

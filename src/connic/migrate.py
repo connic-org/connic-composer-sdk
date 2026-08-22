@@ -498,6 +498,35 @@ def _resolve_imported_symbol_source(
     return module_path, binding.name
 
 
+def _resolve_imported_tool_source(
+    binding: ImportBinding,
+    current_file: Path,
+    module_lookup: dict[str, Path],
+    seen: set[tuple[Path, str]] | None = None,
+) -> tuple[Path | None, str | None]:
+    source_file, function_name = _resolve_imported_symbol_source(binding, current_file, module_lookup)
+    if source_file is None or function_name is None:
+        return source_file, function_name
+
+    seen = seen or set()
+    key = (source_file.resolve(), function_name)
+    if key in seen:
+        return None, None
+    seen.add(key)
+
+    module_info = _parse_module_info(source_file)
+    if module_info is not None:
+        if function_name in module_info.functions:
+            return source_file, function_name
+        reexport = module_info.imports.get(function_name)
+        if reexport is not None:
+            resolved = _resolve_imported_tool_source(reexport, source_file, module_lookup, seen)
+            if resolved != (None, None):
+                return resolved
+
+    return source_file, function_name
+
+
 def _resolve_module_alias_source(
     binding: ImportBinding,
     current_file: Path,
@@ -586,7 +615,7 @@ def _resolve_tool_candidates(
             return _resolve_tool_candidates(assigned, module_info, module_lookup, notes, seen_names)
         binding = module_info.imports.get(expr.id)
         if binding:
-            source_file, function_name = _resolve_imported_symbol_source(binding, module_info.path, module_lookup)
+            source_file, function_name = _resolve_imported_tool_source(binding, module_info.path, module_lookup)
             if source_file and function_name:
                 return [ToolCandidate(function_name=function_name, source_file=source_file)]
             predefined = _predefined_tool_candidate(binding.name or expr.id)

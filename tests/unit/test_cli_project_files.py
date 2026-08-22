@@ -270,6 +270,22 @@ def test_validate_project_files_rejects_non_python_builders(tmp_path, monkeypatc
     assert files == []
 
 
+def test_validate_project_files_counts_builders_toward_code_size_cap(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    builder = tmp_path / "tests" / "builders" / "invoice.py"
+    builder.parent.mkdir(parents=True)
+    builder.write_bytes(
+        b"def build_payload(context):\n    return {}\n#" + b"x" * cli.MAX_CODE_SIZE
+    )
+
+    is_valid, error, files = cli._validate_project_files()
+
+    assert is_valid is False
+    assert f"Code/config size exceeds {cli.MAX_CODE_SIZE:,} byte limit" in error
+    assert "Move large fixtures into tests/files/" in error
+    assert files == []
+
+
 def test_write_essential_files_creates_minimal_scaffold_without_overwriting_existing_files(tmp_path):
     (tmp_path / "README.md").write_text("# Existing\n")
 
