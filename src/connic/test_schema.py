@@ -1,9 +1,9 @@
 """Pydantic models for the test framework.
 
-Test suites are ``.yaml`` or ``.yml`` files discovered recursively under
-``tests/``. A suite declares one or more test cases that run the named agent N
-times with a payload, then assert on output and tool-call traces. When
-``agent`` is omitted, the filename stem is used, including for nested suites.
+Test suites are ``.yaml`` files discovered recursively under ``tests/``. A
+suite declares one or more test cases that run the named agent N times with a
+payload, then assert on output and tool-call traces. When ``agent`` is omitted,
+the filename stem is used, including for nested suites.
 
 Example::
 

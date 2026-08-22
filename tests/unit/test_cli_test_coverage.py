@@ -144,7 +144,7 @@ def test_coverage_combines_split_suites_targeting_the_same_agent(tmp_path):
     _write_test_file(tmp_path, "math-agent", [["calculator.add"]])
     _write(tmp_path / "tests" / "files" / "subtraction.json", '{"a": 5, "b": 3}')
     _write(
-        tmp_path / "tests" / "math-agent-subtraction.yml",
+        tmp_path / "tests" / "math-agent-subtraction.yaml",
         """
         version: "1.0"
         agent: math-agent
@@ -162,6 +162,27 @@ def test_coverage_combines_split_suites_targeting_the_same_agent(tmp_path):
     assert agent["tools_covered"] == 2
     assert agent["percent"] == 100.0
     assert agent["uncovered_tools"] == []
+
+
+def test_coverage_ignores_yml_suites(tmp_path):
+    _write_calculator_tool(tmp_path)
+    _write_llm_agent(tmp_path, "math-agent", tools=["calculator.add"])
+    _write(
+        tmp_path / "tests" / "math-agent.yml",
+        """
+        version: "1.0"
+        tests:
+          - name: adds_numbers
+            payload: '{"a": 2, "b": 3}'
+            expected_result: status == "completed"
+            expected_tool_calls:
+              - calculator.add
+        """,
+    )
+
+    [agent] = cli._compute_local_coverage(tmp_path)["agents"]
+    assert agent["has_tests"] is False
+    assert agent["percent"] == 0.0
 
 
 def test_mapping_form_of_expected_tool_calls_counts_as_covered(tmp_path):

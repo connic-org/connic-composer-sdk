@@ -2534,3 +2534,13 @@ def test_collect_yaml_files_skips_dependency_vendor_trees(tmp_path):
     files = migrate._collect_yaml_files(tmp_path)
 
     assert files == [tracked]
+
+
+def test_collect_yaml_files_ignores_yml_files(tmp_path):
+    yaml_file = tmp_path / "root_agent.yaml"
+    yaml_file.write_text("name: supported\n", encoding="utf-8")
+    (tmp_path / "root_agent.yml").write_text("name: ignored\n", encoding="utf-8")
+
+    files = migrate._collect_yaml_files(tmp_path)
+
+    assert files == [yaml_file]

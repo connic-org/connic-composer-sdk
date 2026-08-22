@@ -1721,6 +1721,25 @@ def test_duplicate_agent_names_across_files_are_reported(tmp_path):
     assert any("duplicate agent name" in e for e in loader._load_errors)
 
 
+def test_agent_discovery_ignores_yml_files(tmp_path):
+    write_file(
+        tmp_path / "agents" / "ignored.yml",
+        """
+        version: "1.0"
+        name: ignored
+        type: llm
+        model: openai/gpt-5.2
+        description: "Unsupported extension"
+        system_prompt: "Hello."
+        """,
+    )
+
+    loader = ProjectLoader(str(tmp_path))
+
+    assert loader.load_agents() == []
+    assert loader._load_errors == []
+
+
 def test_agent_discovery_skips_yaml_under_hidden_directory_segments(tmp_path):
     write_file(
         tmp_path / "agents" / "prod" / "agent.yaml",
@@ -2660,8 +2679,8 @@ def test_root_defaults_apply_to_flat_agent(tmp_path):
     assert agent.config.system_prompt == "Default prompt."
 
 
-def test_empty_yml_defaults_file_is_allowed(tmp_path):
-    write_file(tmp_path / "agents" / "_defaults.yml", "")
+def test_yml_defaults_file_is_ignored(tmp_path):
+    write_file(tmp_path / "agents" / "_defaults.yml", "this: is: invalid: yaml")
     write_file(
         tmp_path / "agents" / "assistant.yaml",
         """

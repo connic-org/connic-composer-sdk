@@ -125,11 +125,10 @@ def _collect_python_files(root: Path) -> list[Path]:
 
 def _collect_yaml_files(root: Path) -> list[Path]:
     files = []
-    for pattern in ("*.yaml", "*.yml"):
-        for file_path in root.rglob(pattern):
-            if _is_hidden_or_skipped(file_path, root):
-                continue
-            files.append(file_path)
+    for file_path in root.rglob("*.yaml"):
+        if _is_hidden_or_skipped(file_path, root):
+            continue
+        files.append(file_path)
     return sorted(set(files))
 
 
@@ -825,7 +824,7 @@ def _extract_adk_yaml_agents(yaml_files: list[Path]) -> list[AgentCandidate]:
             continue
         lower_name = yaml_file.name.lower()
         has_signature_key = any(key in data for key in ADK_YAML_AGENT_KEYS)
-        looks_like_agent_file = "agent" in lower_name or lower_name in {"root_agent.yaml", "root_agent.yml"}
+        looks_like_agent_file = "agent" in lower_name or lower_name == "root_agent.yaml"
         if not has_signature_key and not looks_like_agent_file:
             continue
         if not has_signature_key:
@@ -932,7 +931,7 @@ def _detect_custom_adk_patterns(module_infos: dict[Path, ModuleInfo]) -> list[st
 
 def _detect_framework(source_root: Path, python_files: list[Path], yaml_files: list[Path]) -> tuple[str, list[str]]:
     notes: list[str] = []
-    has_adk = any(path.name in {"root_agent.yaml", "root_agent.yml"} for path in yaml_files)
+    has_adk = any(path.name == "root_agent.yaml" for path in yaml_files)
     has_langchain = False
     for file_path in python_files:
         try:

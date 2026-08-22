@@ -206,6 +206,18 @@ def test_validate_project_files_rejects_unsupported_files_before_upload(tmp_path
     assert files == []
 
 
+def test_validate_project_files_rejects_yml_files(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "agents").mkdir()
+    (tmp_path / "agents" / "support.yml").write_text("name: support\n")
+
+    is_valid, error, files = cli._validate_project_files()
+
+    assert is_valid is False
+    assert "File type '.yml' not allowed" in error
+    assert files == []
+
+
 def test_validate_project_files_rejects_projects_over_upload_limit(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     (tmp_path / "tools").mkdir()

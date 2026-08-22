@@ -273,7 +273,6 @@ def _fetch_failed_run_details(
 ALLOWED_EXTENSIONS = {
     ".py",      # Python scripts
     ".yaml",    # YAML config
-    ".yml",     # YAML config (alt extension)
     ".txt",     # Text files
     ".json",    # JSON data/schemas
     ".csv",     # CSV data files
@@ -1559,7 +1558,7 @@ def _compute_local_coverage(project_root: Path) -> dict:
     test_suites: dict[str, list[tuple[TestFile | None, str | None]]] = {}
     if tests_dir.is_dir():
         for path in sorted(tests_dir.rglob("*")):
-            if not path.is_file() or path.suffix.lower() not in (".yaml", ".yml"):
+            if not path.is_file() or path.suffix.lower() != ".yaml":
                 continue
             agent_name = path.stem
             try:
@@ -2279,9 +2278,9 @@ def test(env: str | None, filter_name: str | None, coverage: bool, as_json: bool
     """
     Run the test suite from ./tests against a Connic environment.
 
-    Discovers `.yaml` and `.yml` suites recursively under `tests/`, invokes
-    each agent N times in the chosen environment, and asserts on output and
-    tool-call traces. Exits non-zero if any test fails.
+    Discovers `.yaml` suites recursively under `tests/`, invokes each agent N
+    times in the chosen environment, and asserts on output and tool-call
+    traces. Exits non-zero if any test fails.
 
     With ``--coverage`` runs purely locally: discovers agents, scans their
     test files, and reports the share of each agent's tools that appear in

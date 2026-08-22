@@ -34,6 +34,12 @@ dependencies = [
     "simpleeval>=1.0.0",  # For evaluating conditional tool expressions
 ]
 
+[project.urls]
+Homepage = "https://connic.co"
+Documentation = "https://connic.co/docs/v1"
+Repository = "https://github.com/connic-org/connic-composer-sdk"
+Issues = "https://github.com/connic-org/connic-composer-sdk/issues"
+
 [project.scripts]
 connic = "connic.cli:main"
 

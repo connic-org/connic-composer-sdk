@@ -132,22 +132,21 @@ class ProjectLoader:
         agent_files: List[Path] = []
         seen_paths = set()
 
-        for pattern in ("*.yaml", "*.yml"):
-            for agent_file in self.agents_dir.rglob(pattern):
-                relative_parts = agent_file.relative_to(self.agents_dir).parts
-                if any(part.startswith(".") for part in relative_parts):
-                    continue
+        for agent_file in self.agents_dir.rglob("*.yaml"):
+            relative_parts = agent_file.relative_to(self.agents_dir).parts
+            if any(part.startswith(".") for part in relative_parts):
+                continue
 
-                # _defaults.yaml files provide cascading defaults, not agents.
-                if agent_file.stem == "_defaults":
-                    continue
+            # _defaults.yaml files provide cascading defaults, not agents.
+            if agent_file.stem == "_defaults":
+                continue
 
-                resolved_path = agent_file.resolve()
-                if resolved_path in seen_paths:
-                    continue
+            resolved_path = agent_file.resolve()
+            if resolved_path in seen_paths:
+                continue
 
-                seen_paths.add(resolved_path)
-                agent_files.append(agent_file)
+            seen_paths.add(resolved_path)
+            agent_files.append(agent_file)
 
         return sorted(agent_files, key=lambda path: path.relative_to(self.agents_dir).as_posix())
 
@@ -328,17 +327,12 @@ class ProjectLoader:
     _DEFAULTS_FORBIDDEN_KEYS = ("name", "description")
 
     def _load_defaults_for_directory(self, directory: Path) -> Optional[Dict[str, Any]]:
-        """Load the _defaults.yaml (or .yml) for one directory, if present. Cached per-loader."""
+        """Load the _defaults.yaml for one directory, if present. Cached per-loader."""
         if directory in self._defaults_cache:
             return self._defaults_cache[directory]
 
-        defaults_path: Optional[Path] = None
-        for candidate in (directory / "_defaults.yaml", directory / "_defaults.yml"):
-            if candidate.is_file():
-                defaults_path = candidate
-                break
-
-        if defaults_path is None:
+        defaults_path = directory / "_defaults.yaml"
+        if not defaults_path.is_file():
             self._defaults_cache[directory] = None
             return None
 
