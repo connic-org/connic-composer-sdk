@@ -88,6 +88,28 @@ async def trigger_agent_at(
     )
 
 
+async def send_connector(
+    action_name: str,
+    payload: Dict[str, Any],
+    idempotency_key: Optional[str] = None,
+) -> dict:
+    """
+    Queue a configured middleware outbound connector call.
+
+    Args:
+        action_name: The configured call name for the middleware outbound connector.
+        payload: Connector-owned payload fields.
+        idempotency_key: Optional key for safely retrying the same connector call.
+
+    Returns:
+        Delivery queue status and the connector run ID.
+    """
+    raise RuntimeError(
+        "send_connector will be auto-injected when testing using the connic CLI or deploying. "
+        "Run 'connic test' to test your agents with predefined tools."
+    )
+
+
 async def retrieval_query(
     query: str,
     namespace: Optional[str] = None,
@@ -595,6 +617,7 @@ async def db_list_collections() -> Dict[str, Any]:
 __all__ = [
     "trigger_agent",
     "trigger_agent_at",
+    "send_connector",
     "retrieval_query",
     "retrieval_store",
     "retrieval_delete",

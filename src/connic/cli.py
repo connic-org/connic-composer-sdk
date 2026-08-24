@@ -833,7 +833,8 @@ def _merge_template_into_project(
         if src_dir.exists():
             dst_dir.mkdir(exist_ok=True)
             for f in src_dir.rglob("*"):
-                if not f.is_file() or f.name.startswith("_"):
+                is_agent_defaults = subdir == "agents" and f.name == "_defaults.yaml"
+                if not f.is_file() or (f.name.startswith("_") and not is_agent_defaults):
                     continue
                 relative_path = f.relative_to(src_dir)
                 destination = dst_dir / template_id / relative_path if subdir == "agents" else dst_dir / relative_path
@@ -2396,15 +2397,23 @@ def test(env: str | None, filter_name: str | None, coverage: bool, as_json: bool
     if result["status"] == "error":
         _fail_and_exit(f"Test run errored: {result.get('error') or 'unknown error'}", code=2)
 
+    json_result = {
+        "status": result["status"],
+        "test_run_id": test_run_id,
+        "deployment_id": result.get("deployment_id"),
+        "environment_id": env,
+        "cases": cases,
+    }
+
     if result["status"] == "cancelled":
         if as_json:
-            click.echo(json.dumps({"status": "cancelled", "cases": cases}, indent=2))
+            click.echo(json.dumps(json_result, indent=2))
         else:
             _warn("Test run was cancelled.")
         sys.exit(1)
 
     if as_json:
-        click.echo(json.dumps({"status": result["status"], "cases": cases}, indent=2))
+        click.echo(json.dumps(json_result, indent=2))
     else:
         _render_test_cases(cases)
         passed_n = sum(1 for c in cases if c["passed"])

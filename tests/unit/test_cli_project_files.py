@@ -302,6 +302,7 @@ def test_merge_template_copies_agent_under_template_namespace_and_merges_require
     (template / "tools").mkdir()
     (template / "tests" / "mocks").mkdir(parents=True)
     (template / "agents" / "extractor.yaml").write_text("name: invoice-extractor\n")
+    (template / "agents" / "_defaults.yaml").write_text("temperature: 0\n")
     (template / "agents" / "_draft.yaml").write_text("name: draft\n")
     (template / "tools" / "invoice_tools.py").write_text("def parse_invoice():\n    return {}\n")
     (template / "tests" / "invoice-extractor.yaml").write_text("agent: invoice-extractor\n")
@@ -315,6 +316,7 @@ def test_merge_template_copies_agent_under_template_namespace_and_merges_require
     readme = cli._merge_template_into_project(template, project, requirements, "invoice")
 
     assert (project / "agents" / "invoice" / "extractor.yaml").read_text() == "name: invoice-extractor\n"
+    assert (project / "agents" / "invoice" / "_defaults.yaml").read_text() == "temperature: 0\n"
     assert not (project / "agents" / "invoice" / "_draft.yaml").exists()
     assert (project / "tools" / "invoice_tools.py").exists()
     assert (project / "tests" / "invoice-extractor.yaml").read_text() == "agent: invoice-extractor\n"
@@ -2968,6 +2970,7 @@ def test_test_command_runs_suite_against_default_test_environment_and_filters_js
                     {
                         "status": "passed",
                         "phase": "done",
+                        "deployment_id": "dep_123",
                         "cases": [
                             case
                             for case in [
@@ -3016,6 +3019,9 @@ def test_test_command_runs_suite_against_default_test_environment_and_filters_js
     payload = json.loads(result.output)
     assert payload == {
         "status": "passed",
+        "test_run_id": "run_123",
+        "deployment_id": "dep_123",
+        "environment_id": "env_staging_test",
         "cases": [
             {
                 "agent_name": "support",
@@ -3029,7 +3035,34 @@ def test_test_command_runs_suite_against_default_test_environment_and_filters_js
     }
 
 
-def test_test_command_emits_cancelled_run_as_json_for_ci(tmp_path, monkeypatch):
+@pytest.mark.parametrize(
+    ("terminal_status", "deployment_id", "cases"),
+    [
+        (
+            "failed",
+            "dep_failed",
+            [
+                {
+                    "agent_name": "support",
+                    "test_name": "handles_refund_request",
+                    "passed": False,
+                    "successes": 0,
+                    "runs": 1,
+                    "success_threshold": 100,
+                    "failure_reason": "Expected completed status.",
+                }
+            ],
+        ),
+        ("cancelled", "dep_cancelled", []),
+    ],
+)
+def test_test_command_emits_terminal_run_metadata_as_json_for_ci(
+    tmp_path,
+    monkeypatch,
+    terminal_status,
+    deployment_id,
+    cases,
+):
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(cli, "print_update_hint", lambda: None)
     write_minimal_test_project(tmp_path)
@@ -3065,14 +3098,19 @@ def test_test_command_emits_cancelled_run_as_json_for_ci(tmp_path, monkeypatch):
             requests.append(("POST", path))
             assert path == "/projects/proj_123/test-runs"
             assert json["environment_id"] == "env_manual"
-            return Response(202, {"id": "run_cancelled"})
+            return Response(202, {"id": f"run_{terminal_status}"})
 
         def get(self, path):
             requests.append(("GET", path))
-            assert path == "/projects/proj_123/test-runs/run_cancelled"
+            assert path == f"/projects/proj_123/test-runs/run_{terminal_status}"
             return Response(
                 200,
-                {"status": "cancelled", "phase": "cancelled", "cases": []},
+                {
+                    "status": terminal_status,
+                    "phase": terminal_status,
+                    "deployment_id": deployment_id,
+                    "cases": cases,
+                },
             )
 
     monkeypatch.setattr(cli.httpx, "Client", FakeClient)
@@ -3085,9 +3123,15 @@ def test_test_command_emits_cancelled_run_as_json_for_ci(tmp_path, monkeypatch):
     assert result.exit_code == 1, result.output
     assert requests == [
         ("POST", "/projects/proj_123/test-runs"),
-        ("GET", "/projects/proj_123/test-runs/run_cancelled"),
+        ("GET", f"/projects/proj_123/test-runs/run_{terminal_status}"),
     ]
-    assert json.loads(result.output) == {"status": "cancelled", "cases": []}
+    assert json.loads(result.output) == {
+        "status": terminal_status,
+        "test_run_id": f"run_{terminal_status}",
+        "deployment_id": deployment_id,
+        "environment_id": "env_manual",
+        "cases": cases,
+    }
 
 
 @pytest.mark.parametrize(
