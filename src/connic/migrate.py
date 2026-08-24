@@ -235,7 +235,7 @@ def _resolve_function_return_string(
     module_info: ModuleInfo,
     module_lookup: dict[str, Path],
     module_cache: dict[Path, ModuleInfo | None],
-    seen: set[str],
+    seen: set[tuple[Path, str]],
 ) -> str | None:
     for child in ast.walk(function_node):
         if isinstance(child, ast.Return) and child.value is not None:
@@ -245,32 +245,52 @@ def _resolve_function_return_string(
     return None
 
 
+def _resolve_literal_from_binding(
+    binding: ImportBinding,
+    current_file: Path,
+    module_lookup: dict[str, Path],
+    module_cache: dict[Path, ModuleInfo | None],
+    seen: set[tuple[Path, str]],
+) -> str | int | float | None:
+    source_file, symbol_name = _resolve_imported_symbol_source(binding, current_file, module_lookup)
+    if not source_file or not symbol_name:
+        return None
+    other_module = _get_cached_module_info(source_file, module_cache)
+    seen_key = (source_file.resolve(), symbol_name)
+    if other_module is None or seen_key in seen:
+        return None
+    seen.add(seen_key)
+    assigned = other_module.assignments.get(symbol_name)
+    if assigned is not None:
+        return _resolve_literal_expr(assigned, other_module, module_lookup, module_cache, seen)
+    reexport = other_module.imports.get(symbol_name)
+    if reexport is not None:
+        return _resolve_literal_from_binding(reexport, other_module.path, module_lookup, module_cache, seen)
+    return None
+
+
 def _resolve_literal_expr(
     expr: ast.AST | None,
     module_info: ModuleInfo,
     module_lookup: dict[str, Path],
     module_cache: dict[Path, ModuleInfo | None],
-    seen: set[str],
+    seen: set[tuple[Path, str]],
 ) -> str | int | float | None:
     if expr is None:
         return None
     if isinstance(expr, ast.Constant) and isinstance(expr.value, (str, int, float)):
         return expr.value
     if isinstance(expr, ast.Name):
-        if expr.id in seen:
+        seen_key = (module_info.path.resolve(), expr.id)
+        if seen_key in seen:
             return None
-        seen.add(expr.id)
+        seen.add(seen_key)
         assigned = module_info.assignments.get(expr.id)
         if assigned is not None:
             return _resolve_literal_expr(assigned, module_info, module_lookup, module_cache, seen)
         binding = module_info.imports.get(expr.id)
         if binding:
-            source_file, symbol_name = _resolve_imported_symbol_source(binding, module_info.path, module_lookup)
-            other_module = _get_cached_module_info(source_file, module_cache) if source_file else None
-            if other_module and symbol_name:
-                assigned = other_module.assignments.get(symbol_name)
-                if assigned is not None:
-                    return _resolve_literal_expr(assigned, other_module, module_lookup, module_cache, seen)
+            return _resolve_literal_from_binding(binding, module_info.path, module_lookup, module_cache, seen)
     return None
 
 
@@ -279,23 +299,25 @@ def _resolve_string_from_binding(
     current_file: Path,
     module_lookup: dict[str, Path],
     module_cache: dict[Path, ModuleInfo | None],
-    seen: set[str],
+    seen: set[tuple[Path, str]],
 ) -> str | None:
     source_file, symbol_name = _resolve_imported_symbol_source(binding, current_file, module_lookup)
     if not source_file or not symbol_name:
         return None
     other_module = _get_cached_module_info(source_file, module_cache)
-    if other_module is None:
+    seen_key = (source_file.resolve(), symbol_name)
+    if other_module is None or seen_key in seen:
         return None
-    if symbol_name in seen:
-        return None
-    seen.add(symbol_name)
+    seen.add(seen_key)
     assigned = other_module.assignments.get(symbol_name)
     if assigned is not None:
         return _resolve_string_expr(assigned, other_module, module_lookup, module_cache, seen)
     function_node = other_module.functions.get(symbol_name)
     if function_node is not None:
         return _resolve_function_return_string(function_node, other_module, module_lookup, module_cache, seen)
+    reexport = other_module.imports.get(symbol_name)
+    if reexport is not None:
+        return _resolve_string_from_binding(reexport, other_module.path, module_lookup, module_cache, seen)
     return None
 
 
@@ -304,7 +326,7 @@ def _resolve_string_expr(
     module_info: ModuleInfo,
     module_lookup: dict[str, Path],
     module_cache: dict[Path, ModuleInfo | None],
-    seen: set[str] | None = None,
+    seen: set[tuple[Path, str]] | None = None,
 ) -> str | None:
     if expr is None:
         return None
@@ -323,9 +345,10 @@ def _resolve_string_expr(
     if isinstance(expr, ast.Name):
         assigned = module_info.assignments.get(expr.id)
         if assigned is not None:
-            if expr.id in seen:
+            seen_key = (module_info.path.resolve(), expr.id)
+            if seen_key in seen:
                 return None
-            seen.add(expr.id)
+            seen.add(seen_key)
             return _resolve_string_expr(assigned, module_info, module_lookup, module_cache, seen)
         binding = module_info.imports.get(expr.id)
         if binding:
@@ -336,15 +359,19 @@ def _resolve_string_expr(
         if binding:
             source_file = _resolve_module_alias_source(binding, module_info.path, module_lookup)
             other_module = _get_cached_module_info(source_file, module_cache) if source_file else None
-            if other_module is None or expr.attr in seen:
+            seen_key = (other_module.path.resolve(), expr.attr) if other_module else None
+            if other_module is None or seen_key in seen:
                 return None
-            seen.add(expr.attr)
+            seen.add(seen_key)
             assigned = other_module.assignments.get(expr.attr)
             if assigned is not None:
                 return _resolve_string_expr(assigned, other_module, module_lookup, module_cache, seen)
             function_node = other_module.functions.get(expr.attr)
             if function_node is not None:
                 return _resolve_function_return_string(function_node, other_module, module_lookup, module_cache, seen)
+            reexport = other_module.imports.get(expr.attr)
+            if reexport is not None:
+                return _resolve_string_from_binding(reexport, other_module.path, module_lookup, module_cache, seen)
     if isinstance(expr, ast.Call):
         call_name = _get_call_name(expr.func)
         if call_name == "init_chat_model" and expr.args:
@@ -381,8 +408,16 @@ def _resolve_string_expr(
                 if binding:
                     source_file = _resolve_module_alias_source(binding, module_info.path, module_lookup)
                     other_module = _get_cached_module_info(source_file, module_cache) if source_file else None
-                    if other_module and expr.func.attr in other_module.functions:
-                        return _resolve_function_return_string(other_module.functions[expr.func.attr], other_module, module_lookup, module_cache, seen)
+                    if other_module:
+                        seen_key = (other_module.path.resolve(), expr.func.attr)
+                        if seen_key in seen:
+                            return None
+                        seen.add(seen_key)
+                        if expr.func.attr in other_module.functions:
+                            return _resolve_function_return_string(other_module.functions[expr.func.attr], other_module, module_lookup, module_cache, seen)
+                        reexport = other_module.imports.get(expr.func.attr)
+                        if reexport is not None:
+                            return _resolve_string_from_binding(reexport, other_module.path, module_lookup, module_cache, seen)
         for keyword in expr.keywords:
             if keyword.arg == "model":
                 return _resolve_string_expr(keyword.value, module_info, module_lookup, module_cache, seen)

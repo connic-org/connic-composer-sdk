@@ -1498,6 +1498,126 @@ def test_langchain_migration_resolves_imported_prompt_model_and_tool_dependencie
     }
 
 
+def test_langchain_migration_resolves_prompt_reexported_across_modules(tmp_path):
+    source = tmp_path / "langchain-prompt-reexport"
+    destination = tmp_path / "connic-app"
+    write(
+        source / "billing_prompt.py",
+        '''
+        PROMPT = "Handle billing questions with care."
+
+
+        def build_prompt():
+            return PROMPT
+        ''',
+    )
+    write(
+        source / "prompts.py",
+        '''
+        from billing_prompt import PROMPT, build_prompt
+        ''',
+    )
+    write(
+        source / "agent.py",
+        '''
+        from langchain.agents import create_agent
+        from prompts import PROMPT
+        import prompts as prompt_module
+
+
+        billing_agent = create_agent(
+            model="openai:gpt-4o-mini",
+            tools=[],
+            system_prompt=PROMPT,
+            name="Billing Support",
+        )
+
+        account_agent = create_agent(
+            model="openai:gpt-4o-mini",
+            tools=[],
+            system_prompt=prompt_module.PROMPT,
+            name="Account Support",
+        )
+
+        invoice_agent = create_agent(
+            model="openai:gpt-4o-mini",
+            tools=[],
+            system_prompt=prompt_module.build_prompt(),
+            name="Invoice Support",
+        )
+        ''',
+    )
+
+    result = CliRunner().invoke(
+        make_migrate_cli(),
+        ["migrate", "--source", str(source), "--dest", str(destination)],
+    )
+
+    report = (destination / "MIGRATION_REPORT.md").read_text()
+    expected_prompt = "Handle billing questions with care."
+
+    assert result.exit_code == 0
+    for agent_name in ("billing-support", "account-support", "invoice-support"):
+        agent_yaml = yaml.safe_load((destination / "agents" / f"{agent_name}.yaml").read_text())
+        assert agent_yaml["description"] == expected_prompt
+        assert agent_yaml["system_prompt"] == expected_prompt
+    assert "No static system prompt could be extracted" not in report
+
+
+def test_langchain_migration_resolves_reexported_prompt_format_values(tmp_path):
+    source = tmp_path / "langchain-prompt-format-reexport"
+    destination = tmp_path / "connic-app"
+    write(
+        source / "prompt_values.py",
+        '''
+        AUDIENCE = "billing customers"
+        ''',
+    )
+    write(
+        source / "prompt_config.py",
+        '''
+        from prompt_values import AUDIENCE
+        ''',
+    )
+    write(
+        source / "prompts.py",
+        '''
+        from prompt_config import AUDIENCE
+
+        TEMPLATE = "Handle {audience} with care."
+
+
+        def build_prompt():
+            return TEMPLATE.format(audience=AUDIENCE)
+        ''',
+    )
+    write(
+        source / "agent.py",
+        '''
+        from langchain.agents import create_agent
+        from prompts import build_prompt
+
+
+        billing_agent = create_agent(
+            model="openai:gpt-4o-mini",
+            tools=[],
+            system_prompt=build_prompt(),
+            name="Billing Support",
+        )
+        ''',
+    )
+
+    result = CliRunner().invoke(
+        make_migrate_cli(),
+        ["migrate", "--source", str(source), "--dest", str(destination)],
+    )
+
+    agent_yaml = yaml.safe_load((destination / "agents" / "billing-support.yaml").read_text())
+
+    assert result.exit_code == 0
+    assert agent_yaml["system_prompt"] == "Handle billing customers with care."
+
+
 def test_langchain_migration_resolves_imported_module_alias_tool_and_config(tmp_path):
     source = tmp_path / "langchain-module-alias"
     destination = tmp_path / "connic-app"

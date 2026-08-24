@@ -86,12 +86,12 @@ Cloned modern upstream repositories/examples:
 #### `new-langgraph-project`
 
 - source: `tests/langchain/sources/new-langgraph-project`
-- migration result: no output generated
-- current behavior: `connic migrate` reports `No migratable agents were found.`
+- migration result: an empty Connic scaffold and `MIGRATION_REPORT.md` are generated for manual migration
+- current behavior: `connic migrate` warns `No migratable agents were found. Generating an empty scaffold for manual migration.`
 - reason:
   - this project is a low-level LangGraph `StateGraph` template, not a LangChain `create_agent(...)` codebase
 - takeaway:
-  - current migration coverage is LangChain-agent oriented, not generic LangGraph graph compilation
+  - automatic migration is LangChain-agent oriented; low-level LangGraph orchestration still requires manual restructuring in the generated scaffold
 
 ## Improvements made while validating
 
@@ -104,5 +104,5 @@ During this validation pass the migrator was improved to better handle modern La
 
 ## Suggested next targets
 
-1. add explicit reporting for unsupported LangGraph `StateGraph` templates
+1. consider first-class migration handling for low-level LangGraph `StateGraph` templates
 2. consider first-class migration handling for handoff tools / swarm patterns
