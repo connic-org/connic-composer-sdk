@@ -4551,7 +4551,7 @@ def test_test_command_stops_when_reupload_reports_session_not_active(tmp_path, m
     assert "Session was stopped due to inactivity timeout." in result.output
 
 
-def test_test_command_ignores_unwatched_events_and_reports_reupload_validation_error(tmp_path, monkeypatch):
+def test_test_command_reports_requirements_restart_error_without_raw_json(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(cli, "print_update_hint", lambda: None)
     write_minimal_test_project(tmp_path)
@@ -4591,7 +4591,14 @@ def test_test_command_ignores_unwatched_events_and_reports_reupload_validation_e
                 FakeClient.upload_count += 1
                 if FakeClient.upload_count == 1:
                     return Response(200, {"files_hash": "hash_1", "size_bytes": len(files["file"][1])})
-                return Response(400, {"detail": "Syntax error in support.yaml"}, text="Syntax error in support.yaml")
+                return Response(
+                    409,
+                    {
+                        "detail": "requirements.txt changed. Stop and recreate this dev session; "
+                        "dependencies are installed only when a session starts."
+                    },
+                    text='{"detail":"raw response must not be shown"}',
+                )
             raise AssertionError(f"Unexpected POST {path}")
 
         def get(self, path):
@@ -4631,7 +4638,7 @@ def test_test_command_ignores_unwatched_events_and_reports_reupload_validation_e
             FakeObserver.handler.on_any_event(Event(str(tmp_path / "agents" / ".hidden.yaml")))
             FakeObserver.handler.on_any_event(Event(str(tmp_path / "agents" / "__pycache__" / "support.pyc")))
             FakeObserver.handler.on_any_event(Event(str(tmp_path / "notes.txt")))
-            FakeObserver.handler.on_any_event(Event(str(tmp_path / "agents" / "support.yaml")))
+            FakeObserver.handler.on_any_event(Event(str(tmp_path / "requirements.txt")))
 
         def stop(self):
             requests.append(("OBSERVER_STOP", None, None))
@@ -4668,9 +4675,10 @@ def test_test_command_ignores_unwatched_events_and_reports_reupload_validation_e
 
     assert result.exit_code == 0, result.output
     assert FakeClient.upload_count == 2
-    assert result.output.count("Detected change: support.yaml") == 1
-    assert "Upload failed: Syntax error in support.yaml" in result.output
-    assert "Fix the issue and save to retry..." in result.output
+    assert result.output.count("Detected change: requirements.txt") == 1
+    assert "requirements.txt changed. Stop and recreate this dev session" in result.output
+    assert "raw response must not be shown" not in result.output
+    assert "Fix the issue and save to retry..." not in result.output
     assert "Session ended (status: expired)" in result.output
 
 

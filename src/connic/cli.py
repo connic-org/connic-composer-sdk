@@ -38,6 +38,7 @@ SKILL_DESTINATION = Path(".agents/skills/connic")
 CLAUDE_SKILL_DESTINATION = Path(".claude/skills/connic")
 SKILL_DESTINATIONS = (SKILL_DESTINATION, CLAUDE_SKILL_DESTINATION)
 AI_AGENT_SETUP_URL = f"{DEFAULT_BASE_URL.rstrip('/')}/docs/v1/ai-agent-setup"
+_RECREATE_SESSION_ERROR = "RECREATE_SESSION:"
 PLUGIN_INSTALLS = (
     (
         "Codex",
@@ -1767,8 +1768,9 @@ def dev(name: str, api_url: str, api_key: str, project_id: str):
     """
     Start a dev session with hot-reload against Connic cloud.
 
-    Creates an isolated test environment and syncs your local files
-    for rapid development. Changes are reflected in 2-5 seconds.
+    Creates an isolated test environment and syncs your local source files
+    for rapid development. Source changes are reflected in 2-5 seconds;
+    requirements.txt changes require recreating the session.
 
     \b
     Examples:
@@ -2008,19 +2010,21 @@ def dev(name: str, api_url: str, api_key: str, project_id: str):
             if upload_resp.status_code == 200:
                 result = upload_resp.json()
                 return result.get("files_hash"), result.get("size_bytes"), None
+            elif upload_resp.status_code == 409:
+                detail = _response_error_text(upload_resp)
+                if detail.startswith("requirements.txt changed."):
+                    return None, 0, f"{_RECREATE_SESSION_ERROR}{detail}"
+                return None, 0, f"Upload failed: {detail}"
             elif upload_resp.status_code == 400:
                 # Check if this is a "session not active" error
-                try:
-                    detail = upload_resp.json().get("detail", "")
-                    if "not active" in detail.lower():
-                        return None, 0, "SESSION_ENDED"
-                except Exception:
-                    pass
-                return None, 0, f"Upload failed: {upload_resp.text}"
+                detail = _response_error_text(upload_resp)
+                if "not active" in detail.lower():
+                    return None, 0, "SESSION_ENDED"
+                return None, 0, f"Upload failed: {detail}"
             elif upload_resp.status_code == 404:
                 return None, 0, "SESSION_ENDED"
             else:
-                return None, 0, f"Upload failed: {upload_resp.text}"
+                return None, 0, f"Upload failed: {_response_error_text(upload_resp)}"
         
         # Initial upload
         _step("Uploading initial files...")
@@ -2030,8 +2034,11 @@ def dev(name: str, api_url: str, api_key: str, project_id: str):
             cleanup()
             sys.exit(1)
         elif error:
-            _warn(error)
-            _info("Fix the issue and save to retry...")
+            if error.startswith(_RECREATE_SESSION_ERROR):
+                _warn(error.removeprefix(_RECREATE_SESSION_ERROR))
+            else:
+                _warn(error)
+                _info("Fix the issue and save to retry...")
             current_hash = None  # Will retry on file change
         elif current_hash:
             _ok(f"Uploaded {size} bytes (hash: {current_hash[:16]}...)")
@@ -2243,8 +2250,12 @@ def dev(name: str, api_url: str, api_key: str, project_id: str):
                         server_terminated = True
                         break
                     elif error:
-                        click.secho(f"  [{time.strftime('%H:%M:%S')}]     ! {error}", fg="yellow", err=True)
-                        click.echo(f"  [{time.strftime('%H:%M:%S')}]     Fix the issue and save to retry...")
+                        if error.startswith(_RECREATE_SESSION_ERROR):
+                            error = error.removeprefix(_RECREATE_SESSION_ERROR)
+                            click.secho(f"  [{time.strftime('%H:%M:%S')}]     ! {error}", fg="yellow", err=True)
+                        else:
+                            click.secho(f"  [{time.strftime('%H:%M:%S')}]     ! {error}", fg="yellow", err=True)
+                            click.echo(f"  [{time.strftime('%H:%M:%S')}]     Fix the issue and save to retry...")
                     elif new_hash and new_hash != current_hash:
                         current_hash = new_hash
                         click.secho(f"  [{time.strftime('%H:%M:%S')}]     ✓ Uploaded {size} bytes", fg="green")

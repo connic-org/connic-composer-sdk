@@ -155,6 +155,7 @@ async def retrieval_query(
             - namespace: The namespace (if any)
             - score: Similarity score (higher is better, max 1.0)
             - metadata: The entry's metadata dict
+        - error: Present on timeout; results is then an empty list
 
     Example:
         result = await retrieval_query("What is the refund policy?")
@@ -355,8 +356,9 @@ async def web_search(
     Search the web for real-time information.
     
     This is a managed service - no configuration required.
-    Note: Each call to web_search adds 1 additional billable run.
-    (e.g., a run with 2 searches counts as 3 runs: 1 base + 2 searches)
+    Successful searches are billed at your plan's web tool pricing.
+    Web-tool charges are billed separately and do not increase the number
+    of agent runs.
     
     Args:
         query: The search query
@@ -392,8 +394,10 @@ async def web_read_page(
     Fetch a web page and return its content as markdown.
 
     This is a managed service - no configuration required.
-    Note: Each call to web_read_page adds 1 additional billable run.
-    (e.g., a run with 2 scrapes counts as 3 runs: 1 base + 2 scrapes)
+    Extracted pages are billed at your plan's web tool pricing,
+    including each extracted PDF page.
+    Web-tool charges are billed separately and do not increase the number
+    of agent runs.
 
     Args:
         url: The URL of the page to fetch

@@ -265,6 +265,8 @@ Run `connic <command> --help` for flags and examples.
 
 `connic dev` creates an isolated development environment in Connic cloud and syncs local changes while you iterate.
 
+Changes under the standard source directories hot-reload. Dependencies are installed from `requirements.txt` when the session starts, so changing that file requires stopping and recreating the dev session.
+
 This is the main development loop when you need real connectors, predefined tools, and environment-scoped services.
 
 Use `connic test` for one-shot declarative test suites from `tests/`, including CI runs and deploy-gate parity.

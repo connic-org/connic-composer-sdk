@@ -40,8 +40,8 @@ PREDEFINED_TOOL_NAMES = {
     "retrieval_store",
     "retrieval_delete",
     "retrieval_list_namespaces",
-    "web_search",           # Search the web for real-time information (costs 2x runs)
-    "web_read_page",        # Fetch a web page and return its content as markdown (costs 2x runs)
+    "web_search",           # Search the web for real-time information (billed at your plan's web tool pricing)
+    "web_read_page",        # Fetch a web page as markdown (billed at your plan's web tool pricing)
     # Database tools
     "db_find",              # Query documents with JSON filters
     "db_insert",            # Insert documents into a collection (auto-creates collection)
