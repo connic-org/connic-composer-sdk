@@ -43,10 +43,13 @@ from .core import (
     Tool,
     ToolFile,
     ToolHook,
+    VoiceConfig,
+    VoiceInterruptionConfig,
+    VoiceTurnDetectionConfig,
 )
 from .loader import ProjectLoader
 
-__version__ = "0.1.44"
+__version__ = "0.1.45"
 
 __all__ = [
     "AbortTool",
@@ -57,6 +60,9 @@ __all__ = [
     "Tool",
     "ToolFile",
     "ToolHook",
+    "VoiceConfig",
+    "VoiceInterruptionConfig",
+    "VoiceTurnDetectionConfig",
     "RetryOptions",
     "Middleware",
     "StopProcessing",

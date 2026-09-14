@@ -132,10 +132,14 @@ Example::
 
 The ``expected_result`` and ``expected_tool_calls`` mapping expressions are
 evaluated server-side with bindings ``output``, ``error``, ``status``,
-``context`` (in ``expected_result``) and ``params``, ``invocations``,
+``context`` (in ``expected_result``) and ``params``, ``result``, ``invocations``,
 ``context`` (in ``expected_tool_calls``). An ``approval_decisions.params``
 expression receives ``params`` and ``context``. ``context`` is the builder's
-mutable dict; for tests with no builder it is empty.
+mutable dict; for tests with no builder it is empty. ``result`` is the tool's
+returned value after its after hook; calls without a recorded return do not
+match result predicates. MCP results expose ``is_error`` and ``parts``.
+Discoverable calls use the actual tool name or canonical ref in every tool
+assertion, with that tool's parameters and result.
 """
 
 from __future__ import annotations

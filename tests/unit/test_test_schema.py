@@ -421,6 +421,26 @@ def test_child_agent_expected_tool_call_order_rejects_invalid_entries(expected_t
         )
 
 
+def test_discovered_tools_are_asserted_by_their_actual_names_and_parameters():
+    test_file = ConnicTestFile.model_validate({
+        "tests": [{
+            "name": "discovers_tools",
+            "payload": "lookup",
+            "expected_tool_calls": [
+                {"fixtures.discovery.input_marker": 'params.request_id == "request-1"'},
+                {"query-docs": "result.is_error == false and invocations == 1"},
+            ],
+            "expected_tool_call_order": ["search_tools", "query-docs"],
+            "expected_no_tool_calls": ["fixtures.discovery.context_marker"],
+        }],
+    })
+
+    case = test_file.resolved(test_file.tests[0])
+    assert case["expected_tool_calls"][1] == {
+        "query-docs": "result.is_error == false and invocations == 1"
+    }
+
+
 def test_tests_list_must_not_be_empty():
     with pytest.raises(ValidationError):
         ConnicTestFile.model_validate({"tests": []})

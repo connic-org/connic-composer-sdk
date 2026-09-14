@@ -4,9 +4,15 @@ import json
 from pathlib import Path
 from textwrap import dedent
 
+import pytest
 from click.testing import CliRunner
 
-from connic import cli
+from connic import cli, update_check
+
+
+@pytest.fixture(autouse=True)
+def disable_update_checks(monkeypatch):
+    monkeypatch.setenv("CONNIC_NO_UPDATE_CHECK", "1")
 
 # ---------------------------------------------------------------------------
 # Fixture helpers
@@ -621,7 +627,7 @@ def test_test_command_with_coverage_json_reports_unloadable_agent_file(tmp_path,
     result = CliRunner().invoke(cli.main, ["test", "--coverage", "--json"])
 
     assert result.exit_code == 0, result.output
-    payload = json.loads(result.output)
+    payload = json.loads(result.stdout)
     assert "agents/broken-agent.yaml" in payload["error"]
     assert "missing required field(s): name" in payload["error"]
 
@@ -636,23 +642,43 @@ def test_test_command_with_coverage_json_reports_orphaned_invalid_split_suite(tm
     result = CliRunner().invoke(cli.main, ["test", "--coverage", "--json"])
 
     assert result.exit_code == 0, result.output
-    payload = json.loads(result.output)
+    payload = json.loads(result.stdout)
     assert "tests/math-agent-invalid.yaml" in payload["error"]
     assert [agent["name"] for agent in payload["agents"]] == ["math-agent"]
 
 
-def test_test_command_with_coverage_and_json_emits_machine_readable_report(tmp_path, monkeypatch):
+@pytest.mark.parametrize("update_available", [False, True])
+def test_test_command_with_coverage_and_json_emits_machine_readable_report(tmp_path, monkeypatch, update_available):
     monkeypatch.chdir(tmp_path)
     _write_calculator_tool(tmp_path)
     _write_llm_agent(tmp_path, "math-agent", tools=["calculator.add", "calculator.subtract"])
     _write_test_file(tmp_path, "math-agent", [["calculator.add"]])
     monkeypatch.delenv("CONNIC_API_KEY", raising=False)
     monkeypatch.delenv("CONNIC_PROJECT_ID", raising=False)
+    if update_available:
+        monkeypatch.delenv("CONNIC_NO_UPDATE_CHECK")
+        monkeypatch.setattr(update_check, "reminders_enabled", lambda: True)
+        monkeypatch.setattr(update_check, "_is_interactive", lambda: False)
+        monkeypatch.setattr(
+            update_check,
+            "get_update_status",
+            lambda: update_check.UpdateStatus(
+                current_sdk_version="1.0.0",
+                latest_sdk_version="1.1.0",
+                current_skill_version=None,
+                latest_skill_version=None,
+                sdk_update_available=True,
+                skill_update_available=False,
+                installed_skill_paths=(),
+                missing_skill_paths=(),
+            ),
+        )
 
     result = CliRunner().invoke(cli.main, ["test", "--coverage", "--json"])
 
     assert result.exit_code == 0, result.output
-    payload = json.loads(result.output)
+    payload = json.loads(result.stdout)
+    assert result.stderr == ("Connic SDK update available; run `connic update`.\n" if update_available else "")
     assert payload["overall"] == 50.0
     [agent] = payload["agents"]
     assert agent["name"] == "math-agent"

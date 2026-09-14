@@ -190,6 +190,53 @@ class RetryOptions(BaseModel):
     )
 
 
+class VoiceTurnDetectionConfig(BaseModel):
+    """Provider-side detection of when the caller has finished speaking."""
+    model_config = ConfigDict(extra="forbid")
+
+    silence_ms: Optional[int] = Field(
+        default=None, gt=0,
+        description="Silence duration before ending a speech turn. Omit to use the provider default.",
+    )
+
+
+class VoiceInterruptionConfig(BaseModel):
+    """Whether caller speech interrupts the current spoken response."""
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool
+
+
+class VoiceConfig(BaseModel):
+    """Spoken interaction settings for a native realtime LLM agent."""
+    model_config = ConfigDict(extra="forbid")
+
+    voice: Optional[str] = Field(default=None, min_length=1, description="Voice ID supported by the selected provider.")
+    language: Optional[str] = Field(default=None, min_length=1, description="Preferred conversation language.")
+    greeting: Optional[str] = Field(default=None, min_length=1, description="Opening greeting. Omit to let the caller speak first.")
+    thinking_sound: bool = Field(default=True, description="Play a quiet repeating indicator during tool waits.")
+    hang_up_allowed: bool = Field(default=True, description="Allow the agent to end the call.")
+    turn_detection: Optional[VoiceTurnDetectionConfig] = None
+    interruptions: Optional[VoiceInterruptionConfig] = None
+    idle_timeout_seconds: Optional[int] = Field(
+        default=None, gt=0,
+        description="End the voice session after this many seconds of conversational inactivity.",
+    )
+
+
+def resolve_voice_model(model: str) -> tuple[Literal["openai", "azure", "gemini", "vertex_ai"], str]:
+    """Resolve the direct native realtime providers supported by Connic Voice."""
+    provider, _, model_name = model.partition("/")
+    if model_name and (
+        provider == "openai" or provider == "azure" or provider == "gemini" or provider == "vertex_ai"
+    ):
+        return provider, model_name
+    raise ValueError(
+        "voice_config requires an openai/, azure/, gemini/, or vertex_ai/ provider prefix "
+        "followed by a model or deployment name."
+    )
+
+
 class SessionConfig(BaseModel):
     """
     Persistent session configuration for maintaining conversation history across requests.
@@ -643,6 +690,10 @@ class AgentConfig(BaseModel):
     
     # LLM agent fields (required when type=llm)
     model: Optional[str] = Field(default=None, description="The AI model to use (required for LLM agents)")
+    voice_config: Optional[VoiceConfig] = Field(
+        default=None,
+        description="Native realtime voice settings. Uses the agent's model, prompt, and tools.",
+    )
     fallback_model: Optional[str] = Field(default=None, description="Fallback AI model to use after a failed primary request (LLM agents only)")
     system_prompt: Optional[str] = Field(default=None, description="Instructions that define the agent's behavior")
     temperature: float = Field(default=1.0, ge=0.0, le=2.0, description="Controls randomness in output")
@@ -819,11 +870,22 @@ class AgentConfig(BaseModel):
     @model_validator(mode='after')
     def validate_type_requirements(self):
         """Validate that required fields are present based on agent type."""
+        if self.voice_config is not None and self.type != AgentType.LLM:
+            raise ValueError("voice_config is only supported for LLM agents")
         if self.type == AgentType.LLM:
             if not self.model:
                 raise ValueError("LLM agents require 'model' to be specified")
             if not self.system_prompt:
                 raise ValueError("LLM agents require 'system_prompt' to be specified")
+            if self.voice_config is not None:
+                resolve_voice_model(self.model)
+                if self.guardrails and self.guardrails.input:
+                    raise ValueError("Input guardrails are not supported for voice agents because audio is streamed immediately")
+                if self.guardrails and self.guardrails.output:
+                    raise ValueError("Output guardrails are not supported for voice agents because speech is streamed immediately")
+                for field in ("approval", "output_schema", "output_schema_dict", "fallback_model", "context_compression"):
+                    if getattr(self, field) is not None:
+                        raise ValueError(f"{field} is not supported for voice agents")
         elif self.type == AgentType.SEQUENTIAL:
             if self.context_compression:
                 raise ValueError("context_compression is only supported for LLM agents")

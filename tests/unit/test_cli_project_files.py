@@ -4389,6 +4389,7 @@ def test_test_command_debounces_watched_file_change_and_reuploads_project(tmp_pa
 
     class Event:
         is_directory = False
+        event_type = "modified"
 
         def __init__(self, src_path):
             self.src_path = src_path
@@ -4499,6 +4500,7 @@ def test_test_command_stops_when_reupload_reports_session_not_active(tmp_path, m
 
     class Event:
         is_directory = False
+        event_type = "modified"
 
         def __init__(self, src_path):
             self.src_path = src_path
@@ -4620,6 +4622,8 @@ def test_test_command_reports_requirements_restart_error_without_raw_json(tmp_pa
             requests.append(("CLOSE", None, None))
 
     class Event:
+        event_type = "modified"
+
         def __init__(self, src_path, is_directory=False):
             self.src_path = src_path
             self.is_directory = is_directory

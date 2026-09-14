@@ -270,6 +270,8 @@ def _fetch_failed_run_details(
 # File Validation Constants and Helpers
 # =============================================================================
 
+PROJECT_DIRECTORIES = ("agents", "tools", "middleware", "schemas", "guardrails", "hooks", "tests")
+
 # Allowed file extensions
 ALLOWED_EXTENSIONS = {
     ".py",      # Python scripts
@@ -314,9 +316,7 @@ def _validate_project_files() -> tuple[bool, str, list[Path]]:
     total_size = 0
     code_size = 0
 
-    dirs_to_check = ["agents", "tools", "middleware", "schemas", "guardrails", "hooks", "tests"]
-
-    for dirname in dirs_to_check:
+    for dirname in PROJECT_DIRECTORIES:
         dirpath = Path(dirname)
         if dirpath.is_symlink():
             return False, f"Symbolic links are not allowed: {dirpath}", []
@@ -2134,46 +2134,65 @@ def dev(name: str, api_url: str, api_key: str, project_id: str):
 
         watch_cleanup = stop_watching
 
+        project_root = Path.cwd()
+        directory_watches = {}
+
+        def watch_directory(dirname):
+            previous_watch = directory_watches.pop(dirname, None)
+            if previous_watch is not None:
+                observer.unschedule(previous_watch)
+            dirpath = Path(dirname)
+            if dirpath.is_dir() and not dirpath.is_symlink():
+                try:
+                    directory_watches[dirname] = observer.schedule(handler, str(dirpath), recursive=True)
+                except (FileNotFoundError, NotADirectoryError):
+                    # A later creation event will retry if the directory disappeared.
+                    pass
+
         class FileChangeHandler(FileSystemEventHandler):
             def on_any_event(self, event):
                 nonlocal pending_upload, last_upload_time
-                
-                # Ignore directories and hidden files
+
+                if event.event_type not in {"created", "modified", "deleted", "moved"}:
+                    return
+                if event.is_directory and event.event_type == "modified":
+                    return
+
+                changed_paths = []
+                for event_path in (event.src_path, getattr(event, "dest_path", "")):
+                    if not event_path:
+                        continue
+                    try:
+                        path = Path(os.path.abspath(event_path)).relative_to(project_root)
+                    except ValueError:
+                        continue
+                    if not path.parts or any(part.startswith(".") for part in path.parts):
+                        continue
+                    if "__pycache__" in str(path) or path.suffix == ".pyc":
+                        continue
+                    if path.parts[0] in PROJECT_DIRECTORIES or (not event.is_directory and path == Path("requirements.txt")):
+                        changed_paths.append(path)
+
+                if not changed_paths:
+                    return
+
                 if event.is_directory:
-                    return
-                
-                src_path = Path(event.src_path)
-                
-                # Ignore hidden files
-                if any(part.startswith(".") for part in src_path.parts):
-                    return
-                
-                # Ignore __pycache__ and .pyc files
-                if "__pycache__" in str(src_path) or src_path.suffix == ".pyc":
-                    return
-                
-                # Check if file is in a watched directory or is requirements.txt
-                watched_dirs = ["agents", "tools", "middleware", "schemas", "guardrails", "hooks", "tests"]
-                is_watched = any(d in src_path.parts for d in watched_dirs)
-                is_requirements = src_path.name == "requirements.txt"
-                
-                if not is_watched and not is_requirements:
-                    return
-                
-                click.echo(f"  [{time.strftime('%H:%M:%S')}] → Detected change: {src_path.name}")
+                    for path in changed_paths:
+                        if len(path.parts) == 1:
+                            # Replace stale watches after a directory is moved or recreated.
+                            watch_directory(path.name)
+
+                click.echo(f"  [{time.strftime('%H:%M:%S')}] → Detected change: {changed_paths[-1].name}")
                 pending_upload = True
                 last_upload_time = time.time()
         
         observer = Observer()
         handler = FileChangeHandler()
 
-        # Watch the project directories
-        for dirname in ["agents", "tools", "middleware", "schemas", "guardrails", "hooks", "tests"]:
-            dirpath = Path(dirname)
-            if dirpath.exists():
-                observer.schedule(handler, str(dirpath), recursive=True)
+        for dirname in PROJECT_DIRECTORIES:
+            watch_directory(dirname)
 
-        # Watch requirements.txt
+        # Watch requirements.txt and supported directories added after startup.
         observer.schedule(handler, ".", recursive=False)
 
         observer.start()

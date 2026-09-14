@@ -956,6 +956,73 @@ def test_adk_parallel_agent_is_migrated_as_reviewable_sequential_workflow(tmp_pa
     assert "Original ADK agent used ParallelAgent; migrated as a sequential Connic agent for review." in report
 
 
+@pytest.mark.parametrize("agent_class", ["ParallelAgent", "LoopAgent"])
+def test_adk_yaml_workflow_migration_preserves_child_order_and_requires_review(tmp_path, agent_class):
+    source = tmp_path / "inventory-adk"
+    destination = tmp_path / "inventory-connic"
+    workflow = {
+        "agent_class": agent_class,
+        "name": "Inventory Reconciliation",
+        "sub_agents": [
+            {"config_path": "warehouse/agent.yaml"},
+            {"config_path": "store/agent.yaml"},
+        ],
+    }
+    if agent_class == "LoopAgent":
+        workflow["max_iterations"] = 3
+    write(source / "root_agent.yaml", yaml.safe_dump(workflow))
+    write(
+        source / "warehouse" / "agent.yaml",
+        '''
+        agent_class: LlmAgent
+        name: Warehouse Inventory
+        model: gemini-2.5-flash
+        instruction: Check warehouse stock for the requested product.
+        ''',
+    )
+    write(
+        source / "store" / "agent.yaml",
+        '''
+        agent_class: LlmAgent
+        name: Store Inventory
+        model: gemini-2.5-flash
+        instruction: Check store stock for the requested product.
+        ''',
+    )
+
+    result = CliRunner().invoke(
+        make_migrate_cli(_run_lint),
+        ["migrate", "--source", str(source), "--dest", str(destination)],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "Framework: adk" in result.output
+    assert "Migration complete." in result.output
+    assert "Migration completed with lint issues." not in result.output
+    workflow_yaml = yaml.safe_load((destination / "agents" / "inventory-reconciliation.yaml").read_text())
+    assert workflow_yaml == {
+        "version": "1.0",
+        "name": "inventory-reconciliation",
+        "type": "sequential",
+        "description": "Migrated from ADK YAML agent 'Inventory Reconciliation'.",
+        "agents": ["warehouse-inventory", "store-inventory"],
+    }
+    report = (destination / "MIGRATION_REPORT.md").read_text()
+    assert f"Original ADK YAML agent used {agent_class}; migrated as a sequential Connic agent for review." in report
+    assert "Agent refs: warehouse-inventory, store-inventory" in report
+
+    loader = ProjectLoader(str(destination))
+    loaded = {agent.config.name: agent for agent in loader.load_agents()}
+    assert loader._load_errors == []
+    assert set(loaded) == {"inventory-reconciliation", "warehouse-inventory", "store-inventory"}
+    assert loaded["inventory-reconciliation"].config.type.value == "sequential"
+    assert loaded["inventory-reconciliation"].config.agents == ["warehouse-inventory", "store-inventory"]
+    assert loaded["warehouse-inventory"].config.system_prompt == "Check warehouse stock for the requested product."
+    assert loaded["store-inventory"].config.system_prompt == "Check store stock for the requested product."
+    assert loaded["warehouse-inventory"].config.model == "gemini/gemini-2.5-flash"
+    assert loaded["store-inventory"].config.model == "gemini/gemini-2.5-flash"
+
+
 def test_adk_migration_combines_python_and_yaml_agents(tmp_path):
     source = tmp_path / "mixed-adk-project"
     destination = tmp_path / "connic-app"
