@@ -7,6 +7,7 @@ import sys
 import tempfile
 import zipfile
 from pathlib import Path
+from typing import Literal, NamedTuple
 
 import click
 import httpx
@@ -38,7 +39,15 @@ SKILL_DESTINATION = Path(".agents/skills/connic")
 CLAUDE_SKILL_DESTINATION = Path(".claude/skills/connic")
 SKILL_DESTINATIONS = (SKILL_DESTINATION, CLAUDE_SKILL_DESTINATION)
 AI_AGENT_SETUP_URL = f"{DEFAULT_BASE_URL.rstrip('/')}/docs/v1/ai-agent-setup"
-_RECREATE_SESSION_ERROR = "RECREATE_SESSION:"
+
+
+class _DevUploadResult(NamedTuple):
+    status: Literal["ok", "session_ended", "recreate_session", "failed"]
+    files_hash: str | None = None
+    size_bytes: int = 0
+    error: str | None = None
+
+
 PLUGIN_INSTALLS = (
     (
         "Codex",
@@ -1988,18 +1997,12 @@ def dev(name: str, api_url: str, api_key: str, project_id: str):
             content_hash = hashlib.sha256(content).hexdigest()
             return content, content_hash
         
-        def upload_files() -> tuple[str | None, int, str | None]:
-            """Upload current files to the test session.
-            
-            Returns:
-                Tuple of (files_hash, size_bytes, error_message).
-                If error_message is set, files_hash will be None.
-            """
+        def upload_files() -> _DevUploadResult:
+            """Upload current files to the test session."""
             try:
                 content, content_hash = create_tarball()
             except ValueError as e:
-                # Validation error - return error message instead of crashing
-                return None, 0, str(e)
+                return _DevUploadResult("failed", error=str(e))
             
             upload_resp = client.post(
                 f"/test-sessions/{session_id}/files",
@@ -2009,39 +2012,42 @@ def dev(name: str, api_url: str, api_key: str, project_id: str):
             
             if upload_resp.status_code == 200:
                 result = upload_resp.json()
-                return result.get("files_hash"), result.get("size_bytes"), None
-            elif upload_resp.status_code == 409:
-                detail = _response_error_text(upload_resp)
-                if detail.startswith("requirements.txt changed."):
-                    return None, 0, f"{_RECREATE_SESSION_ERROR}{detail}"
-                return None, 0, f"Upload failed: {detail}"
-            elif upload_resp.status_code == 400:
-                # Check if this is a "session not active" error
-                detail = _response_error_text(upload_resp)
-                if "not active" in detail.lower():
-                    return None, 0, "SESSION_ENDED"
-                return None, 0, f"Upload failed: {detail}"
-            elif upload_resp.status_code == 404:
-                return None, 0, "SESSION_ENDED"
-            else:
-                return None, 0, f"Upload failed: {_response_error_text(upload_resp)}"
+                return _DevUploadResult(
+                    "ok",
+                    files_hash=result.get("files_hash"),
+                    size_bytes=result.get("size_bytes") or 0,
+                )
+            detail = _response_error_text(upload_resp)
+            if upload_resp.status_code == 409 and detail.startswith("requirements.txt changed."):
+                return _DevUploadResult("recreate_session", error=detail)
+            if upload_resp.status_code == 409:
+                return _DevUploadResult("failed", error=f"Upload failed: {detail}")
+            if upload_resp.status_code == 400 and "not active" in detail.lower():
+                return _DevUploadResult("session_ended")
+            if upload_resp.status_code == 400:
+                return _DevUploadResult("failed", error=f"Upload failed: {detail}")
+            if upload_resp.status_code == 404:
+                return _DevUploadResult("session_ended")
+            return _DevUploadResult("failed", error=f"Upload failed: {detail}")
         
         # Initial upload
         _step("Uploading initial files...")
-        current_hash, size, error = upload_files()
-        if error == "SESSION_ENDED":
+        current_hash = None
+        uploaded = upload_files()
+        if uploaded.status == "session_ended":
             _err("Session ended unexpectedly")
             cleanup()
             sys.exit(1)
-        elif error:
-            if error.startswith(_RECREATE_SESSION_ERROR):
-                _warn(error.removeprefix(_RECREATE_SESSION_ERROR))
-            else:
-                _warn(error)
-                _info("Fix the issue and save to retry...")
+        elif uploaded.status == "recreate_session":
+            _warn(uploaded.error)
             current_hash = None  # Will retry on file change
-        elif current_hash:
-            _ok(f"Uploaded {size} bytes (hash: {current_hash[:16]}...)")
+        elif uploaded.status == "failed":
+            _warn(uploaded.error)
+            _info("Fix the issue and save to retry...")
+            current_hash = None  # Will retry on file change
+        elif uploaded.files_hash:
+            current_hash = uploaded.files_hash
+            _ok(f"Uploaded {uploaded.size_bytes} bytes (hash: {current_hash[:16]}...)")
 
         keys_active = _KEYS_SUPPORTED and sys.stdin.isatty()
 
@@ -2261,24 +2267,22 @@ def dev(name: str, api_url: str, api_key: str, project_id: str):
                     next_upload_label = None
                     click.echo(f"  [{time.strftime('%H:%M:%S')}] → {label}")
 
-                    new_hash, size, error = upload_files()
-                    if error == "SESSION_ENDED":
+                    uploaded = upload_files()
+                    if uploaded.status == "session_ended":
                         click.echo()
                         click.secho(f"  [{time.strftime('%H:%M:%S')}] ! Session ended", fg="yellow")
                         click.echo("    Session was stopped due to inactivity timeout.")
                         server_terminated = True
                         break
-                    elif error:
-                        if error.startswith(_RECREATE_SESSION_ERROR):
-                            error = error.removeprefix(_RECREATE_SESSION_ERROR)
-                            click.secho(f"  [{time.strftime('%H:%M:%S')}]     ! {error}", fg="yellow", err=True)
-                        else:
-                            click.secho(f"  [{time.strftime('%H:%M:%S')}]     ! {error}", fg="yellow", err=True)
-                            click.echo(f"  [{time.strftime('%H:%M:%S')}]     Fix the issue and save to retry...")
-                    elif new_hash and new_hash != current_hash:
-                        current_hash = new_hash
-                        click.secho(f"  [{time.strftime('%H:%M:%S')}]     ✓ Uploaded {size} bytes", fg="green")
-                    elif new_hash == current_hash:
+                    elif uploaded.status == "recreate_session":
+                        click.secho(f"  [{time.strftime('%H:%M:%S')}]     ! {uploaded.error}", fg="yellow", err=True)
+                    elif uploaded.status == "failed":
+                        click.secho(f"  [{time.strftime('%H:%M:%S')}]     ! {uploaded.error}", fg="yellow", err=True)
+                        click.echo(f"  [{time.strftime('%H:%M:%S')}]     Fix the issue and save to retry...")
+                    elif uploaded.files_hash and uploaded.files_hash != current_hash:
+                        current_hash = uploaded.files_hash
+                        click.secho(f"  [{time.strftime('%H:%M:%S')}]     ✓ Uploaded {uploaded.size_bytes} bytes", fg="green")
+                    elif uploaded.files_hash == current_hash:
                         click.echo(f"  [{time.strftime('%H:%M:%S')}]     No content changes detected")
                     
         except KeyboardInterrupt:

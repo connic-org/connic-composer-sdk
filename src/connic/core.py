@@ -213,8 +213,15 @@ class VoiceConfig(BaseModel):
 
     voice: Optional[str] = Field(default=None, min_length=1, description="Voice ID supported by the selected provider.")
     language: Optional[str] = Field(default=None, min_length=1, description="Preferred conversation language.")
+    transcription_model: Optional[str] = Field(
+        default=None, min_length=1,
+        description="Input transcription model for OpenAI, or transcription deployment name for Azure. Omit to disable input transcription for these providers.",
+    )
     greeting: Optional[str] = Field(default=None, min_length=1, description="Opening greeting. Omit to let the caller speak first.")
-    thinking_sound: bool = Field(default=True, description="Play a quiet repeating indicator during tool waits.")
+    thinking_sound: bool = Field(
+        default=True,
+        description="Play a quiet repeating indicator during tool waits or provider-reported background work. Pauses while the user or agent speaks.",
+    )
     hang_up_allowed: bool = Field(default=True, description="Allow the agent to end the call.")
     turn_detection: Optional[VoiceTurnDetectionConfig] = None
     interruptions: Optional[VoiceInterruptionConfig] = None
@@ -758,7 +765,7 @@ class AgentConfig(BaseModel):
     )
     
     # Reasoning configuration (LLM agents only)
-    reasoning_effort: Optional[Literal["minimal", "low", "medium", "high", "xhigh", "off", "auto"]] = Field(
+    reasoning_effort: Optional[str] = Field(
         default=None,
         description="How hard the model should think. `auto` (default) uses the provider's own default; `off` disables reasoning where the model allows it; `minimal`/`low`/`medium`/`high`/`xhigh` map to the provider's effort levels. Captured reasoning is always shown in run traces when the provider returns it."
     )

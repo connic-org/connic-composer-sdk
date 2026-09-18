@@ -75,8 +75,24 @@ def test_voice_hang_up_can_be_disabled():
     assert voice_agent(voice_config={"hang_up_allowed": False}).voice_config.hang_up_allowed is False
 
 
+@pytest.mark.parametrize("provider", ["openai", "azure", "gemini", "vertex_ai"])
+@pytest.mark.parametrize("effort", ["low", "medium", "high", "minimal", "xhigh", "off", "provider-specific-level"])
+def test_voice_reasoning_level_is_validated_by_the_provider(provider, effort):
+    assert voice_agent(model=f"{provider}/native-model", reasoning_effort=effort).reasoning_effort == effort
+
+
+@pytest.mark.parametrize("provider", ["openai", "azure"])
+def test_voice_preserves_explicit_transcription_model(provider):
+    agent = voice_agent(
+        model=f"{provider}/realtime-model",
+        voice_config={"transcription_model": "custom-transcription-model"},
+    )
+    assert agent.voice_config.transcription_model == "custom-transcription-model"
+
+
 @pytest.mark.parametrize("options", [
     {"voice": ""},
+    {"transcription_model": ""},
     {"thinking_sound": {}},
     {"hang_up_allowed": {}},
     {"turn_detection": {"mode": "semantic"}},
