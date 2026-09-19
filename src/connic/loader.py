@@ -395,7 +395,7 @@ class ProjectLoader:
         return overlay
 
     def _merge_list(self, base: List[Any], overlay: List[Any], path: str) -> List[Any]:
-        if path in ("tools", "discoverable_tools", "approval.tools"):
+        if path in ("tools", "discoverable_tools", "approval.tools", "approval.inputs"):
             return self._merge_tool_list(base, overlay)
         if path == "mcp_servers":
             return self._merge_keyed_list(base, overlay, key="name")
@@ -535,18 +535,13 @@ class ProjectLoader:
 
         # Handle approval config
         if "approval" in config_data and config_data["approval"]:
-            approval_raw = config_data["approval"]
+            approval = ApprovalConfig(**config_data["approval"])
             # Validate conditions on approval tools (same pattern as conditional tool parsing)
-            for entry in approval_raw.get("tools", []):
+            for entry in approval.tools:
                 if isinstance(entry, dict):
-                    if len(entry) != 1:
-                        raise ValueError(
-                            f"Conditional approval entry must have exactly one key, got: {entry}"
-                        )
-                    tool_ref = list(entry.keys())[0]
-                    condition = str(list(entry.values())[0])
+                    tool_ref, condition = next(iter(entry.items()))
                     self._validate_condition(condition, tool_ref)
-            config_data["approval"] = ApprovalConfig(**approval_raw)
+            config_data["approval"] = approval
 
         # Convert type string to enum if present
         if "type" in config_data and isinstance(config_data["type"], str):
@@ -624,6 +619,10 @@ class ProjectLoader:
         duplicate_tool_names: Dict[str, List[str]] = {}
         for tool in all_tools_for_dedup:
             duplicate_tool_names.setdefault(tool.name, []).append(tool.ref or tool.name)
+        if config.approval:
+            for entry in config.approval.inputs:
+                name = next(iter(entry))
+                duplicate_tool_names.setdefault(name, []).append(name)
 
         collisions = {
             tool_name: refs

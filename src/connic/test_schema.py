@@ -170,6 +170,7 @@ class TestApprovalDecision(BaseModel):
     )
     decision: Literal["approve", "reject", "timeout"]
     reason: Optional[str] = None
+    response: Optional[str] = Field(default=None, max_length=16384)
 
     @field_validator("tool")
     @classmethod
@@ -184,6 +185,15 @@ class TestApprovalDecision(BaseModel):
         if v is not None and not v.strip():
             raise ValueError("approval decision params must be a non-empty expression")
         return v
+
+    @model_validator(mode="after")
+    def _validate_response(self) -> "TestApprovalDecision":
+        if self.response is not None:
+            if self.decision != "approve":
+                raise ValueError("approval response is only allowed for approve decisions")
+            if not self.response.strip():
+                raise ValueError("approval response must be a non-empty string")
+        return self
 
 
 # Filenames referenced by ``files:`` and ``builder:`` are resolved relative

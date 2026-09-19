@@ -207,6 +207,33 @@ The SDK also exposes predefined Connic tools such as the ones documented in [Pre
 - `db_count`
 - `db_list_collections`
 
+### Human Input and Approvals
+
+```yaml
+approval:
+  tools:
+    - auth.just_needs_approval
+  inputs:
+    - get_mfa:
+        prompt: Use this tool when authentication requires an MFA code.
+        label: MFA code
+        sensitive: true
+        params:
+          - reason: str
+          - account_email: str
+  timeout: 300
+```
+
+`approval.tools` requires approval before executing existing tools, including conditional entries such as `billing.refund: param.amount > 50`.
+
+`approval.inputs` generates tools that collect required text and return it to the agent. No Python function or top-level `tools` entry is needed. `prompt` describes the tool to the agent; `label` names the human input field. `sensitive` defaults to `false`; enable it to mask the input and protect the response in storage and logs.
+
+Input names such as `get_mfa` are exposed unchanged, must be unique among the agent's tools, and cannot contain dots.
+
+Optional `params` declares arguments the agent supplies with the request. Supported types are `str`, `int`, `float`, and `bool`; every declared argument is required, and extra arguments are rejected. Omit `params` for a tool with no arguments. Parameter names must be unique identifiers; `context` is reserved.
+
+Scripted test approvals accept `response: "012345"` alongside `decision: approve` for input tools.
+
 ### Middleware and Runtime Controls
 
 Per-agent middleware lets you modify inputs, enrich context, attach files, stop execution early, and transform outputs. See [Middleware](https://connic.co/docs/v1/build/middleware).

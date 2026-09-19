@@ -1,4 +1,5 @@
 import asyncio
+import keyword
 from dataclasses import dataclass
 from enum import Enum
 from typing import Any, Callable, Dict, List, Literal, Optional, Union
@@ -560,6 +561,59 @@ class CustomGuardrail(BaseModel):
         arbitrary_types_allowed = True
 
 
+class ApprovalInput(BaseModel):
+    """A generated tool that collects human input as its result."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    prompt: str = Field(description="Tool description explaining when the agent should request this input")
+    label: str = Field(max_length=200, description="Label shown above the required text input")
+    sensitive: bool = Field(default=False, strict=True, description="Protect the response in storage and logs")
+    params: List[Dict[str, Literal["str", "int", "float", "bool"]]] = Field(
+        default_factory=list,
+        description="Required tool parameters as one-key mappings from names to scalar types",
+    )
+
+    @field_validator("prompt", "label")
+    @classmethod
+    def _validate_text(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("approval input prompt and label must be non-empty strings")
+        return value
+
+    @field_validator("params")
+    @classmethod
+    def _validate_params(cls, entries):
+        names = set()
+        for entry in entries:
+            if len(entry) != 1:
+                raise ValueError("approval input parameter entry must have exactly one key")
+            name = next(iter(entry))
+            if not name.isascii() or not name.isidentifier() or keyword.iskeyword(name):
+                raise ValueError("approval input parameter names must be valid identifiers")
+            if name == "context":
+                raise ValueError("approval input parameter 'context' is reserved")
+            if name in names:
+                raise ValueError(f"Duplicate approval input parameter name: {name}")
+            names.add(name)
+        return entries
+
+    def parameters_schema(self) -> Dict[str, Any]:
+        """Return the JSON Schema for the generated tool's arguments."""
+        types = {"str": "string", "int": "integer", "float": "number", "bool": "boolean"}
+        properties = {
+            name: {"type": types[param_type]}
+            for entry in self.params
+            for name, param_type in entry.items()
+        }
+        return {
+            "type": "object",
+            "properties": properties,
+            **({"required": list(properties)} if properties else {}),
+            "additionalProperties": False,
+        }
+
+
 class ApprovalConfig(BaseModel):
     """
     Human-in-the-loop approval configuration.
@@ -572,19 +626,72 @@ class ApprovalConfig(BaseModel):
     mapping ``{tool_ref: condition}`` where the condition is evaluated at call
     time using ``param.*`` (tool parameters) and ``context.*`` (middleware
     context). Approval is only required when the condition evaluates to true.
+    Entries in ``inputs`` define generated tools that collect required text
+    and return it as their result. No Python implementation is needed.
 
     Example YAML:
         approval:
           tools:
             - order_tools.delete_order
             - order_tools.process_refund: param.amount > 50 and not context.is_admin
+          inputs:
+            - get_mfa:
+                prompt: "Use this tool when authentication requires an MFA code."
+                label: MFA code
+                sensitive: true
+                params:
+                  - reason: str
+                  - account_email: str
           timeout: 3600
           message: "This action requires human approval before proceeding."
     """
-    tools: List[Union[str, Dict[str, str]]] = Field(..., description="Tool names (or {name: condition} mappings) requiring human approval before execution")
+    tools: List[Union[str, Dict[str, str]]] = Field(
+        default_factory=list,
+        description="Tool names or one-key mappings to conditions requiring human approval before execution",
+    )
+    inputs: List[Dict[str, ApprovalInput]] = Field(
+        default_factory=list,
+        description="One-key mappings from tool names to human input configuration",
+    )
     timeout: int = Field(default=3600, ge=30, le=604800, description="Seconds to wait for approval before timing out")
     message: Optional[str] = Field(default=None, description="Custom message shown to human approvers")
     on_rejection: Literal["fail", "continue"] = Field(default="fail", description='Behavior when rejected. "fail" terminates the run. "continue" resumes with a rejection message to the LLM.')
+
+    @field_validator("tools")
+    @classmethod
+    def _validate_tools(cls, entries):
+        for entry in entries:
+            if isinstance(entry, dict) and len(entry) != 1:
+                raise ValueError("approval tool entry must have exactly one key")
+        return entries
+
+    @field_validator("inputs")
+    @classmethod
+    def _validate_inputs(cls, entries):
+        names = set()
+        for entry in entries:
+            if len(entry) != 1:
+                raise ValueError("approval input entry must have exactly one key")
+            name = next(iter(entry))
+            if not name.isascii() or not name.isidentifier():
+                raise ValueError("approval input names must be identifiers without dots")
+            if len(name) > 64:
+                raise ValueError("approval input tool names must be at most 64 characters")
+            if name in {"search_tools", "use_tool"}:
+                raise ValueError(f"Approval input name '{name}' is reserved for tool discovery")
+            if name in names:
+                raise ValueError(f"Duplicate approval input name: {name}")
+            names.add(name)
+        return entries
+
+    @model_validator(mode="after")
+    def _validate_distinct_entries(self):
+        tool_refs = {entry if isinstance(entry, str) else next(iter(entry)) for entry in self.tools}
+        input_refs = {next(iter(entry)) for entry in self.inputs}
+        overlap = tool_refs & input_refs
+        if overlap:
+            raise ValueError(f"Names cannot appear in both approval.tools and approval.inputs: {', '.join(sorted(overlap))}")
+        return self
 
 
 class McpServerConfig(BaseModel):
@@ -877,6 +984,8 @@ class AgentConfig(BaseModel):
     @model_validator(mode='after')
     def validate_type_requirements(self):
         """Validate that required fields are present based on agent type."""
+        if self.approval and self.approval.inputs and self.type != AgentType.LLM:
+            raise ValueError("approval.inputs is only supported for LLM agents")
         if self.voice_config is not None and self.type != AgentType.LLM:
             raise ValueError("voice_config is only supported for LLM agents")
         if self.type == AgentType.LLM:

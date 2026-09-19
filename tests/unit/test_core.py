@@ -9,6 +9,7 @@ from connic.core import (
     AgentConfig,
     AgentType,
     ApprovalConfig,
+    ApprovalInput,
     ConcurrencyConfig,
     CollectionPermissions,
     DatabaseAccessConfig,
@@ -421,6 +422,155 @@ def test_approval_config_defaults():
     cfg = ApprovalConfig(tools=["db_delete"])
     assert cfg.timeout == 3600
     assert cfg.on_rejection == "fail"
+    assert cfg.inputs == []
+
+
+def test_approval_config_accepts_conditions_and_human_input():
+    cfg = ApprovalConfig(
+        tools=["auth.just_needs_approval", {"billing.refund": "param.amount > 50"}],
+        inputs=[
+            {"get_mfa": {"prompt": "Request an MFA code.", "label": "MFA code", "sensitive": True}},
+            {"get_details": {"prompt": "Ask for missing details.", "label": "Additional details"}},
+        ],
+    )
+
+    assert cfg.tools[1] == {"billing.refund": "param.amount > 50"}
+    assert cfg.inputs[0]["get_mfa"] == ApprovalInput(prompt="Request an MFA code.", label="MFA code", sensitive=True)
+    assert cfg.inputs[1]["get_details"].sensitive is False
+    assert cfg.model_dump()["inputs"][0] == {
+        "get_mfa": {"prompt": "Request an MFA code.", "label": "MFA code", "sensitive": True, "params": []},
+    }
+
+
+def test_approval_input_without_params_has_no_arguments():
+    config = ApprovalInput(prompt="Request an MFA code.", label="MFA code")
+
+    assert config.params == []
+    assert config.parameters_schema() == {
+        "type": "object", "properties": {}, "additionalProperties": False,
+    }
+
+
+def test_approval_input_params_generate_required_scalar_schema():
+    params = [{"reason": "str"}, {"attempt": "int"}, {"amount": "float"}, {"urgent": "bool"}]
+    config = ApprovalInput(prompt="Request a code.", label="Code", params=params)
+
+    assert config.params == params
+    assert config.model_dump()["params"] == params
+    assert config.parameters_schema() == {
+        "type": "object",
+        "properties": {
+            "reason": {"type": "string"},
+            "attempt": {"type": "integer"},
+            "amount": {"type": "number"},
+            "urgent": {"type": "boolean"},
+        },
+        "required": ["reason", "attempt", "amount", "urgent"],
+        "additionalProperties": False,
+    }
+
+
+@pytest.mark.parametrize("params", [
+    None,
+    {"reason": "str"},
+    ["reason"],
+    [{}],
+    [{"reason": "str", "account_email": "str"}],
+    [{"reason": "str"}, {"reason": "int"}],
+    [{"reason": "string"}],
+    [{"reason": "list"}],
+    [{"reason": "dict"}],
+    [{"reason": "str | None"}],
+    [{"reason": {"type": "str"}}],
+    [{"reason": None}],
+    [{"reason": True}],
+    [{"reason": 1}],
+])
+def test_approval_input_rejects_invalid_params(params):
+    with pytest.raises(ValueError):
+        ApprovalInput(prompt="Request a code.", label="Code", params=params)
+
+
+@pytest.mark.parametrize("name", ["", " ", "auth.reason", "account-email", "2fa", "réason", "class", "context"])
+def test_approval_input_rejects_invalid_param_names(name):
+    with pytest.raises(ValueError):
+        ApprovalInput(prompt="Request a code.", label="Code", params=[{name: "str"}])
+
+
+@pytest.mark.parametrize("entry", [
+    {},
+    {"auth.get_mfa": "True", "auth.other": "True"},
+    {"auth.get_mfa": {"label": "MFA code", "sensitive": True}},
+])
+def test_approval_tools_reject_invalid_entries(entry):
+    with pytest.raises(ValueError):
+        ApprovalConfig(tools=[entry])
+
+
+@pytest.mark.parametrize("entry", [
+    {},
+    "get_mfa",
+    {"get_mfa": "param.enabled"},
+    {"get_mfa": {}},
+    {"get_mfa": {"label": "MFA code"}},
+    {"get_mfa": {"prompt": "Request an MFA code."}},
+    {"get_mfa": {"prompt": "", "label": "MFA code"}},
+    {"get_mfa": {"prompt": "   ", "label": "MFA code"}},
+    {"get_mfa": {"prompt": "Request an MFA code.", "label": ""}},
+    {"get_mfa": {"prompt": "Request an MFA code.", "label": "   "}},
+    {"get_mfa": {"prompt": "Request an MFA code.", "label": "a" * 201}},
+    {"get_mfa": {"prompt": "Request an MFA code.", "label": "MFA code", "unknown": True}},
+    {"get_mfa": {"prompt": "Request an MFA code.", "label": "MFA code", "sensitive": "true"}},
+    {" ": {"prompt": "Request an MFA code.", "label": "MFA code"}},
+    {
+        "get_mfa": {"prompt": "Request an MFA code.", "label": "MFA code"},
+        "auth.other": {"prompt": "Request another code.", "label": "Other code"},
+    },
+])
+def test_approval_config_rejects_invalid_input(entry):
+    with pytest.raises(ValueError):
+        ApprovalConfig(inputs=[entry])
+
+
+@pytest.mark.parametrize("name", ["auth.get_mfa", "auth.*", "auth..get_mfa", "auth/get_mfa", "get-mfa", "2fa", "gét_mfa"])
+def test_approval_inputs_reject_invalid_names(name):
+    with pytest.raises(ValueError, match="identifiers without dots"):
+        ApprovalConfig(inputs=[{name: {"prompt": "Request a code.", "label": "Code"}}])
+
+
+def test_approval_inputs_reject_duplicate_names():
+    entry = {"get_mfa": {"prompt": "Request a code.", "label": "Code"}}
+    with pytest.raises(ValueError, match="Duplicate approval input name"):
+        ApprovalConfig(inputs=[entry, entry])
+
+
+@pytest.mark.parametrize("name", ["search_tools", "use_tool"])
+def test_approval_inputs_reject_discovery_helper_names(name):
+    with pytest.raises(ValueError, match="reserved for tool discovery"):
+        ApprovalConfig(inputs=[{name: {"prompt": "Request input.", "label": "Input"}}])
+
+
+def test_approval_inputs_limit_model_tool_name_length():
+    input_config = {"prompt": "Request input.", "label": "Input"}
+    ApprovalConfig(inputs=[{"a" * 64: input_config}])
+    with pytest.raises(ValueError, match="at most 64 characters"):
+        ApprovalConfig(inputs=[{"a" * 65: input_config}])
+
+
+@pytest.mark.parametrize("tool", ["get_mfa", {"get_mfa": "param.enabled"}])
+def test_approval_inputs_cannot_also_be_tool_approvals(tool):
+    with pytest.raises(ValueError, match="both approval.tools and approval.inputs"):
+        ApprovalConfig(tools=[tool], inputs=[{"get_mfa": {"prompt": "Request a code.", "label": "Code"}}])
+
+
+@pytest.mark.parametrize("agent_type", ["tool", "sequential"])
+def test_approval_inputs_require_an_llm_agent(agent_type):
+    with pytest.raises(ValueError, match="approval.inputs is only supported for LLM agents"):
+        AgentConfig(
+            version="1.0", name="assistant", description="Collect input.", type=agent_type,
+            tool_name="auth.authenticate", agents=["auth"],
+            approval={"inputs": [{"get_mfa": {"prompt": "Request a code.", "label": "Code"}}]},
+        )
 
 
 def test_database_access_config_defaults():

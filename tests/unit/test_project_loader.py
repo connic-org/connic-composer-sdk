@@ -8,6 +8,7 @@ from typing import Any, Dict, List, Optional, Union
 import pytest
 
 from connic import tools as connic_tools
+from connic.core import ApprovalInput
 from connic.loader import PREDEFINED_TOOL_ALIASES, PREDEFINED_TOOL_NAMES, ProjectLoader
 
 DOCUMENTED_PREDEFINED_TOOLS = [
@@ -935,6 +936,59 @@ def test_duplicate_tool_function_names_are_reported_with_resolved_refs(tmp_path)
     assert "Agent exposes duplicate tool names" in loader._load_errors[0]
     assert "billing.notifications.send_receipt" in loader._load_errors[0]
     assert "crm.notifications.send_receipt" in loader._load_errors[0]
+
+
+@pytest.mark.parametrize("tool_list", ["tools", "discoverable_tools"])
+@pytest.mark.parametrize("validation_only", [False, True])
+def test_approval_inputs_reject_collisions_with_existing_tool_names(tmp_path, tool_list, validation_only):
+    write_file(tmp_path / "tools" / "account.py", 'def get_mfa() -> str:\n    return "existing tool"')
+    write_file(
+        tmp_path / "agents" / "assistant.yaml",
+        f"""
+        version: "1.0"
+        name: assistant
+        model: openai/gpt-5.2
+        description: Collect human input.
+        system_prompt: Collect human input when needed.
+        {tool_list}:
+          - account.get_mfa
+        approval:
+          inputs:
+            - get_mfa:
+                prompt: Request an MFA code.
+                label: MFA code
+        """,
+    )
+
+    loader = ProjectLoader(str(tmp_path), validation_only=validation_only)
+    assert loader.load_agents() == []
+    assert len(loader._load_errors) == 1
+    assert "Agent exposes duplicate tool names" in loader._load_errors[0]
+    assert "account.get_mfa" in loader._load_errors[0]
+    assert "get_mfa" in loader._load_errors[0]
+
+
+def test_approval_inputs_reject_dotted_names(tmp_path):
+    write_file(
+        tmp_path / "agents" / "assistant.yaml",
+        """
+        version: "1.0"
+        name: assistant
+        model: openai/gpt-5.2
+        description: Collect human input.
+        system_prompt: Collect human input when needed.
+        approval:
+          inputs:
+            - auth.get_mfa:
+                prompt: Request an MFA code.
+                label: MFA code
+        """,
+    )
+
+    loader = ProjectLoader(str(tmp_path))
+    assert loader.load_agents() == []
+    assert len(loader._load_errors) == 1
+    assert "approval input names must be identifiers without dots" in loader._load_errors[0]
 
 
 def test_api_spec_tools_can_be_referenced_exactly_and_with_wildcards(tmp_path):
@@ -2871,6 +2925,92 @@ def test_tool_list_concat_with_dedup_by_ref(tmp_path):
     assert tool_names == ["web_search", "db_insert", "db_find"]
     db_find = next(t for t in agent.tools if t.name == "db_find")
     assert db_find.condition == 'param.collection == "public"'
+
+
+def test_approval_inputs_load_and_override_defaults_by_tool_ref(tmp_path):
+    write_file(
+        tmp_path / "agents" / "_defaults.yaml",
+        """
+        approval:
+          tools:
+            - auth.just_needs_approval
+            - billing.refund: param.amount > 50
+          inputs:
+            - get_mfa:
+                prompt: Request an MFA code.
+                label: Default MFA label
+                sensitive: true
+                params:
+                  - reason: str
+            - get_details:
+                prompt: Request missing details.
+                label: Additional details
+                params:
+                  - account_email: str
+          timeout: 300
+        """,
+    )
+    write_file(
+        tmp_path / "agents" / "assistant.yaml",
+        """
+        version: "1.0"
+        name: assistant
+        description: Collect human input.
+        model: openai/gpt-5.2
+        system_prompt: Collect human input when needed.
+        approval:
+          inputs:
+            - get_mfa:
+                prompt: Request the current MFA code.
+                label: MFA code
+                sensitive: true
+                params:
+                  - account_email: str
+            - get_name:
+                prompt: Ask for the customer name.
+                label: Customer name
+        """,
+    )
+
+    approval = ProjectLoader(str(tmp_path)).load_agent("assistant").config.approval
+
+    assert approval.timeout == 300
+    assert approval.tools == [
+        "auth.just_needs_approval",
+        {"billing.refund": "param.amount > 50"},
+    ]
+    assert approval.inputs == [
+        {"get_details": ApprovalInput(prompt="Request missing details.", label="Additional details", params=[{"account_email": "str"}])},
+        {"get_mfa": ApprovalInput(prompt="Request the current MFA code.", label="MFA code", sensitive=True, params=[{"account_email": "str"}])},
+        {"get_name": ApprovalInput(prompt="Ask for the customer name.", label="Customer name")},
+    ]
+
+
+def test_approval_inputs_load_without_tools_or_python_implementation(tmp_path):
+    write_file(
+        tmp_path / "agents" / "assistant.yaml",
+        """
+        version: "1.0"
+        name: assistant
+        description: Collect human input.
+        model: openai/gpt-5.2
+        system_prompt: Collect human input when needed.
+        approval:
+          inputs:
+            - get_mfa:
+                prompt: Request an MFA code.
+                label: MFA code
+                sensitive: true
+        """,
+    )
+
+    agent = ProjectLoader(str(tmp_path)).load_agent("assistant")
+
+    assert agent.tools == []
+    assert agent.config.approval.tools == []
+    assert agent.config.approval.inputs == [
+        {"get_mfa": ApprovalInput(prompt="Request an MFA code.", label="MFA code", sensitive=True)},
+    ]
 
 
 def test_mcp_servers_dedup_by_name(tmp_path):

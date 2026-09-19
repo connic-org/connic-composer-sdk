@@ -4,6 +4,7 @@ from pydantic import ValidationError
 
 from connic.test_schema import TestDefaults as ConnicTestDefaults
 from connic.test_schema import TestFile as ConnicTestFile
+from connic.test_schema import TestApprovalDecision as ConnicTestApprovalDecision
 
 
 def test_test_file_parses_realistic_yaml_and_resolves_defaults():
@@ -223,18 +224,21 @@ def test_test_case_parses_and_resolves_approval_decisions():
             "params": "params.charge_id == context.charge_id",
             "decision": "approve",
             "reason": None,
+            "response": None,
         },
         {
             "tool": "notifications.send",
             "params": None,
             "decision": "reject",
             "reason": "Keep the test isolated",
+            "response": None,
         },
         {
             "tool": "billing.capture",
             "params": None,
             "decision": "timeout",
             "reason": None,
+            "response": None,
         },
     ]
 
@@ -248,6 +252,35 @@ def test_strict_approval_decisions_defaults_to_false():
         test_file.resolved(test_file.tests[0])["strict_approval_decisions"]
         is False
     )
+
+
+def test_approval_decision_response_preserves_text():
+    test_file = ConnicTestFile.model_validate({
+        "tests": [{
+            "name": "human_input",
+            "payload": "authenticate",
+            "approval_decisions": [{
+                "tool": "get_mfa",
+                "decision": "approve",
+                "response": " 012345\n",
+            }],
+        }],
+    })
+
+    assert test_file.resolved(test_file.tests[0])["approval_decisions"][0]["response"] == " 012345\n"
+
+
+@pytest.mark.parametrize(("decision", "response"), [
+    ("reject", "012345"),
+    ("timeout", "012345"),
+    ("approve", ""),
+    ("approve", " \n"),
+    ("approve", "a" * 16385),
+    ("approve", 12345),
+], ids=["reject", "timeout", "empty", "whitespace", "too_long", "number"])
+def test_approval_decision_rejects_invalid_response(decision, response):
+    with pytest.raises(ValidationError):
+        ConnicTestApprovalDecision(tool="get_mfa", decision=decision, response=response)
 
 
 def test_strict_approval_decisions_inherits_from_defaults():
