@@ -20,6 +20,16 @@ DOCUMENTED_PREDEFINED_TOOLS = [
     "retrieval_list_namespaces",
     "web_search",
     "web_read_page",
+    "web_browser_open",
+    "web_browser_observe",
+    "web_browser_act",
+    "web_browser_close",
+    "web_browser_screenshot",
+    "web_browser_mouse",
+    "web_browser_tabs",
+    "web_browser_dialog",
+    "web_browser_upload",
+    "web_browser_download",
     "db_find",
     "db_insert",
     "db_update",
@@ -53,6 +63,16 @@ def test_documented_predefined_tools_can_be_referenced_from_agent_yaml(tmp_path)
           - retrieval_list_namespaces
           - web_search
           - web_read_page
+          - web_browser_open
+          - web_browser_observe
+          - web_browser_act
+          - web_browser_close
+          - web_browser_screenshot
+          - web_browser_mouse
+          - web_browser_tabs
+          - web_browser_dialog
+          - web_browser_upload
+          - web_browser_download
           - db_find
           - db_insert
           - db_update
@@ -67,6 +87,37 @@ def test_documented_predefined_tools_can_be_referenced_from_agent_yaml(tmp_path)
     assert {tool.name for tool in agent.tools} == set(DOCUMENTED_PREDEFINED_TOOLS)
     assert all(tool.is_predefined for tool in agent.tools)
     assert set(DOCUMENTED_PREDEFINED_TOOLS).issubset(set(connic_tools.__all__))
+
+
+def test_browser_tool_parameters_expose_actions_without_internal_session_controls(tmp_path):
+    loader = ProjectLoader(str(tmp_path))
+    schemas = {
+        name: loader._generate_schema(getattr(connic_tools, name))
+        for name in ("web_browser_open", "web_browser_observe", "web_browser_act", "web_browser_close", "web_browser_screenshot", "web_browser_mouse")
+    }
+
+    assert schemas["web_browser_open"]["required"] == ["url"]
+    assert set(schemas["web_browser_open"]["properties"]) == {"url"}
+    for name in ("web_browser_observe", "web_browser_close", "web_browser_screenshot"):
+        assert schemas[name]["required"] == []
+        assert set(schemas[name]["properties"]) == set()
+    action_schema = schemas["web_browser_act"]
+    assert action_schema["required"] == ["action"]
+    assert set(action_schema["properties"]) == {"action", "target", "value"}
+    assert action_schema["properties"]["action"]["type"] == "string"
+    assert action_schema["properties"]["action"]["enum"] == [
+        "click", "double_click", "fill", "type", "select", "press", "keydown", "keyup", "scroll", "navigate", "back", "wait"
+    ]
+    assert action_schema["properties"]["target"]["type"] == "string"
+    assert action_schema["properties"]["value"]["type"] == "string"
+    mouse_schema = schemas["web_browser_mouse"]
+    assert mouse_schema["required"] == ["action"]
+    assert mouse_schema["properties"]["action"]["enum"] == [
+        "move", "click", "double_click", "down", "up", "drag", "scroll"
+    ]
+    assert mouse_schema["properties"]["button"]["enum"] == ["left", "middle", "right"]
+    for name in ("x", "y", "to_x", "to_y", "delta_x", "delta_y"):
+        assert mouse_schema["properties"][name]["type"] == "integer"
 
 
 def test_legacy_retrieval_tool_names_are_hidden_yaml_aliases(tmp_path):
@@ -471,6 +522,36 @@ def test_loads_mcp_server_with_bridge(tmp_path):
     servers_by_name = {s.name: s for s in agent.config.mcp_servers}
     assert servers_by_name["internal-mcp"].bridge == "${INTERNAL_BRIDGE_ID}"
     assert servers_by_name["public-mcp"].bridge is None
+
+
+@pytest.mark.parametrize("session_yaml,expected", [
+    ("true", {"key": None, "ttl": None, "history": True, "browser": True}),
+    ("false", None),
+    ("null", None),
+    ("{}", {"key": None, "ttl": None, "history": True, "browser": True}),
+    ("{history: false}", {"key": None, "ttl": None, "history": False, "browser": True}),
+    ("{browser: false}", {"key": None, "ttl": None, "history": True, "browser": False}),
+    ("{key: input.user_id, ttl: 3600, history: false, browser: true}",
+     {"key": "input.user_id", "ttl": 3600, "history": False, "browser": True}),
+])
+def test_loads_session_shorthand_and_independent_persistence(tmp_path, session_yaml, expected):
+    write_file(
+        tmp_path / "agents" / "assistant.yaml",
+        f"""
+        version: "1.0"
+        name: assistant
+        model: openai/gpt-5.2
+        description: "Assistant"
+        system_prompt: "Answer the request."
+        session: {session_yaml}
+        """,
+    )
+
+    loader = ProjectLoader(str(tmp_path))
+    agent = loader.load_agent("assistant")
+
+    assert loader._load_errors == []
+    assert agent.config.model_dump()["session"] == expected
 
 
 def test_loads_context_compression_config(tmp_path):
@@ -1891,6 +1972,106 @@ def test_overlap_between_tools_and_discoverable_tools_is_an_error(tmp_path):
 # Wildcard tool resolution
 # ---------------------------------------------------------------------------
 
+@pytest.mark.parametrize("validation_only", [False, True])
+@pytest.mark.parametrize("pattern,expected", [
+    ("db_*", {"db_find", "db_insert", "db_update", "db_upsert", "db_delete", "db_count", "db_list_collections"}),
+    ("*_delete", {"db_delete", "retrieval_delete"}),
+    ("web_*_o*", {"web_browser_open", "web_browser_observe"}),
+    ("*browser*load", {"web_browser_upload", "web_browser_download"}),
+    ("trigger_*_at", {"trigger_agent_at"}),
+    ("*", PREDEFINED_TOOL_NAMES),
+])
+def test_predefined_wildcards_match_names(tmp_path, validation_only, pattern, expected):
+    loader = ProjectLoader(str(tmp_path), validation_only=validation_only)
+
+    tools = loader._resolve_tools(pattern)
+
+    assert [tool.name for tool in tools] == sorted(expected)
+    assert all(tool.is_predefined and tool.ref == tool.name for tool in tools)
+    assert not loader._load_errors
+
+
+@pytest.mark.parametrize("validation_only", [False, True])
+@pytest.mark.parametrize("tool_list", ["tools", "discoverable_tools"])
+def test_browser_wildcard_loads_concrete_predefined_tools(tmp_path, validation_only, tool_list):
+    write_file(
+        tmp_path / "agents" / "browser.yaml",
+        f"""
+        version: "1.0"
+        name: browser
+        type: llm
+        model: openai/gpt-5.2
+        description: "Browser agent"
+        system_prompt: "Browse the web."
+        {tool_list}:
+          - web_browser_*
+        """,
+    )
+
+    loader = ProjectLoader(str(tmp_path), validation_only=validation_only)
+    agent = loader.load_agent("browser")
+    browser_tools = getattr(agent, tool_list)
+
+    assert {tool.name for tool in browser_tools} == {
+        "web_browser_open", "web_browser_observe", "web_browser_act", "web_browser_close",
+        "web_browser_screenshot", "web_browser_mouse",
+        "web_browser_tabs", "web_browser_dialog", "web_browser_upload", "web_browser_download",
+    }
+    assert all(tool.is_predefined and tool.ref == tool.name for tool in browser_tools)
+    assert not loader._load_errors
+    if tool_list == "discoverable_tools":
+        assert {tool.name for tool in agent.tools} == {"search_tools", "use_tool"}
+
+
+@pytest.mark.parametrize("pattern,count", [("web_browser_*", 10), ("db_*", 7), ("*_delete", 2)])
+def test_predefined_wildcard_applies_condition_to_each_tool(tmp_path, pattern, count):
+    write_file(
+        tmp_path / "agents" / "browser.yaml",
+        f"""
+        version: "1.0"
+        name: browser
+        type: llm
+        model: openai/gpt-5.2
+        description: "Conditional browser agent"
+        system_prompt: "Browse when enabled."
+        tools:
+          - "{pattern}": context.browser_enabled
+        """,
+    )
+
+    agent = ProjectLoader(str(tmp_path)).load_agent("browser")
+
+    assert len(agent.tools) == count
+    assert all(tool.condition == "context.browser_enabled" for tool in agent.tools)
+
+
+@pytest.mark.parametrize("pattern,explicit,duplicate", [
+    ("web_browser_*", "web_browser_open", "web_browser_open"),
+    ("db_*", "db_find", "db_find"),
+    ("retrieval_*", "retrieval_query", "retrieval_query"),
+])
+def test_predefined_wildcard_rejects_duplicate_explicit_tool(tmp_path, pattern, explicit, duplicate):
+    write_file(
+        tmp_path / "agents" / "browser.yaml",
+        f"""
+        version: "1.0"
+        name: browser
+        type: llm
+        model: openai/gpt-5.2
+        description: "Browser agent"
+        system_prompt: "Browse the web."
+        tools:
+          - "{pattern}"
+          - {explicit}
+        """,
+    )
+
+    loader = ProjectLoader(str(tmp_path))
+
+    assert loader.load_agents() == []
+    assert any("duplicate tool names" in error and duplicate in error for error in loader._load_errors)
+
+
 def test_wildcard_resolves_matching_functions(tmp_path):
     write_file(
         tmp_path / "tools" / "billing.py",
@@ -1955,7 +2136,7 @@ def test_wildcard_no_matches_is_a_load_error(tmp_path):
     assert any("matched no tools" in e for e in loader._load_errors)
 
 
-def test_invalid_wildcard_pattern_is_a_load_error(tmp_path):
+def test_unmatched_predefined_wildcard_is_a_load_error(tmp_path):
     write_file(
         tmp_path / "agents" / "biller.yaml",
         """
@@ -1966,7 +2147,7 @@ def test_invalid_wildcard_pattern_is_a_load_error(tmp_path):
         description: "Billing agent"
         system_prompt: "Handle billing."
         tools:
-          - "*"
+          - "missing_predefined_*"
         """,
     )
 
@@ -1975,7 +2156,7 @@ def test_invalid_wildcard_pattern_is_a_load_error(tmp_path):
 
     assert len(agents) == 1
     assert agents[0].tools == []
-    assert any("Invalid wildcard pattern" in e for e in loader._load_errors)
+    assert any("Wildcard 'missing_predefined_*' matched no tools" in e for e in loader._load_errors)
 
 
 def test_wildcard_reports_module_import_failure(tmp_path):
@@ -3297,3 +3478,21 @@ def test_sequential_agents_list_concat_dedup(tmp_path):
     agent = ProjectLoader(str(tmp_path)).load_agent("pipeline")
 
     assert agent.config.agents == ["first", "shared", "last"]
+
+
+def test_browser_file_and_tab_schema_exposes_only_agent_inputs(tmp_path):
+    loader = ProjectLoader(str(tmp_path))
+    for name, required in (
+        ("tabs", []),
+        ("dialog", ["action"]),
+        ("upload", ["target", "download_id"]),
+        ("download", ["target", "include_content"]),
+    ):
+        schema = loader._generate_schema(getattr(connic_tools, "web_browser_" + name))
+        assert schema["required"] == required
+        assert not {"data", "cost_micros", "run_id", "session_id"}.intersection(schema["properties"])
+    mouse = loader._generate_schema(connic_tools.web_browser_mouse)
+    assert mouse["properties"]["modifiers"]["type"] == "array"
+    assert mouse["properties"]["modifiers"]["items"]["enum"] == ["Alt", "Control", "Meta", "Shift"]
+    download = loader._generate_schema(connic_tools.web_browser_download)
+    assert download["properties"]["include_content"]["type"] == "boolean"

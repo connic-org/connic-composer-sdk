@@ -76,6 +76,68 @@ def test_session_config_valid_input_key():
     assert cfg.key == "input.user_id"
 
 
+@pytest.mark.parametrize("value", [True, {}, {"key": None}, SessionConfig()])
+def test_agent_session_without_key_normalizes_to_shared_persistence(value):
+    cfg = AgentConfig(**_llm_agent(session=value))
+
+    assert isinstance(cfg.session, SessionConfig)
+    assert cfg.model_dump()["session"] == {"key": None, "ttl": None, "history": True, "browser": True}
+    assert AgentConfig.model_validate_json(cfg.model_dump_json()).session == cfg.session
+
+
+@pytest.mark.parametrize("value", [False, None])
+def test_agent_session_can_be_disabled(value):
+    cfg = AgentConfig(**_llm_agent(session=value))
+
+    assert cfg.session is None
+    assert cfg.model_dump()["session"] is None
+    assert AgentConfig(**_llm_agent()).session is None
+
+
+@pytest.mark.parametrize("history,browser", [(True, True), (True, False), (False, True), (False, False)])
+def test_session_persistence_switches_are_independent(history, browser):
+    cfg = AgentConfig(**_llm_agent(session={"history": history, "browser": browser, "ttl": 3600}))
+
+    assert cfg.session.key is None
+    assert cfg.session.ttl == 3600
+    assert cfg.session.history is history
+    assert cfg.session.browser is browser
+
+
+@pytest.mark.parametrize("key", ["context.chat_id", "input.user_id"])
+def test_keyed_session_keeps_key_and_ttl_with_optional_persistence(key):
+    cfg = AgentConfig(**_llm_agent(session={"key": key, "ttl": 86400, "history": False}))
+
+    assert cfg.model_dump()["session"] == {"key": key, "ttl": 86400, "history": False, "browser": True}
+
+
+@pytest.mark.parametrize("value", ["true", "false", 0, 1, [], "input.user_id"])
+def test_agent_session_rejects_non_boolean_shorthand(value):
+    with pytest.raises(ValueError):
+        AgentConfig(**_llm_agent(session=value))
+
+
+@pytest.mark.parametrize("field", ["history", "browser"])
+@pytest.mark.parametrize("value", ["true", "false", 0, 1, None])
+def test_session_persistence_switches_require_booleans(field, value):
+    with pytest.raises(ValueError):
+        SessionConfig(**{field: value})
+
+
+def test_agent_session_json_schema_supports_shorthand_and_optional_key():
+    schema = AgentConfig.model_json_schema()
+
+    assert {"type": "boolean"} in schema["properties"]["session"]["anyOf"]
+    assert {"$ref": "#/$defs/SessionConfig"} in schema["properties"]["session"]["anyOf"]
+    session_schema = schema["$defs"]["SessionConfig"]
+    assert "key" not in session_schema.get("required", [])
+    assert session_schema["properties"]["key"]["default"] is None
+    assert session_schema["properties"]["ttl"]["default"] is None
+    for field in ("history", "browser"):
+        assert session_schema["properties"][field]["type"] == "boolean"
+        assert session_schema["properties"][field]["default"] is True
+
+
 def test_session_config_rejects_invalid_prefix():
     with pytest.raises(ValueError, match="Must start with 'context.' or 'input.'"):
         SessionConfig(key="payload.chat_id")

@@ -8,7 +8,7 @@ import sys
 import types
 from pathlib import Path
 from threading import RLock
-from typing import Any, Dict, List, Optional, Union, get_args, get_origin, get_type_hints
+from typing import Any, Dict, List, Literal, Optional, Union, get_args, get_origin, get_type_hints
 
 import yaml
 
@@ -42,6 +42,16 @@ PREDEFINED_TOOL_NAMES = {
     "retrieval_list_namespaces",
     "web_search",           # Search the web for real-time information (billed at your plan's web tool pricing)
     "web_read_page",        # Fetch a web page as markdown (billed at your plan's web tool pricing)
+    "web_browser_open",
+    "web_browser_observe",
+    "web_browser_act",
+    "web_browser_close",
+    "web_browser_screenshot",
+    "web_browser_mouse",
+    "web_browser_tabs",
+    "web_browser_dialog",
+    "web_browser_upload",
+    "web_browser_download",
     # Database tools
     "db_find",              # Query documents with JSON filters
     "db_insert",            # Insert documents into a collection (auto-creates collection)
@@ -706,12 +716,17 @@ class ProjectLoader:
         )]
 
     def _resolve_wildcard(self, tool_ref: str) -> List[Tool]:
-        """Match file-based tools under a module prefix against a fnmatch pattern."""
+        """Match predefined names or file-based functions against a fnmatch pattern."""
         parts = tool_ref.split(".", 1)
-        if len(parts) != 2:
-            raise ValueError(
-                f"Invalid wildcard pattern '{tool_ref}'. Use 'module.pattern' format (e.g., 'billing.*')"
-            )
+        if len(parts) == 1:
+            names = {
+                name
+                for name in PREDEFINED_TOOL_NAMES
+                if fnmatch.fnmatch(name, tool_ref)
+            }
+            if not names:
+                raise ValueError(f"Wildcard '{tool_ref}' matched no tools")
+            return [self._create_predefined_tool_marker(name) for name in sorted(names)]
 
         module_part, pattern = parts
 
@@ -974,6 +989,13 @@ class ProjectLoader:
         # Handle generic types (List[X], Dict[K, V], Optional[X], etc.)
         origin = get_origin(annotation)
         args = get_args(annotation)
+
+        if origin is Literal:
+            schema = {"enum": list(args)}
+            value_types = {type(value) for value in args}
+            if len(value_types) == 1:
+                schema.update(self._type_to_schema(type(args[0])))
+            return schema
         
         if origin is Union or origin is types.UnionType:
             # Handle Optional[X] / X | None, which is Union[X, None]

@@ -15,7 +15,7 @@ Usage in custom tools:
         )
         return {"summary": result["response"]}
 """
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Dict, List, Literal, Optional, Union
 
 
 async def trigger_agent(
@@ -357,8 +357,6 @@ async def web_search(
     
     This is a managed service - no configuration required.
     Successful searches are billed at your plan's web tool pricing.
-    Web-tool charges are billed separately and do not increase the number
-    of agent runs.
     
     Args:
         query: The search query
@@ -396,8 +394,6 @@ async def web_read_page(
     This is a managed service - no configuration required.
     Extracted pages are billed at your plan's web tool pricing,
     including each extracted PDF page.
-    Web-tool charges are billed separately and do not increase the number
-    of agent runs.
 
     Args:
         url: The URL of the page to fetch
@@ -418,6 +414,230 @@ async def web_read_page(
     """
     raise RuntimeError(
         "web_read_page will be auto-injected when running via connic CLI or after deployment. "
+        "Run 'connic test' to test your agents with predefined tools."
+    )
+
+
+
+async def web_browser_download(target: str, include_content: bool) -> Union[Dict[str, Any], List[Any]]:
+    """Click a download link or button and return its file. Maximum size: 25 MiB.
+
+    Args:
+        target: Download link or button reference from the latest snapshot.
+        include_content: Attach the file for the agent to read. False returns
+            only download_id and file metadata.
+
+    Returns:
+        Metadata containing download_id, name and mime_type, plus a file attachment
+        when include_content is true.
+        Pass download_id to web_browser_upload in the same session to upload it.
+        Files remain in the browser until the session closes. Browser cookies
+        apply to the download.
+    """
+
+    raise RuntimeError(
+        "web_browser_download will be auto-injected when running via connic CLI or after deployment. "
+        "Run 'connic test' to test your agents with predefined tools."
+    )
+
+
+async def web_browser_upload(target: str, download_id: str) -> Dict[str, Any]:
+    """Select a previously downloaded file in a browser upload field.
+
+    Args:
+        target: File input reference such as e11 or @e11 from the latest snapshot.
+        download_id: ID returned by web_browser_download in this session.
+
+    Returns:
+        Updated page after selecting the downloaded file. Submit the form
+        separately if needed. Files remain available until the session closes.
+    """
+
+    raise RuntimeError(
+        "web_browser_upload will be auto-injected when running via connic CLI or after deployment. "
+        "Run 'connic test' to test your agents with predefined tools."
+    )
+
+
+async def web_browser_dialog(
+    action: Literal["accept", "dismiss"],
+    text: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Respond to a pending JavaScript alert, confirm or prompt dialog.
+
+    Args:
+        action: accept or dismiss.
+        text: Optional response when accepting a prompt. Omit for dismiss.
+
+    Returns:
+        Current page and any remaining dialog. Dialog details are included in
+        browser observations when a JavaScript dialog blocks the page.
+    """
+
+    raise RuntimeError(
+        "web_browser_dialog will be auto-injected when running via connic CLI or after deployment. "
+        "Run 'connic test' to test your agents with predefined tools."
+    )
+
+
+async def web_browser_tabs(
+    action: Literal["list", "new", "switch", "close"] = "list",
+    tab_id: Optional[str] = None,
+    url: Optional[str] = None,
+) -> Dict[str, Any]:
+    """List, open, switch or close tabs and popups within a browser session.
+
+    Args:
+        action: list, new, switch or close. List tabs to find a newly opened popup.
+        tab_id: Stable tab ID from the returned tabs list, required for switch
+            and close. Omit for list and new.
+        url: Public HTTP or HTTPS URL for new; omit to open a blank tab.
+
+    Returns:
+        Tabs with tab_id, title, URL and active status, plus the current page.
+        Switching tabs refreshes element references.
+    """
+
+    raise RuntimeError(
+        "web_browser_tabs will be auto-injected when running via connic CLI or after deployment. "
+        "Run 'connic test' to test your agents with predefined tools."
+    )
+
+async def web_browser_open(url: str) -> Dict[str, Any]:
+    """Open the current run's browser and navigate to a URL.
+
+    If the browser is already open, return "Browser already open" without navigating.
+    Use web_browser_tabs to open another page in the same browser.
+    With session.browser enabled, runs in the same Connic session reuse saved
+    cookies and local storage.
+
+    Args:
+        url: Public HTTP or HTTPS URL to open.
+
+    Returns:
+        status, url and a snapshot containing page text and element
+        references. Further browser tools use this browser automatically.
+        An already open browser returns only status and a message.
+    """
+
+    raise RuntimeError(
+        "web_browser_open will be auto-injected when running via connic CLI or after deployment. "
+        "Run 'connic test' to test your agents with predefined tools."
+    )
+
+
+async def web_browser_observe() -> Dict[str, Any]:
+    """Read the current browser page and refresh its element references.
+
+    Returns:
+        status, url and a snapshot containing page text and current
+        element references. Use the latest references when acting on the page.
+    """
+
+    raise RuntimeError(
+        "web_browser_observe will be auto-injected when running via connic CLI or after deployment. "
+        "Run 'connic test' to test your agents with predefined tools."
+    )
+
+
+async def web_browser_act(
+    action: Literal["click", "double_click", "fill", "type", "select", "press", "keydown", "keyup", "scroll", "navigate", "back", "wait"],
+    target: Optional[str] = None,
+    value: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Perform one browser action and return the resulting page snapshot.
+
+    Args:
+        action: click, double_click, fill, type, select, press, keydown, keyup,
+            scroll, navigate, back or wait.
+        target: Element reference such as e11 or @e11 from the latest snapshot
+            for click, double_click, fill or select; optional for type, press, keydown
+            or keyup. Omit target to type into the currently focused field. Do not invent selectors
+            or references.
+        value: Text for fill (replace) or type (insert), option value for select,
+            key such as Enter for press or Shift for keydown/keyup, direction (up/down/left/right) for scroll, or URL for navigate.
+            For wait, milliseconds from 100 to 10000, with no target.
+            Omit for click, double_click and back. keydown holds a key until keyup.
+
+    Returns:
+        status, url and a fresh snapshot, including after a blocked
+        action. Disabled targets return an error without clicking or typing.
+        Use wait when the page is loading instead of repeating the previous action.
+        action_completed means the action ran even if observing the page failed.
+        If the outcome is unknown, observe before deciding whether to act again.
+    """
+
+    raise RuntimeError(
+        "web_browser_act will be auto-injected when running via connic CLI or after deployment. "
+        "Run 'connic test' to test your agents with predefined tools."
+    )
+
+
+async def web_browser_close() -> Dict[str, Any]:
+    """Close the current run's browser.
+
+    Returns:
+        Closed status, or an error if close was not confirmed.
+    """
+
+    raise RuntimeError(
+        "web_browser_close will be auto-injected when running via connic CLI or after deployment. "
+        "Run 'connic test' to test your agents with predefined tools."
+    )
+
+
+async def web_browser_screenshot() -> Union[Dict[str, Any], List[Any]]:
+    """Capture the visible browser viewport and return an image the model can see.
+
+    Returns:
+        Page metadata and a PNG image attachment. width and height are image
+        pixels; viewport_width and viewport_height are CSS pixels. For mouse
+        coordinates, multiply image x by viewport_width / width and image y by
+        viewport_height / height, rounding to integers. Coordinates start at the
+        top-left of the visible viewport. Capture again after scrolling or navigation.
+    """
+
+    raise RuntimeError(
+        "web_browser_screenshot will be auto-injected when running via connic CLI or after deployment. "
+        "Run 'connic test' to test your agents with predefined tools."
+    )
+
+
+async def web_browser_mouse(
+    action: Literal["move", "click", "double_click", "down", "up", "drag", "scroll"],
+    x: Optional[int] = None,
+    y: Optional[int] = None,
+    to_x: Optional[int] = None,
+    to_y: Optional[int] = None,
+    button: Literal["left", "middle", "right"] = "left",
+    delta_x: int = 0,
+    delta_y: int = 0,
+    modifiers: Optional[List[Literal["Alt", "Control", "Meta", "Shift"]]] = None,
+) -> Dict[str, Any]:
+    """Control the browser mouse using visible viewport coordinates.
+
+    Args:
+        action: move, click, double_click, down, up, drag or scroll.
+        x: Horizontal CSS pixel coordinate for move, click, drag or scroll; optional
+            for down or up. Use dimensions from the latest screenshot to
+            convert image pixels to CSS pixels.
+        y: Vertical CSS pixel coordinate, provided together with x.
+        to_x: Destination horizontal CSS pixel coordinate for drag.
+        to_y: Destination vertical CSS pixel coordinate for drag.
+        button: Mouse button for click, down, up or drag.
+        delta_x: Horizontal scroll distance in CSS pixels; positive scrolls right.
+        delta_y: Vertical scroll distance in CSS pixels; positive scrolls down.
+        modifiers: Alt, Control, Meta or Shift held for click, double_click, drag
+            or scroll. These apply to this operation only.
+
+    Returns:
+        status, url and an updated text snapshot. Use screenshot to
+        see visual changes. If the outcome is unknown, observe or screenshot
+        before deciding whether another action is needed.
+    """
+
+    raise RuntimeError(
+        "web_browser_mouse will be auto-injected when running via connic CLI or after deployment. "
         "Run 'connic test' to test your agents with predefined tools."
     )
 
@@ -628,6 +848,16 @@ __all__ = [
     "retrieval_list_namespaces",
     "web_search",
     "web_read_page",
+    "web_browser_open",
+    "web_browser_observe",
+    "web_browser_act",
+    "web_browser_close",
+    "web_browser_screenshot",
+    "web_browser_mouse",
+    "web_browser_tabs",
+    "web_browser_dialog",
+    "web_browser_upload",
+    "web_browser_download",
     # Database tools
     "db_find",
     "db_insert",

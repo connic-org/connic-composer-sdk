@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Any, Callable, Dict, List, Literal, Optional, Union
 
-from pydantic import AliasChoices, BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field, StrictBool, field_validator, model_validator
 
 
 class AgentType(str, Enum):
@@ -247,21 +247,22 @@ def resolve_voice_model(model: str) -> tuple[Literal["openai", "azure", "gemini"
 
 class SessionConfig(BaseModel):
     """
-    Persistent session configuration for maintaining conversation history across requests.
+    Persistent conversation history and browser profile configuration.
 
-    When configured, the agent reuses sessions keyed by a resolved value,
-    enabling multi-turn conversations that survive restarts and redeployments.
+    Without a key, all runs of the agent share one session. A context or input
+    key creates a separate session for each resolved value.
 
     Example YAML:
         session:
           key: context.telegram_chat_id
           ttl: 86400
     """
-    key: str = Field(
-        ..., min_length=1,
+    key: Optional[str] = Field(
+        default=None, min_length=1,
         description="Dot-path expression to resolve session ID. "
                     "Prefix with 'context.' to read from middleware context, "
-                    "or 'input.' to read from the raw payload."
+                    "or 'input.' to read from the raw payload. "
+                    "Omit to share one session across all runs of this agent."
     )
     ttl: Optional[int] = Field(
         default=None, ge=60,
@@ -269,10 +270,20 @@ class SessionConfig(BaseModel):
                     "this period are considered expired. "
                     "When not set, sessions never expire."
     )
+    history: bool = Field(
+        default=True, strict=True,
+        description="Reuse conversation history across runs in this session.",
+    )
+    browser: bool = Field(
+        default=True, strict=True,
+        description="Reuse browser cookies and local storage across runs in this session.",
+    )
 
     @field_validator('key')
     @classmethod
-    def validate_key_prefix(cls, v: str) -> str:
+    def validate_key_prefix(cls, v: Optional[str]) -> Optional[str]:
+        if v is None:
+            return None
         if not v.startswith("context.") and not v.startswith("input."):
             raise ValueError(
                 f"Invalid session key '{v}'. Must start with 'context.' or 'input.' "
@@ -901,10 +912,10 @@ class AgentConfig(BaseModel):
     concurrency: Optional[ConcurrencyConfig] = Field(default=None, description="Key-based concurrency control. Ensures only one run per unique key value at a time.")
     
     # Persistent session configuration
-    session: Optional[SessionConfig] = Field(
+    session: Optional[Union[SessionConfig, StrictBool]] = Field(
         default=None,
-        description="Persistent session configuration. When set, the agent maintains "
-                    "conversation history across requests, keyed by the resolved value."
+        description="Persistent session configuration. True shares one session across all runs "
+                    "of this agent. Use an object to configure the key, TTL, history, and browser persistence."
     )
 
     # Context compression configuration
@@ -926,6 +937,15 @@ class AgentConfig(BaseModel):
         description="Human-in-the-loop approval configuration. "
                     "Specifies which tools require human approval before execution."
     )
+
+    @field_validator('session')
+    @classmethod
+    def normalize_session(cls, value) -> Optional[SessionConfig]:
+        if value is True:
+            return SessionConfig()
+        if value is False:
+            return None
+        return value
     
     @field_validator('version')
     @classmethod

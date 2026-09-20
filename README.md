@@ -97,7 +97,7 @@ my-agents/
 └── requirements.txt
 ```
 
-`_defaults.yaml` is optional and can live at any depth under `agents/`. Its values are merged into every agent at that directory level and below (deeper layers and the agent file itself override earlier ones). Lists like `tools`, `mcp_servers`, and `guardrails.input/output` concat with dedup-by-ref so children add to inherited entries. `name` and `description` are not allowed in defaults. Every agent file must still define `version`, `name`, and `description`.
+`_defaults.yaml` is optional and can live at any depth under `agents/`. Its values are merged into every agent at that directory level and below (deeper layers and the agent file itself override earlier ones). Lists concatenate with key-aware deduplication: `tools`, `discoverable_tools`, and `approval.tools` by tool reference; `approval.inputs` by input-tool name; `mcp_servers` by server name; and `guardrails.input/output` by rule name when present. `name` and `description` are not allowed in defaults. Every agent file must still define `version`, `name`, and `description`.
 
 ### `agents/support-assistant.yaml`
 
@@ -128,6 +128,8 @@ guardrails:
     - type: system_prompt_leakage
       mode: block
 ```
+
+Set `session: true` to share one persistent session across all runs of an agent. An object without `key` does the same; use `key: input.user_id` or `key: context.chat_id` to keep separate sessions by value. `history` and `browser` both default to `true`: set either to `false` to disable saving conversation history or browser cookies and local storage across runs. `ttl` is optional; without it, the session does not expire. `session: false` disables persistence.
 
 ### `tools/billing.py`
 
@@ -207,6 +209,21 @@ The SDK also exposes predefined Connic tools such as the ones documented in [Pre
 - `db_count`
 - `db_list_collections`
 
+Enable the browser tools together:
+
+```yaml
+tools:
+  - web_browser_*
+```
+
+This includes `web_browser_open`, `web_browser_observe`, `web_browser_act`, `web_browser_screenshot`, `web_browser_mouse`, `web_browser_tabs`, `web_browser_dialog`, `web_browser_upload`, `web_browser_download`, and `web_browser_close`. Individual tool names are also supported.
+
+Each run uses one browser, selected automatically for every browser tool call. Calling `web_browser_open` again returns "Browser already open"; use `web_browser_tabs` for additional pages. The browser closes when its run ends. Runs attached to the same Connic session reuse saved cookies and local storage when `session.browser` is enabled.
+
+The agent can type into the focused field, hold and release keys, double-click, switch tabs and popups, and handle browser dialogs. Screenshots are sent as images to vision-capable text and voice models.
+
+`web_browser_download(target, include_content=...)` keeps the downloaded file in the browser session and returns `download_id`, `name`, and `mime_type`. Set `include_content=True` to also return the file as an attachment, or `False` for metadata only. `web_browser_upload(target, download_id)` selects that file for upload in the same session. Files are limited to 25 MiB and remain available until the browser session closes.
+
 ### Human Input and Approvals
 
 ```yaml
@@ -226,11 +243,11 @@ approval:
 
 `approval.tools` requires approval before executing existing tools, including conditional entries such as `billing.refund: param.amount > 50`.
 
-`approval.inputs` generates tools that collect required text and return it to the agent. No Python function or top-level `tools` entry is needed. `prompt` describes the tool to the agent; `label` names the human input field. `sensitive` defaults to `false`; enable it to mask the input and protect the response in storage and logs.
+`approval.inputs` generates tools on LLM agents that collect required text and return it to the agent. No Python function or top-level `tools` entry is needed. `prompt` describes the tool to the agent; `label` names the human input field and accepts at most 200 characters. `sensitive` defaults to `false`; enable it to mask the input and protect the response in storage and logs.
 
-Input names such as `get_mfa` are exposed unchanged, must be unique among the agent's tools, and cannot contain dots.
+Input names such as `get_mfa` are exposed unchanged. They must be unique ASCII identifiers of at most 64 characters, cannot be `search_tools` or `use_tool`, and cannot collide with `tools`, `discoverable_tools`, or `approval.tools`. Generated input tools count toward the 100-tool agent limit.
 
-Optional `params` declares arguments the agent supplies with the request. Supported types are `str`, `int`, `float`, and `bool`; every declared argument is required, and extra arguments are rejected. Omit `params` for a tool with no arguments. Parameter names must be unique identifiers; `context` is reserved.
+Optional `params` declares arguments the agent supplies with the request. Supported types are `str`, `int`, `float`, and `bool`; every declared argument is required, and extra arguments are rejected. Omit `params` for a tool with no arguments. Parameter names must be unique ASCII identifiers and cannot be Python keywords; `context` is reserved.
 
 Scripted test approvals accept `response: "012345"` alongside `decision: approve` for input tools.
 
