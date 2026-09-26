@@ -51,7 +51,7 @@ from .core import (
 )
 from .loader import ProjectLoader
 
-__version__ = "0.1.46"
+__version__ = "0.1.47"
 
 __all__ = [
     "AbortTool",

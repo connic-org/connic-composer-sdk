@@ -1712,7 +1712,7 @@ def test_test_command_ignores_invalid_saved_config_and_uses_explicit_credentials
 
     result = CliRunner().invoke(
         cli.main,
-        ["dev", "--api-key", "cnc_flag_secret", "--project-id", "proj_flag"],
+        ["dev", "--quick", "--api-key", "cnc_flag_secret", "--project-id", "proj_flag"],
     )
 
     assert result.exit_code == 1
@@ -1793,7 +1793,7 @@ def test_test_command_cleans_up_when_container_fails_to_start(tmp_path, monkeypa
 
     monkeypatch.setattr(cli.httpx, "Client", FakeClient)
 
-    result = CliRunner().invoke(cli.main, ["dev"])
+    result = CliRunner().invoke(cli.main, ["dev", "--quick"])
 
     assert result.exit_code == 1
     assert calls == [("DELETE", "/test-sessions/sess_failed"), ("CLOSE",)]
@@ -1839,7 +1839,7 @@ def test_test_command_reports_container_start_timeout(tmp_path, monkeypatch):
     monkeypatch.setattr(cli.httpx, "Client", FakeClient)
     monkeypatch.setattr(time, "sleep", lambda seconds: None)
 
-    result = CliRunner().invoke(cli.main, ["dev"])
+    result = CliRunner().invoke(cli.main, ["dev", "--quick"])
 
     assert result.exit_code == 1
     assert calls == [("DELETE", "/test-sessions/sess_timeout"), ("CLOSE",)]
@@ -1886,7 +1886,7 @@ def test_test_command_reports_repeated_container_status_http_errors_before_timeo
     monkeypatch.setattr(cli.httpx, "Client", FakeClient)
     monkeypatch.setattr(time, "sleep", lambda seconds: None)
 
-    result = CliRunner().invoke(cli.main, ["dev"])
+    result = CliRunner().invoke(cli.main, ["dev", "--quick"])
 
     assert result.exit_code == 1
     assert calls.count(("GET", "/test-sessions/sess_polling")) == 200
@@ -1939,7 +1939,7 @@ def test_test_command_cleans_up_when_initial_upload_finds_session_already_ended(
 
     monkeypatch.setattr(cli.httpx, "Client", FakeClient)
 
-    result = CliRunner().invoke(cli.main, ["dev"])
+    result = CliRunner().invoke(cli.main, ["dev", "--quick"])
 
     assert result.exit_code == 1
     assert calls == [
@@ -2208,7 +2208,7 @@ def test_deploy_command_packages_project_files_and_uploads_to_default_environmen
 
     monkeypatch.setattr(cli.httpx, "Client", FakeClient)
 
-    result = CliRunner().invoke(cli.main, ["deploy", *deploy_args])
+    result = CliRunner().invoke(cli.main, ["deploy", *deploy_args], input="\ny\n")
 
     assert result.exit_code == 0, result.output
     upload = requests[-1][2]
@@ -2345,7 +2345,7 @@ def test_deploy_command_explicit_credentials_uploads_requested_environment_packa
 
     monkeypatch.setattr(cli.httpx, "Client", FakeClient)
 
-    result = CliRunner().invoke(cli.main, ["deploy", "--env", "env_staging"])
+    result = CliRunner().invoke(cli.main, ["deploy", "--env", "env_staging"], input="y\n")
 
     assert result.exit_code == 0, result.output
     upload = requests[-1][2]
@@ -2420,10 +2420,10 @@ def test_deploy_command_rejects_unknown_environment_before_packaging(tmp_path, m
         ("GET", "/projects/proj_123"),
         ("GET", "/projects/proj_123/environments/"),
     ]
-    assert "Environment with ID 'env_missing' not found" in result.output
-    assert "Staging: env_staging" in result.output
-    assert "Production: env_prod (default)" in result.output
-    assert "Preview: env_test" not in result.output
+    assert "Environment 'env_missing' was not found or is not available for deployment." in result.output
+    assert "Staging" in result.output and "env_staging" in result.output
+    assert "Production" in result.output and "env_prod" in result.output
+    assert "env_test" not in result.output
 
 
 def test_deploy_command_requires_saved_or_environment_credentials(tmp_path, monkeypatch):
@@ -2554,7 +2554,7 @@ def test_deploy_command_reports_no_standard_environments(tmp_path, monkeypatch):
     result = CliRunner().invoke(cli.main, ["deploy"])
 
     assert result.exit_code == 1
-    assert "No environments found. Create one in the dashboard first." in result.output
+    assert "No environments are available for deployment with this API key." in result.output
 
 
 def test_deploy_command_reports_environment_lookup_and_connection_errors(tmp_path, monkeypatch):
@@ -2674,7 +2674,7 @@ def test_deploy_command_uses_first_standard_environment_when_no_default_exists(t
 
     monkeypatch.setattr(cli.httpx, "Client", FakeClient)
 
-    result = CliRunner().invoke(cli.main, ["deploy"])
+    result = CliRunner().invoke(cli.main, ["deploy"], input="\ny\n")
 
     assert result.exit_code == 0, result.output
     assert uploads[0][1] == {"environment_id": "env_staging"}
@@ -2748,6 +2748,7 @@ def test_deploy_command_uses_requested_environment_and_reports_queued_deployment
     result = CliRunner().invoke(
         cli.main,
         ["deploy", "--project-id", "proj_cli", "--api-key", "cnc_cli_key", "--env", "env_stage"],
+        input="y\n",
     )
 
     assert result.exit_code == 0, result.output
@@ -2817,7 +2818,7 @@ def test_deploy_command_stops_on_local_file_validation_error_after_environment_s
 
     monkeypatch.setattr(cli.httpx, "Client", FakeClient)
 
-    result = CliRunner().invoke(cli.main, ["deploy"])
+    result = CliRunner().invoke(cli.main, ["deploy"], input="\ny\n")
 
     assert result.exit_code == 1
     assert "File validation failed:" in result.output
@@ -2879,13 +2880,13 @@ def test_deploy_command_reports_upload_validation_and_server_errors(tmp_path, mo
 
     monkeypatch.setattr(cli.httpx, "Client", FakeClient)
 
-    result = CliRunner().invoke(cli.main, ["deploy"])
+    result = CliRunner().invoke(cli.main, ["deploy"], input="\ny\n")
 
     assert result.exit_code == 1
     assert "Agent config is invalid" in result.output
 
     FakeClient.upload_status = 503
-    result = CliRunner().invoke(cli.main, ["deploy"])
+    result = CliRunner().invoke(cli.main, ["deploy"], input="\ny\n")
 
     assert result.exit_code == 1
     assert "Failed to create deployment: deploy queue unavailable" in result.output
@@ -3855,7 +3856,7 @@ def test_dev_interactive_keys_refresh_run_tests_and_quit_with_cleanup(tmp_path, 
     monkeypatch.setitem(sys.modules, "tty", FakeTty)
     monkeypatch.setitem(sys.modules, "time", FakeTime)
 
-    result = CliRunner().invoke(cli.main, ["dev"], input="rtq")
+    result = CliRunner().invoke(cli.main, ["dev", "--quick"], input="rtq")
 
     assert result.exit_code == 0, result.output
     assert len(uploaded_files) == 2
@@ -4172,7 +4173,7 @@ def test_dev_restores_terminal_when_observer_setup_exits(tmp_path, monkeypatch, 
     monkeypatch.setitem(sys.modules, "termios", FakeTermios)
     monkeypatch.setitem(sys.modules, "tty", FakeTty)
 
-    result = CliRunner().invoke(cli.main, ["dev"])
+    result = CliRunner().invoke(cli.main, ["dev", "--quick"])
 
     assert result.exit_code == (1 if observer_exit == "error" else 0)
     assert ("file watcher unavailable" in result.output) is (observer_exit == "error")
@@ -4273,7 +4274,7 @@ def test_test_command_keeps_session_open_after_initial_upload_validation_error(t
     monkeypatch.setattr("signal.signal", lambda *args: None)
     monkeypatch.setitem(sys.modules, "time", FakeTime)
 
-    result = CliRunner().invoke(cli.main, ["dev"])
+    result = CliRunner().invoke(cli.main, ["dev", "--quick"])
 
     assert result.exit_code == 0, result.output
     assert ("POST", "/test-sessions/sess_123/files", {"json": None, "files": True, "timeout": 60.0}) not in requests
@@ -4432,7 +4433,7 @@ def test_test_command_debounces_watched_file_change_and_reuploads_project(tmp_pa
     monkeypatch.setattr("signal.signal", lambda *args: None)
     monkeypatch.setitem(sys.modules, "time", FakeTime)
 
-    result = CliRunner().invoke(cli.main, ["dev"])
+    result = CliRunner().invoke(cli.main, ["dev", "--quick"])
 
     assert result.exit_code == 0, result.output
     assert len(uploaded_files) == 2
@@ -4543,7 +4544,7 @@ def test_test_command_stops_when_reupload_reports_session_not_active(tmp_path, m
     monkeypatch.setattr("signal.signal", lambda *args: None)
     monkeypatch.setitem(sys.modules, "time", FakeTime)
 
-    result = CliRunner().invoke(cli.main, ["dev"])
+    result = CliRunner().invoke(cli.main, ["dev", "--quick"])
 
     assert result.exit_code == 0, result.output
     assert FakeClient.upload_count == 2
@@ -4675,7 +4676,7 @@ def test_test_command_reports_requirements_restart_error_without_raw_json(tmp_pa
     monkeypatch.setattr("signal.signal", lambda *args: None)
     monkeypatch.setitem(sys.modules, "time", FakeTime)
 
-    result = CliRunner().invoke(cli.main, ["dev"])
+    result = CliRunner().invoke(cli.main, ["dev", "--quick"])
 
     assert result.exit_code == 0, result.output
     assert FakeClient.upload_count == 2
@@ -4792,7 +4793,7 @@ def test_test_command_cleans_up_session_when_container_fails_to_start(tmp_path, 
     monkeypatch.setattr("signal.signal", lambda *args: None)
     monkeypatch.setitem(sys.modules, "time", FakeTime)
 
-    result = CliRunner().invoke(cli.main, ["dev"])
+    result = CliRunner().invoke(cli.main, ["dev", "--quick"])
 
     assert result.exit_code == 1
     assert ("DELETE", "/test-sessions/sess_failed", None) in requests

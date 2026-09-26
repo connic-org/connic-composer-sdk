@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "connic-composer-sdk"
-version = "0.1.46"
+version = "0.1.47"
 description = "The Connic Composer SDK for building agents and enterprise-level tools."
 authors = [
   { name = "Connic Team", email = "hello@connic.co" },
@@ -24,6 +24,7 @@ classifiers = [
 ]
 dependencies = [
     "click>=8.0.0",
+    "questionary>=2.1.0",  # For keyboard-driven CLI selection menus
     "pyyaml>=6.0",
     "pydantic>=2.0.0",
     "watchdog>=3.0.0",  # For hot reloading in dev

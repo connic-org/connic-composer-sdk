@@ -153,7 +153,7 @@ def run_dev(monkeypatch, changes=(), observer=None):
     monkeypatch.setattr("signal.signal", lambda *args: None)
     monkeypatch.setitem(sys.modules, "time", Clock)
 
-    result = CliRunner().invoke(cli.main, ["dev", "--api-key", "cnc_test_secret", "--project-id", "proj_123"])
+    result = CliRunner().invoke(cli.main, ["dev", "--quick", "--api-key", "cnc_test_secret", "--project-id", "proj_123"])
 
     assert result.exit_code == 0, result.output
     assert observer.started and observer.stopped and observer.joined

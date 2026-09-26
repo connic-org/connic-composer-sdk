@@ -11,6 +11,7 @@ from typing import Literal, NamedTuple
 
 import click
 import httpx
+import questionary
 
 from . import __version__
 from .core import RetryOptions
@@ -103,6 +104,34 @@ def _warn(msg: str) -> None:
 def _info(msg: str) -> None:
     """Sub-detail under a step: neutral info, no glyph."""
     click.echo(f"    {msg}")
+
+
+def _select_option(message: str, choices: list[str], default: int = 0) -> int:
+    if not (sys.stdin.isatty() and sys.stdout.isatty()) or os.environ.get("TERM") == "dumb":
+        for index, label in enumerate(choices, start=1):
+            _info(f"{index}. {label}")
+        return click.prompt(f"  {message}", type=click.IntRange(1, len(choices)), default=default + 1) - 1
+
+    question = questionary.select(
+        message,
+        choices=[questionary.Choice(label, value=index) for index, label in enumerate(choices)],
+        default=default,
+        qmark="",
+        pointer="❯",
+        instruction="(↑/↓ to move, Enter to select)",
+        style=questionary.Style([
+            ("pointer", "fg:ansicyan bold"),
+            ("highlighted", "fg:ansicyan bold"),
+            ("answer", "fg:ansicyan bold"),
+        ]),
+    )
+    try:
+        selected = question.unsafe_ask()
+    except (KeyboardInterrupt, EOFError) as exc:
+        raise click.Abort() from exc
+    if selected is None:
+        raise click.Abort()
+    return selected
 
 
 def _done(msg: str = "Done.") -> None:
@@ -532,7 +561,10 @@ This project contains AI agents built with the Connic Composer SDK.
    connic lint
    ```
 
-4. Connect your repository to Connic and push to deploy, or run `connic deploy`.
+4. Run `connic dev` to choose a reusable environment or a quick test with hot reload.
+
+5. Connect your repository to Connic and push to deploy, or run `connic deploy`
+   to choose an environment and confirm the deployment.
 
 ## Documentation
 
@@ -824,7 +856,7 @@ def _offer_plugin_installs() -> None:
             ):
                 _install_plugin_for_client(label, commands)
 
-    _info(f"AI agent setup: {AI_AGENT_SETUP_URL}")
+    _info(f"Coding agent setup: {AI_AGENT_SETUP_URL}")
 
 
 def _merge_template_into_project(
@@ -986,7 +1018,7 @@ def init(name: str, templates: str | None, skill: bool):
 
         _step("Next steps:")
         _info("1. Run `connic lint` to validate your project")
-        _info("2. Run `connic test` to test against Connic cloud")
+        _info("2. Run `connic dev` to choose a dev environment with hot reload")
         _info("3. Run `connic deploy` when ready")
         _done(f"Initialized with templates: {', '.join(template_ids)}")
         return
@@ -1768,12 +1800,70 @@ def _run_tests_in_dev_session(client: "httpx.Client", project_id: str, env_id: s
     click.echo()
 
 
+def _load_project_config() -> dict:
+    try:
+        config = json.loads(Path(".connic").read_text())
+        return config if isinstance(config, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def _save_dev_preference(project_id: str, name: str) -> None:
+    connic_file = Path(".connic")
+    try:
+        config = json.loads(connic_file.read_text()) if connic_file.exists() else {}
+        if not isinstance(config, dict):
+            raise ValueError("expected a JSON object")
+        config["preferred_dev_environment"] = {"project_id": project_id, "name": name}
+        connic_file.write_text(json.dumps(config, indent=2) + "\n")
+    except (OSError, ValueError) as exc:
+        _warn(f"Could not save the preferred dev environment to .connic: {exc}")
+
+
+def _choose_dev_environment(client: "httpx.Client", project_id: str, config: dict) -> str | None:
+    preference = config.get("preferred_dev_environment")
+    preferred_name = None
+    if isinstance(preference, dict) and preference.get("project_id") == project_id:
+        preferred_name = preference.get("name")
+    if preferred_name:
+        resp = client.get(f"/projects/{project_id}/environments/")
+        if resp.status_code not in (200, 403):
+            _fail_and_exit(f"Failed to get environments: {_response_error_text(resp)}")
+        if resp.status_code == 200 and not any(
+            env["name"] == preferred_name
+            and env.get("env_type") == "test"
+            and not env.get("is_ephemeral")
+            and env.get("can_use_dev_session", True)
+            for env in resp.json()
+        ):
+            _warn(f"Preferred environment '{preferred_name}' is no longer available.")
+            preferred_name = None
+
+    _step("Choose a dev environment:")
+    choices = []
+    if preferred_name:
+        choices.append((f"Reuse {preferred_name} (preferred)", preferred_name))
+    choices.extend([
+        ("Reusable test environment (kept for later)", ""),
+        ("Quick test (deleted when the session ends)", None),
+    ])
+    selected = _select_option("Dev environment", [label for label, _ in choices])
+    name = choices[selected][1]
+    if name == "":
+        while not name:
+            name = click.prompt("  Environment name").strip()
+            if not name:
+                _err("Enter a name for the reusable environment.")
+    return name
+
+
 @main.command()
 @click.argument("name", required=False, default=None)
+@click.option("--quick", is_flag=True, help="Start an ephemeral test without prompting; deleted on exit.")
 @click.option("--api-url", envvar="CONNIC_API_URL", default=DEFAULT_API_URL, help="Connic API URL")
 @click.option("--api-key", envvar="CONNIC_API_KEY", default=None, help="Connic API key")
 @click.option("--project-id", envvar="CONNIC_PROJECT_ID", default=None, help="Connic project ID")
-def dev(name: str, api_url: str, api_key: str, project_id: str):
+def dev(name: str | None, quick: bool, api_url: str, api_key: str, project_id: str):
     """
     Start a dev session with hot-reload against Connic cloud.
 
@@ -1783,7 +1873,8 @@ def dev(name: str, api_url: str, api_key: str, project_id: str):
 
     \b
     Examples:
-        connic dev               # Ephemeral test env (auto-deleted on exit)
+        connic dev               # Choose a reusable environment or a quick test
+        connic dev --quick       # Ephemeral test env (auto-deleted on exit)
         connic dev my-feature    # Named test env (persists after exit)
 
     Environment variables:
@@ -1815,17 +1906,15 @@ def dev(name: str, api_url: str, api_key: str, project_id: str):
         _tty_mod = None
         _KEYS_SUPPORTED = False
     
-    # Validate required config
-    # Try to read from .connic file
-    connic_file = Path(".connic")
-    if connic_file.exists():
-        try:
-            import json
-            config = json.loads(connic_file.read_text())
-            api_key = api_key or config.get("api_key")
-            project_id = project_id or config.get("project_id")
-        except Exception:
-            pass
+    if quick and name is not None:
+        raise click.UsageError("Use either --quick or an environment name, not both.")
+    if name is not None:
+        name = name.strip()
+        if not name:
+            raise click.UsageError("The environment name cannot be empty.")
+    config = _load_project_config()
+    api_key = api_key or config.get("api_key")
+    project_id = project_id or config.get("project_id")
     
     _h1("Dev")
 
@@ -1901,6 +1990,9 @@ def dev(name: str, api_url: str, api_key: str, project_id: str):
         sys.exit(0)
 
     try:
+        if name is None and not quick:
+            name = _choose_dev_environment(client, project_id, config)
+
         signal.signal(signal.SIGINT, signal_handler)
         signal.signal(signal.SIGTERM, signal_handler)
 
@@ -1930,6 +2022,8 @@ def dev(name: str, api_url: str, api_key: str, project_id: str):
         session_id = session_data["id"]
         env_id = session_data["environment_id"]
         env_name = session_data["environment_name"]
+        if name:
+            _save_dev_preference(project_id, env_name)
 
         _ok(f"Session id: {session_id}")
         _ok(f"Environment: {env_name}")
@@ -2288,6 +2382,8 @@ def dev(name: str, api_url: str, api_key: str, project_id: str):
         except KeyboardInterrupt:
             pass
     
+    except click.Abort:
+        raise
     except Exception as e:
         _err(str(e))
         import traceback
@@ -2502,10 +2598,11 @@ def login(token: str | None, api_key: str | None, project_id: str | None, base_u
         raw_token = click.prompt(click.style("  Login token", fg="yellow"), hide_input=True)
         project_id, api_key = _parse_login_token(raw_token.strip())
 
-    config = {
-        "api_key": api_key,
-        "project_id": project_id,
-    }
+    config = _load_project_config()
+    preference = config.get("preferred_dev_environment")
+    if isinstance(preference, dict) and preference.get("project_id") != project_id:
+        config.pop("preferred_dev_environment", None)
+    config.update({"api_key": api_key, "project_id": project_id})
 
     connic_file = Path(".connic")
     connic_file.write_text(json.dumps(config, indent=2))
@@ -2534,13 +2631,60 @@ def _parse_login_token(token: str) -> tuple[str, str]:
 # Deploy Command - Upload and deploy to Connic cloud
 # =============================================================================
 
+def _find_deploy_environment(environments: list[dict], value: str) -> dict:
+    matches = [env for env in environments if env["name"] == value]
+    if not matches:
+        matches = [env for env in environments if env["name"].casefold() == value.casefold()]
+    if len(matches) == 1:
+        return matches[0]
+    if len(matches) > 1:
+        raise ValueError(f"More than one environment is named '{value}'. Select an environment ID.")
+    match = next((env for env in environments if env["id"] == value), None)
+    if match:
+        return match
+    raise ValueError(f"Environment '{value}' was not found or is not available for deployment.")
+
+
+def _show_deploy_environments(environments: list[dict]) -> None:
+    _table(
+        ["Environment", "ID", "Default"],
+        [[env["name"], env["id"], "Yes" if env.get("is_default") else ""] for env in environments],
+    )
+
+
+def _choose_deploy_environment(environments: list[dict]) -> dict:
+    _step("Available environments:")
+    names = [env["name"].casefold() for env in environments]
+    labels = []
+    for env in environments:
+        label = env["name"]
+        if names.count(label.casefold()) > 1:
+            label += f" ({env['id']})"
+        if env.get("is_default"):
+            label += " (default)"
+        labels.append(label)
+    default = next((index for index, env in enumerate(environments) if env.get("is_default")), 0)
+    selected = _select_option("Deployment environment", labels, default)
+    return environments[selected]
+
+
 @main.command()
-@click.option("--env", help="Target environment ID (get from Project Settings → Git & Environments)")
+@click.option("--env", help="Target environment name (or ID).")
+@click.option("--list", "list_environments", is_flag=True, help="List environments available for deployment and exit.")
+@click.option("--yes", "-y", is_flag=True, help="Skip confirmation; requires an explicit --env.")
 @click.option("--api-url", envvar="CONNIC_API_URL", default=DEFAULT_API_URL, help="Connic API URL")
 @click.option("--api-key", envvar="CONNIC_API_KEY", default=None, help="Connic API key")
 @click.option("--project-id", envvar="CONNIC_PROJECT_ID", default=None, help="Connic project ID")
 @click.option("--skip-tests", is_flag=True, help="Skip the test phase even if tests/ exists.")
-def deploy(env: str | None, api_url: str, api_key: str | None, project_id: str | None, skip_tests: bool):
+def deploy(
+    env: str | None,
+    list_environments: bool,
+    yes: bool,
+    api_url: str,
+    api_key: str | None,
+    project_id: str | None,
+    skip_tests: bool,
+):
     """
     Deploy local agents to Connic cloud.
     
@@ -2551,12 +2695,10 @@ def deploy(env: str | None, api_url: str, api_key: str | None, project_id: str |
     
     \b
     Examples:
-        connic deploy                           # Deploy to default environment
-        connic deploy --env <environment-id>    # Deploy to specific environment
-    
-    \b
-    Get your Environment ID from:
-        Project Settings → Git & Environments → Copy ID button
+        connic deploy                       # Select with arrow keys, then confirm
+        connic deploy --list                # List available environments
+        connic deploy --env staging          # Select an environment by name
+        connic deploy --env staging --yes    # Deploy without prompting
     
     \b
     Environment variables:
@@ -2568,20 +2710,17 @@ def deploy(env: str | None, api_url: str, api_key: str | None, project_id: str |
     import base64
     import hashlib
     import io
-    import json
     import tarfile
 
     import httpx
     
-    # Load config from .connic file
-    connic_file = Path(".connic")
-    if connic_file.exists():
-        try:
-            config = json.loads(connic_file.read_text())
-            api_key = api_key or config.get("api_key")
-            project_id = project_id or config.get("project_id")
-        except Exception:
-            pass
+    if list_environments and (env or yes):
+        raise click.UsageError("Use --list without --env or --yes.")
+    if yes and not env:
+        raise click.UsageError("--yes requires --env to select the deployment target explicitly.")
+    config = _load_project_config()
+    api_key = api_key or config.get("api_key")
+    project_id = project_id or config.get("project_id")
     
     _h1("Deploy")
 
@@ -2595,10 +2734,11 @@ def deploy(env: str | None, api_url: str, api_key: str | None, project_id: str |
         sys.exit(1)
 
     # Lint before deploying
-    _step("Validating project files...")
-    if not _run_lint(quiet=True):
-        _fail_and_exit("Lint failed. Fix the errors above before deploying.")
-    _ok("Lint passed")
+    if not list_environments:
+        _step("Validating project files...")
+        if not _run_lint(quiet=True):
+            _fail_and_exit("Lint failed. Fix the errors above before deploying.")
+        _ok("Lint passed")
 
     headers = {
         "Authorization": f"Bearer {api_key}",
@@ -2632,23 +2772,28 @@ def deploy(env: str | None, api_url: str, api_key: str | None, project_id: str |
                 _fail_and_exit(f"Failed to get environments: {resp.text}")
 
             environments = resp.json()
-            standard_envs = [e for e in environments if e.get("env_type") != "test"]
+            standard_envs = [
+                e for e in environments if e.get("env_type") != "test" and e.get("can_deploy", True)
+            ]
             if not standard_envs:
-                _fail_and_exit("No environments found. Create one in the dashboard first.")
+                if list_environments:
+                    _info("No environments are available for deployment with this API key.")
+                    return
+                _fail_and_exit("No environments are available for deployment with this API key.")
+            if list_environments:
+                _show_deploy_environments(standard_envs)
+                return
 
-            target_env = None
             if env:
-                target_env = next((e for e in standard_envs if e["id"] == env), None)
-                if not target_env:
-                    _err(f"Environment with ID '{env}' not found")
+                try:
+                    target_env = _find_deploy_environment(standard_envs, env)
+                except ValueError as exc:
+                    _err(str(exc))
                     _info("Available environments:")
-                    for e in standard_envs:
-                        default_marker = " (default)" if e.get("is_default") else ""
-                        _info(f"  {e['name']}: {e['id']}{default_marker}")
-                    _info("Copy the ID from Project Settings → Git & Environments")
+                    _show_deploy_environments(standard_envs)
                     sys.exit(1)
             else:
-                target_env = next((e for e in standard_envs if e.get("is_default")), None) or standard_envs[0]
+                target_env = _choose_deploy_environment(standard_envs)
 
             _ok(f"Environment: {target_env['name']}")
 
@@ -2682,6 +2827,21 @@ def deploy(env: str | None, api_url: str, api_key: str | None, project_id: str |
 
     except Exception as e:
         _fail_and_exit(f"Failed to package files: {e}")
+
+    click.echo()
+    _step("Confirm deployment:")
+    _info(f"Project: {project['name']}")
+    _info(f"Environment: {target_env['name']} ({target_env['id']})")
+    _info(f"Upload: {len(valid_files)} files, {len(tar_data):,} bytes")
+    if skip_tests:
+        _info("Tests: skipped (--skip-tests)")
+    elif target_env.get("deploy_gate_tests_enabled") is False:
+        _info("Tests: disabled for this environment")
+    else:
+        _info("Tests: run when present")
+    if not yes and not click.confirm("  Deploy to this environment?", default=False):
+        _info("Deployment cancelled.")
+        return
 
     # Upload and create deployment
     _step("Submitting to backend...")

@@ -10,7 +10,7 @@ Define agents in YAML, extend them with Python, test them with hot reload agains
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-[Documentation](https://connic.co/docs/v1/build/project-structure) • [Quickstart](https://connic.co/docs/v1/quickstart) • [AI Agent Setup](https://connic.co/docs/v1/ai-agent-setup) • [Agent Templates](https://connic.co/agents) • [Dashboard](https://connic.co/projects)
+[Documentation](https://connic.co/docs/v1/build/project-structure) • [Quickstart](https://connic.co/docs/v1/quickstart) • [Coding Agent Setup](https://connic.co/docs/v1/ai-agent-setup) • [Agent Templates](https://connic.co/agents) • [Dashboard](https://connic.co/projects)
 
 </div>
 
@@ -72,7 +72,7 @@ The optional `--skill` flag installs the Connic AI coding-agent skill into both 
 connic skill
 ```
 
-In an interactive terminal, both commands detect Codex and Claude Code and ask whether to install the full Connic plugin for each detected client. The plugin bundles the same skill with Connic MCP. Declining leaves the project-local skill installation unchanged. See [AI agent setup](https://connic.co/docs/v1/ai-agent-setup) for manual and client-specific paths.
+In an interactive terminal, both commands detect Codex and Claude Code and ask whether to install the full Connic plugin for each detected client. The plugin bundles the same skill with Connic MCP. Declining leaves the project-local skill installation unchanged. See [Coding agent setup](https://connic.co/docs/v1/ai-agent-setup) for manual and client-specific paths.
 
 The CLI checks for SDK, project skill, Codex plugin, and Claude Code plugin updates when commands run. It checks every installed Claude Code scope separately. To check without updating, including from an AI coding-agent session, run:
 
@@ -286,7 +286,9 @@ Related docs:
 | `connic login`                        | Save project credentials in `.connic`                           |
 | `connic lint`                         | Validate agents, tools, middleware, and schemas locally         |
 | `connic tools`                        | List custom Python tools and signatures                          |
-| `connic dev [name]`                   | Start an isolated cloud dev environment with hot reload         |
+| `connic dev`                          | Choose a reusable named cloud dev environment or a quick test   |
+| `connic dev [name]`                   | Start or reconnect to a named dev environment directly          |
+| `connic deploy --list`                | List available deployment environments by name                 |
 | `connic test`                         | Run declarative test suites from `tests/` against an environment |
 | `connic deploy`                       | Deploy from the CLI to a Connic environment for projects without a connected Git repository |
 | `connic migrate`                      | Migrate a LangChain or Google ADK project into a Connic project |
@@ -307,7 +309,9 @@ Run `connic <command> --help` for flags and examples.
 
 ### Hot-Reload Testing
 
-`connic dev` creates an isolated development environment in Connic cloud and syncs local changes while you iterate.
+`connic dev` opens a menu with a reusable development environment selected by default. Use Up/Down to move and Enter to select, then enter a name for a new reusable environment. The CLI saves the preferred reusable environment in `.connic`; when valid, it appears first and is selected by default on the next run. The CLI then syncs local changes while you iterate.
+
+Quick tests are deleted when the session ends and leave the preferred reusable environment unchanged. Named environments retain their data, variables, and connectors. Use `connic dev --quick` or `connic dev my-feature` to select either mode directly; use one of these explicit choices for unattended runs.
 
 Changes under the standard source directories hot-reload. Dependencies are installed from `requirements.txt` when the session starts, so changing that file requires stopping and recreating the dev session.
 
@@ -320,7 +324,9 @@ Use `connic test` for one-shot declarative test suites from `tests/`, including 
 Deployment targets Connic-managed environments.
 
 - If your Connic project is connected to a Git repository, push to the branch configured for the target environment.
-- If the project has no connected Git repository, use `connic deploy`.
+- If the project has no connected Git repository, use `connic deploy`. Use Up/Down to choose an environment by name and Enter to select it, then confirm the deployment summary before uploading.
+
+`connic deploy --list` lists available targets without deploying. Use `connic deploy --env staging` to select a target by name; environment IDs remain supported. For CI, pass both an explicit target and confirmation: `connic deploy --env staging --yes`.
 
 ## Documentation
 
