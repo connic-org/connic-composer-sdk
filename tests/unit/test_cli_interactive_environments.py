@@ -38,7 +38,7 @@ def api(monkeypatch, request):
     def handle(request):
         requests.append(request)
         path = request.url.path
-        if path.endswith("/environments/"):
+        if path.endswith("/environments"):
             if environment_list_status != 200:
                 return httpx.Response(environment_list_status, json={"detail": "Environment list unavailable"})
             return httpx.Response(200, json=environments)
@@ -366,7 +366,7 @@ def test_dev_ignores_preference_for_another_project(project, api, dev_runtime):
 
     assert result.exit_code == 0, result.output
     assert "Reuse my-feature" not in result.output
-    assert not any(request.url.path.endswith("/environments/") for request in requests)
+    assert not any(request.url.path.endswith("/environments") for request in requests)
 
 
 def test_dev_cancel_creates_no_session_and_does_not_overwrite_preference(project, api):

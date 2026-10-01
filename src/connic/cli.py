@@ -1826,7 +1826,7 @@ def _choose_dev_environment(client: "httpx.Client", project_id: str, config: dic
     if isinstance(preference, dict) and preference.get("project_id") == project_id:
         preferred_name = preference.get("name")
     if preferred_name:
-        resp = client.get(f"/projects/{project_id}/environments/")
+        resp = client.get(f"/projects/{project_id}/environments")
         if resp.status_code not in (200, 403):
             _fail_and_exit(f"Failed to get environments: {_response_error_text(resp)}")
         if resp.status_code == 200 and not any(
@@ -2477,7 +2477,7 @@ def test(env: str | None, filter_name: str | None, coverage: bool, as_json: bool
             if not as_json:
                 _step("Resolving target environment...")
             try:
-                envs_resp = client.get(f"/projects/{project_id}/environments/")
+                envs_resp = client.get(f"/projects/{project_id}/environments")
             except httpx.RequestError as e:
                 _fail_and_exit(f"Failed to list environments: {e}", code=2)
             if envs_resp.status_code != 200:
@@ -2767,7 +2767,7 @@ def deploy(
 
             _ok(f"Project: {project['name']}")
 
-            resp = client.get(f"/projects/{project_id}/environments/")
+            resp = client.get(f"/projects/{project_id}/environments")
             if resp.status_code != 200:
                 _fail_and_exit(f"Failed to get environments: {resp.text}")
 

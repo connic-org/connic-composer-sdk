@@ -1,4 +1,3 @@
-import ast
 import asyncio
 import inspect
 import sys
@@ -9,7 +8,7 @@ import pytest
 
 from connic import tools as connic_tools
 from connic.core import ApprovalInput
-from connic.loader import PREDEFINED_TOOL_ALIASES, PREDEFINED_TOOL_NAMES, ProjectLoader
+from connic.loader import PREDEFINED_TOOL_NAMES, ProjectLoader
 
 DOCUMENTED_PREDEFINED_TOOLS = [
     "trigger_agent",
@@ -121,7 +120,7 @@ def test_browser_tool_parameters_expose_actions_without_internal_session_control
 
 
 def test_legacy_retrieval_tool_names_are_hidden_yaml_aliases(tmp_path):
-    aliases = list(PREDEFINED_TOOL_ALIASES)
+    aliases = ["query_knowledge", "store_knowledge", "delete_knowledge", "kb_list_namespaces"]
     write_file(
         tmp_path / "agents" / "assistant.yaml",
         f"""
@@ -935,6 +934,8 @@ def test_validation_only_resolves_pep604_union_annotations(tmp_path):
             affected_ids: list[str] | None = None,
             attempts: int | None = None,
             metadata: dict[str, str] | None = None,
+            extra_metadata: None | dict[str, int] = None,
+            category: str | int = "audit",
         ) -> dict:
             """Record an audit event.
 
@@ -966,18 +967,8 @@ def test_validation_only_resolves_pep604_union_annotations(tmp_path):
     assert props["affected_ids"]["type"] == "array"
     assert props["attempts"]["type"] == "integer"
     assert props["metadata"]["type"] == "object"
-
-
-def test_resolve_ast_annotation_handles_pep604_unions():
-    loader = ProjectLoader("/tmp")
-
-    def resolve(expr):
-        return loader._resolve_ast_annotation(ast.parse(expr, mode="eval").body)
-
-    assert resolve("list[str] | None") is list
-    assert resolve("int | None") is int
-    assert resolve("None | dict[str, int]") is dict
-    assert resolve("str | int") is str
+    assert props["extra_metadata"]["type"] == "object"
+    assert props["category"]["type"] == "string"
 
 
 def test_duplicate_tool_function_names_are_reported_with_resolved_refs(tmp_path):
@@ -2132,7 +2123,7 @@ def test_wildcard_no_matches_is_a_load_error(tmp_path):
     )
 
     loader = ProjectLoader(str(tmp_path))
-    agents = loader.load_agents()
+    loader.load_agents()
     assert any("matched no tools" in e for e in loader._load_errors)
 
 
@@ -2213,7 +2204,7 @@ def test_invalid_tool_ref_single_part(tmp_path):
     )
 
     loader = ProjectLoader(str(tmp_path))
-    agents = loader.load_agents()
+    loader.load_agents()
     assert any("Invalid tool reference" in e for e in loader._load_errors)
 
 
@@ -2240,7 +2231,7 @@ def test_tool_function_not_found_in_module(tmp_path):
     )
 
     loader = ProjectLoader(str(tmp_path))
-    agents = loader.load_agents()
+    loader.load_agents()
     assert any("not found in module" in e for e in loader._load_errors)
 
 

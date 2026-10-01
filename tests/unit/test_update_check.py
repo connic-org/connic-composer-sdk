@@ -535,13 +535,21 @@ def test_invalid_remote_versions_are_not_treated_as_successful_checks(monkeypatc
     class Response:
         text = _skill("not-a-version")
 
+        def __init__(self, data):
+            self._data = data
+
         def raise_for_status(self):
             return None
 
         def json(self):
-            return {"info": {"version": "not-a-version"}}
+            return self._data
 
-    monkeypatch.setattr(update_check.httpx, "get", lambda *args, **kwargs: Response())
+    responses = {
+        update_check.PYPI_URL: Response({"info": {"version": "not-a-version"}}),
+        update_check.SKILL_URL: Response(None),
+        update_check.PLUGIN_URL: Response({"version": "not-a-version"}),
+    }
+    monkeypatch.setattr(update_check.httpx, "get", lambda url, **kwargs: responses[url])
 
     assert update_check._fetch_remote_versions(force=True) == (
         None,
@@ -905,9 +913,9 @@ def test_cache_write_errors_do_not_break_update_check(monkeypatch, tmp_path):
     blocker.write_text("x")
     monkeypatch.setattr(update_check, "CACHE_FILE", blocker / "cache.json")
     monkeypatch.setattr(
-        update_check,
-        "_fetch_remote_versions",
-        lambda **kwargs: (update_check.__version__, None, None, True, False, False),
+        update_check.httpx,
+        "get",
+        lambda *args, **kwargs: (_ for _ in ()).throw(TimeoutError("offline")),
     )
 
     assert update_check.check_for_updates() is None

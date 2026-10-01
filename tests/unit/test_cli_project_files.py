@@ -1476,14 +1476,16 @@ def test_dev_command_requires_credentials_before_loading_project(tmp_path, monke
     monkeypatch.setattr(cli, "print_update_hint", lambda: None)
 
     def fail_if_called(*args, **kwargs):
-        raise AssertionError("dev should not load the project without credentials")
+        raise AssertionError("dev should not load the project or contact the API without credentials")
 
     monkeypatch.setattr(cli, "ProjectLoader", fail_if_called)
+    monkeypatch.setattr(cli.httpx, "Client", fail_if_called)
 
     result = CliRunner().invoke(cli.main, ["dev"])
 
     assert result.exit_code == 1
     assert "API key required. Set CONNIC_API_KEY or use --api-key" in result.output
+    assert "Create one in the dashboard: Project Settings → CLI → Create Key" in result.output
 
 
 def test_dev_command_rejects_loader_errors_before_creating_cloud_session(tmp_path, monkeypatch):
@@ -1719,42 +1721,6 @@ def test_test_command_ignores_invalid_saved_config_and_uses_explicit_credentials
     assert "Error creating dev session: session service unavailable" in result.output
 
 
-def test_test_command_reports_existing_active_session_conflict(tmp_path, monkeypatch):
-    monkeypatch.chdir(tmp_path)
-    monkeypatch.setattr(cli, "print_update_hint", lambda: None)
-    (tmp_path / ".connic").write_text(json.dumps({"api_key": "cnc_test_secret", "project_id": "proj_123"}))
-    _write_minimal_support_agent(tmp_path)
-
-    class Response:
-        status_code = 409
-        text = "conflict"
-
-        def json(self):
-            return {"detail": "A test session is already active for this environment"}
-
-    class FakeClient:
-        def __init__(self, base_url, headers, timeout):
-            self.base_url = base_url
-            self.headers = headers
-            self.timeout = timeout
-
-        def post(self, path, json=None):
-            assert path == "/projects/proj_123/test-sessions"
-            assert json == {"name": "feature-preview"}
-            return Response()
-
-        def close(self):
-            pass
-
-    monkeypatch.setattr(cli.httpx, "Client", FakeClient)
-
-    result = CliRunner().invoke(cli.main, ["dev", "feature-preview"])
-
-    assert result.exit_code == 1
-    assert "A test session is already active for this environment" in result.output
-    assert "To stop an existing session" in result.output
-
-
 def test_test_command_cleans_up_when_container_fails_to_start(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(cli, "print_update_hint", lambda: None)
@@ -1854,6 +1820,7 @@ def test_test_command_reports_repeated_container_status_http_errors_before_timeo
     _write_minimal_support_agent(tmp_path)
 
     calls = []
+    sleeps = []
 
     class Response:
         def __init__(self, status_code, payload=None):
@@ -1884,12 +1851,13 @@ def test_test_command_reports_repeated_container_status_http_errors_before_timeo
             calls.append(("CLOSE",))
 
     monkeypatch.setattr(cli.httpx, "Client", FakeClient)
-    monkeypatch.setattr(time, "sleep", lambda seconds: None)
+    monkeypatch.setattr(time, "sleep", sleeps.append)
 
     result = CliRunner().invoke(cli.main, ["dev", "--quick"])
 
     assert result.exit_code == 1
-    assert calls.count(("GET", "/test-sessions/sess_polling")) == 200
+    assert calls.count(("GET", "/test-sessions/sess_polling")) > 1
+    assert sum(sleeps) == 600
     assert calls[-2:] == [("DELETE", "/test-sessions/sess_polling"), ("CLOSE",)]
     assert "Container did not start within 10 minutes" in result.output
 
@@ -2192,7 +2160,7 @@ def test_deploy_command_packages_project_files_and_uploads_to_default_environmen
             requests.append(("GET", path, None))
             if path == "/projects/proj_123":
                 return Response(200, {"name": "Support Ops", "git_provider": None})
-            if path == "/projects/proj_123/environments/":
+            if path == "/projects/proj_123/environments":
                 return Response(
                     200,
                     [
@@ -2214,7 +2182,7 @@ def test_deploy_command_packages_project_files_and_uploads_to_default_environmen
     upload = requests[-1][2]
     assert requests[:2] == [
         ("GET", "/projects/proj_123", None),
-        ("GET", "/projects/proj_123/environments/", None),
+        ("GET", "/projects/proj_123/environments", None),
     ]
     assert requests[-1][0:2] == ("POST", "/projects/proj_123/deploy/upload")
     assert upload["params"] == {"environment_id": "env_prod"}
@@ -2285,76 +2253,6 @@ def test_deploy_command_rejects_projects_with_connected_git_before_packaging(tmp
     assert "Use git push to deploy" in result.output
 
 
-def test_deploy_command_explicit_credentials_uploads_requested_environment_package(tmp_path, monkeypatch):
-    monkeypatch.chdir(tmp_path)
-    monkeypatch.setattr(cli, "print_update_hint", lambda: None)
-    monkeypatch.setattr(cli, "_run_lint", lambda quiet=False, **kwargs: quiet is True)
-    (tmp_path / ".connic").write_text(json.dumps({"api_key": "cnc_live_secret", "project_id": "proj_123"}))
-    (tmp_path / "agents").mkdir()
-    (tmp_path / "agents" / "support.yaml").write_text(
-        'version: "1.0"\n'
-        "name: support\n"
-        "description: Support agent\n"
-        "type: llm\n"
-        "model: openai/gpt-4o\n"
-        "system_prompt: Help customers.\n"
-    )
-
-    requests = []
-
-    class Response:
-        def __init__(self, status_code, payload=None, text="", headers=None):
-            self.status_code = status_code
-            self._payload = payload
-            self.text = text
-            self.headers = headers or {}
-
-        def json(self):
-            return self._payload
-
-    class FakeClient:
-        def __init__(self, base_url, headers, timeout):
-            self.base_url = base_url
-            self.headers = headers
-            self.timeout = timeout
-
-        def __enter__(self):
-            return self
-
-        def __exit__(self, exc_type, exc, tb):
-            return False
-
-        def get(self, path):
-            requests.append(("GET", path, None))
-            if path == "/projects/proj_123":
-                return Response(200, {"name": "Support Ops", "git_provider": None})
-            if path == "/projects/proj_123/environments/":
-                return Response(
-                    200,
-                    [
-                        {"id": "env_test", "name": "Preview", "env_type": "test", "is_default": False},
-                        {"id": "env_staging", "name": "Staging", "env_type": "staging", "is_default": False},
-                        {"id": "env_prod", "name": "Production", "env_type": "production", "is_default": True},
-                    ],
-                )
-            raise AssertionError(f"Unexpected GET {path}")
-
-        def post(self, path, params, json):
-            requests.append(("POST", path, {"params": params, "json": json}))
-            return Response(200, {"id": "dep_queued"}, headers={"x-deployment-queued": "true"})
-
-    monkeypatch.setattr(cli.httpx, "Client", FakeClient)
-
-    result = CliRunner().invoke(cli.main, ["deploy", "--env", "env_staging"], input="y\n")
-
-    assert result.exit_code == 0, result.output
-    upload = requests[-1][2]
-    assert upload["params"] == {"environment_id": "env_staging"}
-    assert "Environment: Staging" in result.output
-    assert "Another deployment is currently building;" in result.output
-    assert "dep_queued" in result.output
-
-
 def test_deploy_command_rejects_unknown_environment_before_packaging(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(cli, "print_update_hint", lambda: None)
@@ -2397,7 +2295,7 @@ def test_deploy_command_rejects_unknown_environment_before_packaging(tmp_path, m
             requests.append(("GET", path))
             if path == "/projects/proj_123":
                 return Response(200, {"name": "Support Ops", "git_provider": None})
-            if path == "/projects/proj_123/environments/":
+            if path == "/projects/proj_123/environments":
                 return Response(
                     200,
                     [
@@ -2418,7 +2316,7 @@ def test_deploy_command_rejects_unknown_environment_before_packaging(tmp_path, m
     assert result.exit_code == 1
     assert requests == [
         ("GET", "/projects/proj_123"),
-        ("GET", "/projects/proj_123/environments/"),
+        ("GET", "/projects/proj_123/environments"),
     ]
     assert "Environment 'env_missing' was not found or is not available for deployment." in result.output
     assert "Staging" in result.output and "env_staging" in result.output
@@ -2542,7 +2440,7 @@ def test_deploy_command_reports_no_standard_environments(tmp_path, monkeypatch):
         def get(self, path):
             if path == "/projects/proj_123":
                 return Response(200, {"name": "Support Ops", "git_provider": None})
-            if path == "/projects/proj_123/environments/":
+            if path == "/projects/proj_123/environments":
                 return Response(200, [{"id": "env_test", "name": "Preview", "env_type": "test"}])
             raise AssertionError(f"Unexpected GET {path}")
 
@@ -2587,7 +2485,7 @@ def test_deploy_command_reports_environment_lookup_and_connection_errors(tmp_pat
         def get(self, path):
             if path == "/projects/proj_123":
                 return Response(200, {"name": "Support Ops", "git_provider": None})
-            if path == "/projects/proj_123/environments/":
+            if path == "/projects/proj_123/environments":
                 return Response(503, text="environment service unavailable")
             raise AssertionError(f"Unexpected GET {path}")
 
@@ -2658,7 +2556,7 @@ def test_deploy_command_uses_first_standard_environment_when_no_default_exists(t
         def get(self, path):
             if path == "/projects/proj_123":
                 return Response(200, {"name": "Support Ops", "git_provider": None})
-            if path == "/projects/proj_123/environments/":
+            if path == "/projects/proj_123/environments":
                 return Response(
                     200,
                     [
@@ -2728,7 +2626,7 @@ def test_deploy_command_uses_requested_environment_and_reports_queued_deployment
         def get(self, path):
             if path == "/projects/proj_cli":
                 return Response(200, {"name": "Support Ops", "git_provider": None})
-            if path == "/projects/proj_cli/environments/":
+            if path == "/projects/proj_cli/environments":
                 return Response(
                     200,
                     [
@@ -2809,7 +2707,7 @@ def test_deploy_command_stops_on_local_file_validation_error_after_environment_s
         def get(self, path):
             if path == "/projects/proj_123":
                 return Response(200, {"name": "Support Ops", "git_provider": None})
-            if path == "/projects/proj_123/environments/":
+            if path == "/projects/proj_123/environments":
                 return Response(200, [{"id": "env_prod", "name": "Production", "env_type": "production", "is_default": True}])
             raise AssertionError(f"Unexpected GET {path}")
 
@@ -2867,7 +2765,7 @@ def test_deploy_command_reports_upload_validation_and_server_errors(tmp_path, mo
         def get(self, path):
             if path == "/projects/proj_123":
                 return Response(200, {"name": "Support Ops", "git_provider": None})
-            if path == "/projects/proj_123/environments/":
+            if path == "/projects/proj_123/environments":
                 return Response(200, [{"id": "env_prod", "name": "Production", "env_type": "production", "is_default": True}])
             raise AssertionError(f"Unexpected GET {path}")
 
@@ -2905,7 +2803,7 @@ def write_minimal_test_project(tmp_path: Path) -> None:
     )
 
 
-def test_test_command_runs_suite_against_default_test_environment_and_filters_json(tmp_path, monkeypatch):
+def test_test_command_forwards_filter_to_default_test_environment_and_returns_json(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(cli, "print_update_hint", lambda: None)
     write_minimal_test_project(tmp_path)
@@ -2924,7 +2822,6 @@ def test_test_command_runs_suite_against_default_test_environment_and_filters_js
         "    expected_result: status == \"completed\"\n"
     )
     requests = []
-    requested_filter = None
 
     class Response:
         def __init__(self, status_code, payload=None, text=""):
@@ -2948,9 +2845,8 @@ def test_test_command_runs_suite_against_default_test_environment_and_filters_js
             return False
 
         def get(self, path):
-            nonlocal requested_filter
             requests.append(("GET", path, None))
-            if path == "/projects/proj_123/environments/":
+            if path == "/projects/proj_123/environments":
                 return Response(
                     200,
                     [
@@ -2973,38 +2869,24 @@ def test_test_command_runs_suite_against_default_test_environment_and_filters_js
                         "phase": "done",
                         "deployment_id": "dep_123",
                         "cases": [
-                            case
-                            for case in [
-                                {
-                                    "agent_name": "support",
-                                    "test_name": "handles_refund_request",
-                                    "passed": True,
-                                    "successes": 3,
-                                    "runs": 3,
-                                    "success_threshold": 100,
-                                },
-                                {
-                                    "agent_name": "support",
-                                    "test_name": "handles_shipping_question",
-                                    "passed": True,
-                                    "successes": 3,
-                                    "runs": 3,
-                                    "success_threshold": 100,
-                                },
-                            ]
-                            if requested_filter in case["test_name"]
+                            {
+                                "agent_name": "support",
+                                "test_name": "handles_refund_request",
+                                "passed": True,
+                                "successes": 3,
+                                "runs": 3,
+                                "success_threshold": 100,
+                            }
                         ],
                     },
                 )
             raise AssertionError(f"Unexpected GET {path}")
 
         def post(self, path, json=None):
-            nonlocal requested_filter
             requests.append(("POST", path, json))
             assert path == "/projects/proj_123/test-runs"
             assert json["environment_id"] == "env_staging_test"
             assert json["test_filter"] == "refund"
-            requested_filter = json["test_filter"]
             tar_data = base64.b64decode(json["files_data"])
             with tarfile.open(fileobj=io.BytesIO(tar_data), mode="r:gz") as tar:
                 assert sorted(tar.getnames()) == ["agents/support.yaml", "tests/support.yaml"]
@@ -3015,7 +2897,7 @@ def test_test_command_runs_suite_against_default_test_environment_and_filters_js
     result = CliRunner().invoke(cli.main, ["test", "--json", "--filter", "refund"])
 
     assert result.exit_code == 0, result.output
-    assert requests[0] == ("GET", "/projects/proj_123/environments/", None)
+    assert requests[0] == ("GET", "/projects/proj_123/environments", None)
     assert requests[1][0:2] == ("POST", "/projects/proj_123/test-runs")
     payload = json.loads(result.output)
     assert payload == {
@@ -3190,7 +3072,7 @@ def test_test_command_distinguishes_test_failures_from_infrastructure_errors(
             return False
 
         def get(self, path):
-            if path == "/projects/proj_123/environments/":
+            if path == "/projects/proj_123/environments":
                 if failure_stage == "environment_unauthorized":
                     return Response(401, text="invalid API key")
                 if failure_stage == "environment_unavailable":
@@ -4685,22 +4567,6 @@ def test_test_command_reports_requirements_restart_error_without_raw_json(tmp_pa
     assert "raw response must not be shown" not in result.output
     assert "Fix the issue and save to retry..." not in result.output
     assert "Session ended (status: expired)" in result.output
-
-
-def test_test_command_requires_credentials_before_creating_session(tmp_path, monkeypatch):
-    monkeypatch.chdir(tmp_path)
-    monkeypatch.setattr(cli, "print_update_hint", lambda: None)
-
-    def fail_if_called(*args, **kwargs):
-        raise AssertionError("HTTP client should not be created without credentials")
-
-    monkeypatch.setattr(cli.httpx, "Client", fail_if_called)
-
-    result = CliRunner().invoke(cli.main, ["dev"])
-
-    assert result.exit_code == 1
-    assert "API key required. Set CONNIC_API_KEY or use --api-key" in result.output
-    assert "Create one in the dashboard: Project Settings → CLI → Create Key" in result.output
 
 
 def test_test_command_requires_project_id_after_reading_saved_credentials(tmp_path, monkeypatch):

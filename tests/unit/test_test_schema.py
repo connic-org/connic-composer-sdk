@@ -2,9 +2,9 @@ import pytest
 import yaml
 from pydantic import ValidationError
 
+from connic.test_schema import TestApprovalDecision as ConnicTestApprovalDecision
 from connic.test_schema import TestDefaults as ConnicTestDefaults
 from connic.test_schema import TestFile as ConnicTestFile
-from connic.test_schema import TestApprovalDecision as ConnicTestApprovalDecision
 
 
 def test_test_file_parses_realistic_yaml_and_resolves_defaults():
@@ -162,7 +162,10 @@ def test_test_file_uses_schema_defaults_for_minimal_suite():
 
     assert test_file.version == "1.0"
     assert test_file.agent is None
-    assert test_file.resolved(test_file.tests[0]) == {
+    resolved = test_file.resolved(test_file.tests[0])
+    assert resolved["strict_mocks"] is False
+    assert resolved["strict_approval_decisions"] is False
+    assert resolved == {
         "name": "plain_message_no_tools",
         "payload": "say hello",
         "files": [],
@@ -241,17 +244,6 @@ def test_test_case_parses_and_resolves_approval_decisions():
             "response": None,
         },
     ]
-
-
-def test_strict_approval_decisions_defaults_to_false():
-    test_file = ConnicTestFile.model_validate(
-        {"tests": [{"name": "t", "payload": "p"}]}
-    )
-
-    assert (
-        test_file.resolved(test_file.tests[0])["strict_approval_decisions"]
-        is False
-    )
 
 
 def test_approval_decision_response_preserves_text():
@@ -640,13 +632,6 @@ def test_mocks_rejects_unsafe_names(bad_mocks):
         ConnicTestFile.model_validate(
             {"tests": [{"name": "t", "payload": "p", "mocks": bad_mocks}]}
         )
-
-
-def test_strict_mocks_defaults_to_false():
-    test_file = ConnicTestFile.model_validate(
-        {"tests": [{"name": "t", "payload": "p"}]}
-    )
-    assert test_file.resolved(test_file.tests[0])["strict_mocks"] is False
 
 
 def test_strict_mocks_inherits_from_defaults():

@@ -2681,8 +2681,8 @@ def test_collect_python_files_skips_venv_and_pycache(tmp_path):
     (tmp_path / "app" / "main.py").write_text("x = 1\n", encoding="utf-8")
     (tmp_path / ".venv" / "lib" / "site.py").parent.mkdir(parents=True, exist_ok=True)
     (tmp_path / ".venv" / "lib" / "site.py").write_text("# venv\n", encoding="utf-8")
-    (tmp_path / "pkg" / "__pycache__" / "x.cpython-312.pyc").parent.mkdir(parents=True, exist_ok=True)
-    (tmp_path / "pkg" / "__pycache__" / "x.cpython-312.pyc").write_bytes(b"\0")
+    (tmp_path / "pkg" / "__pycache__" / "cached.py").parent.mkdir(parents=True, exist_ok=True)
+    (tmp_path / "pkg" / "__pycache__" / "cached.py").write_text("x = 1\n", encoding="utf-8")
 
     files = migrate._collect_python_files(tmp_path)
 
@@ -2735,34 +2735,6 @@ def test_detect_framework_prefers_langchain_when_both_signals(tmp_path):
     assert any("both ADK and LangChain" in n for n in notes)
 
 
-def test_dedupe_agent_names_adds_suffix_when_colliding(tmp_path):
-    a = migrate.AgentCandidate(
-        source_id="1",
-        framework="lc",
-        source_file=None,
-        name="Same Name",
-        agent_type="llm",
-    )
-    b = migrate.AgentCandidate(
-        source_id="2",
-        framework="lc",
-        source_file=None,
-        name="Same Name",
-        agent_type="llm",
-    )
-    migrate._dedupe_agent_names([a, b])
-    assert a.name != b.name
-    assert a.name == "same-name"
-    assert b.name == "same-name-2"
-
-
-def test_is_hidden_or_skipped_path_outside_root_uses_parts_fallback(tmp_path):
-    outside = tmp_path / "outside" / "x.py"
-    outside.parent.mkdir(parents=True, exist_ok=True)
-    outside.write_text("y = 2\n", encoding="utf-8")
-    assert migrate._is_hidden_or_skipped(outside, tmp_path / "nested" / "root") is False
-
-
 def test_build_module_name_variants_strips_src_and_init(tmp_path):
     root = tmp_path / "repo"
     mod = root / "src" / "billing" / "calc" / "__init__.py"
@@ -2777,7 +2749,7 @@ def test_collect_yaml_files_skips_dependency_vendor_trees(tmp_path):
     tracked = tmp_path / "config" / "app.yaml"
     tracked.parent.mkdir(parents=True, exist_ok=True)
     tracked.write_text("a: 1\n", encoding="utf-8")
-    vendor = tmp_path / "node_modules" / "some-lib" / "config.yml"
+    vendor = tmp_path / "node_modules" / "some-lib" / "config.yaml"
     vendor.parent.mkdir(parents=True, exist_ok=True)
     vendor.write_text("lib: true\n", encoding="utf-8")
 

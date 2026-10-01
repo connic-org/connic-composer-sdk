@@ -1,7 +1,7 @@
 import pytest
 
 import connic
-from connic import ToolFile
+from connic.core import ToolFile
 
 
 def test_tool_file_is_exported_from_public_package():

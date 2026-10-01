@@ -107,10 +107,7 @@ RunLint = Callable[..., bool]
 
 
 def _is_hidden_or_skipped(path: Path, root: Path) -> bool:
-    try:
-        relative_parts = path.relative_to(root).parts
-    except ValueError:
-        relative_parts = path.parts
+    relative_parts = path.relative_to(root).parts
     return any(part.startswith(".") or part in MIGRATION_SKIP_DIRS for part in relative_parts)
 
 

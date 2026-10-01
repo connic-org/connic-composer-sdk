@@ -238,11 +238,11 @@ def test_expected_tool_call_order_counts_as_covered(tmp_path):
 
 
 def test_each_agent_contributes_equally_to_overall_percentage(tmp_path):
-    """Two agents, one fully covered and one untested → overall is 50%."""
+    """Agents with different tool counts still contribute equally to the overall percentage."""
     _write_calculator_tool(tmp_path)
-    _write_llm_agent(tmp_path, "covered", tools=["calculator.add"])
+    _write_llm_agent(tmp_path, "covered", tools=["calculator.add", "calculator.subtract"])
     _write_llm_agent(tmp_path, "uncovered", tools=["calculator.subtract"])
-    _write_test_file(tmp_path, "covered", [["calculator.add"]])
+    _write_test_file(tmp_path, "covered", [["calculator.add", "calculator.subtract"]])
 
     report = cli._compute_local_coverage(tmp_path)
 
