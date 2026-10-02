@@ -1302,6 +1302,8 @@ def _run_lint(verbose: bool = False, quiet: bool = False, project_root: str = ".
             if agent_type != "llm" and retry.rerun_middleware:
                 retry_info += " (rerun middleware)"
             click.echo(retry_info)
+            if agent_type == "llm":
+                click.echo(f"  │  LLM Attempt Timeout: {retry.attempt_timeout:g}s (capped by remaining run time)")
             if config.timeout:
                 click.echo(f"  │  Timeout: {config.timeout}s")
 

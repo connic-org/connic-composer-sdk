@@ -266,6 +266,22 @@ The YAML model also supports:
 - MCP server connections
 - input and output guardrails
 
+For LLM agents, configure each request's time limit separately from the whole run:
+
+```yaml
+retry_options:
+  attempts: 3
+  attempt_timeout: 120
+  initial_delay: 10
+  max_delay: 30
+```
+
+`attempt_timeout` is a positive number of seconds and defaults to 120. It limits the entire request, including a streamed response, and is capped by the remaining run time. Streaming progress does not reset it. Non-LLM agents ignore this field. `connic lint --verbose` shows the configured limit.
+
+Every failed LLM request can use the configured retry or fallback path while time and attempts remain. Without `fallback_model`, `attempts` includes the first primary request. With a fallback, the primary is tried once and the fallback gets up to `attempts` requests. Switching models is immediate; same-model retries honor `Retry-After` or backoff within the run deadline. Cancellation, run expiry, or already-emitted streaming output stops further attempts.
+
+When `context_compression` is enabled, a context overflow first allows one compression recovery and one extra request to the same active model, before fallback. This repair request is outside the ordinary attempt count and is available once per logical model call. It never resets the run deadline or attempt counters, returns from fallback to primary, or recurses. Summary requests have their own bounded attempts and share the run deadline and per-request time limit.
+
 Related docs:
 
 - [MCP](https://connic.co/docs/v1/build/tools/mcp)

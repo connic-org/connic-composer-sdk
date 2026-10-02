@@ -172,15 +172,24 @@ class ToolHook(BaseModel):
 
 
 class RetryOptions(BaseModel):
-    """Configuration for retries at the failing operation boundary."""
+    """Retry LLM request failures and non-LLM operations within their attempt budgets."""
     attempts: int = Field(
         default=3,
         ge=1,
         le=10,
         description=(
-            "Maximum attempts for the model being retried or a non-LLM operation, including the "
+            "Maximum ordinary attempts for the model being retried or a non-LLM operation, including the "
             "first attempt; with a fallback, the primary is tried once and this budget applies "
-            "to the fallback (max: 10)"
+            "to the fallback. One context-compression repair request is separate (max: 10)"
+        ),
+    )
+    attempt_timeout: float = Field(
+        default=120,
+        gt=0,
+        allow_inf_nan=False,
+        description=(
+            "Maximum total duration of each LLM request in seconds, including its entire stream; "
+            "capped by the remaining run time. Ignored by non-LLM agents"
         ),
     )
     initial_delay: float = Field(default=10, ge=0, le=300, description="Initial retry delay in seconds")

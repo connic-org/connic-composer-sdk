@@ -446,9 +446,16 @@ def test_agent_get_tools_schema():
 def test_retry_options_defaults():
     opts = RetryOptions()
     assert opts.attempts == 3
+    assert opts.attempt_timeout == 120
     assert opts.initial_delay == 10
     assert opts.max_delay == 30
     assert opts.rerun_middleware is False
+
+
+@pytest.mark.parametrize("attempt_timeout", [0, -1, float("inf"), float("nan")])
+def test_retry_options_reject_nonpositive_or_nonfinite_attempt_timeout(attempt_timeout):
+    with pytest.raises(ValueError):
+        RetryOptions(attempt_timeout=attempt_timeout)
 
 
 def test_retry_options_allow_max_delay_to_cap_the_initial_delay():

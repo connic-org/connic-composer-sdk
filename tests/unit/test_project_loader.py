@@ -2996,6 +2996,7 @@ def test_runtime_control_defaults_are_inherited(tmp_path):
         system_prompt: "Default support prompt."
         retry_options:
           attempts: 4
+          attempt_timeout: 90.5
           initial_delay: 2
           max_delay: 20
           rerun_middleware: true
@@ -3023,6 +3024,7 @@ def test_runtime_control_defaults_are_inherited(tmp_path):
     agent = ProjectLoader(str(tmp_path)).load_agent("support-agent")
 
     assert agent.config.retry_options.attempts == 4
+    assert agent.config.retry_options.attempt_timeout == 90.5
     assert agent.config.retry_options.initial_delay == 2
     assert agent.config.retry_options.max_delay == 20
     assert agent.config.retry_options.rerun_middleware is True
@@ -3042,6 +3044,7 @@ def test_agent_retry_override_preserves_sibling_defaults(tmp_path):
         system_prompt: "Default prompt."
         retry_options:
           attempts: 5
+          attempt_timeout: 60
           initial_delay: 2
           max_delay: 30
         """,
@@ -3053,6 +3056,7 @@ def test_agent_retry_override_preserves_sibling_defaults(tmp_path):
         name: assistant
         description: "Overrides one nested retry field."
         retry_options:
+          attempt_timeout: 90
           max_delay: 45
         """,
     )
@@ -3060,6 +3064,7 @@ def test_agent_retry_override_preserves_sibling_defaults(tmp_path):
     agent = ProjectLoader(str(tmp_path)).load_agent("assistant")
 
     assert agent.config.retry_options.attempts == 5
+    assert agent.config.retry_options.attempt_timeout == 90
     assert agent.config.retry_options.initial_delay == 2
     assert agent.config.retry_options.max_delay == 45
 
