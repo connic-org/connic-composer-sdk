@@ -6,12 +6,15 @@ import shutil
 import textwrap
 from dataclasses import dataclass, field
 from pathlib import Path
+from string import Formatter
 from typing import Callable
+from unicodedata import decimal
 
 import click
 import yaml
 
 from .loader import PREDEFINED_TOOL_ALIASES, PREDEFINED_TOOL_NAMES
+from .project_paths import contained_source
 
 MIGRATION_SKIP_DIRS = {
     ".git",
@@ -49,6 +52,38 @@ ADK_YAML_AGENT_KEYS = {
     "agents",
 }
 LANGCHAIN_AGENT_CALLS = {"create_agent", "create_react_agent"}
+MAX_FORMAT_DIMENSION = 4096
+MAX_FORMAT_OUTPUT = 1024 * 1024
+
+
+class _FormatLimitError(ValueError):
+    pass
+
+
+class _MigrationFormatter(Formatter):
+    def __init__(self):
+        self.output_length = 0
+
+    def format_field(self, value, format_spec):
+        for number in re.findall(r"\d+", format_spec):
+            number = "".join(str(decimal(character)) for character in number).lstrip("0") or "0"
+            if len(number) > 4 or int(number) > MAX_FORMAT_DIMENSION:
+                raise _FormatLimitError("Migration format width or precision exceeds the limit")
+        if isinstance(value, str) and len(value) > MAX_FORMAT_OUTPUT:
+            raise _FormatLimitError("Migration format output exceeds the limit")
+        result = super().format_field(value, format_spec)
+        self.output_length += len(result)
+        if self.output_length > MAX_FORMAT_OUTPUT:
+            raise _FormatLimitError("Migration format output exceeds the limit")
+        return result
+
+    def format(self, format_string, /, *args, **kwargs):
+        if len(format_string) > MAX_FORMAT_OUTPUT:
+            raise _FormatLimitError("Migration format output exceeds the limit")
+        result = super().format(format_string, *args, **kwargs)
+        if len(result) > MAX_FORMAT_OUTPUT:
+            raise _FormatLimitError("Migration format output exceeds the limit")
+        return result
 
 
 @dataclass
@@ -69,6 +104,12 @@ class ModuleInfo:
     assignments: dict[str, ast.AST] = field(default_factory=dict)
     functions: dict[str, ast.FunctionDef | ast.AsyncFunctionDef] = field(default_factory=dict)
     classes: dict[str, ast.ClassDef] = field(default_factory=dict)
+
+
+@dataclass
+class ModuleLookup:
+    by_name: dict[str, Path] = field(default_factory=dict)
+    by_path: dict[Path, Path] = field(default_factory=dict)
 
 
 @dataclass
@@ -116,6 +157,7 @@ def _collect_python_files(root: Path) -> list[Path]:
     for file_path in root.rglob("*.py"):
         if _is_hidden_or_skipped(file_path, root):
             continue
+        contained_source(file_path, root)
         files.append(file_path)
     return sorted(files)
 
@@ -125,6 +167,7 @@ def _collect_yaml_files(root: Path) -> list[Path]:
     for file_path in root.rglob("*.yaml"):
         if _is_hidden_or_skipped(file_path, root):
             continue
+        contained_source(file_path, root)
         files.append(file_path)
     return sorted(set(files))
 
@@ -150,11 +193,11 @@ def _build_module_name_variants(root: Path, file_path: Path) -> list[str]:
     return names
 
 
-def _build_module_lookup(root: Path, python_files: list[Path]) -> dict[str, Path]:
-    module_lookup: dict[str, Path] = {}
+def _build_module_lookup(root: Path, python_files: list[Path]) -> ModuleLookup:
+    module_lookup = ModuleLookup(by_path={path.absolute(): path for path in python_files})
     for file_path in python_files:
         for module_name in _build_module_name_variants(root, file_path):
-            module_lookup.setdefault(module_name, file_path)
+            module_lookup.by_name.setdefault(module_name, file_path)
     return module_lookup
 
 
@@ -230,7 +273,7 @@ def _get_full_attr_name(node: ast.AST) -> str | None:
 def _resolve_function_return_string(
     function_node: ast.FunctionDef | ast.AsyncFunctionDef,
     module_info: ModuleInfo,
-    module_lookup: dict[str, Path],
+    module_lookup: ModuleLookup,
     module_cache: dict[Path, ModuleInfo | None],
     seen: set[tuple[Path, str]],
 ) -> str | None:
@@ -245,7 +288,7 @@ def _resolve_function_return_string(
 def _resolve_literal_from_binding(
     binding: ImportBinding,
     current_file: Path,
-    module_lookup: dict[str, Path],
+    module_lookup: ModuleLookup,
     module_cache: dict[Path, ModuleInfo | None],
     seen: set[tuple[Path, str]],
 ) -> str | int | float | None:
@@ -269,7 +312,7 @@ def _resolve_literal_from_binding(
 def _resolve_literal_expr(
     expr: ast.AST | None,
     module_info: ModuleInfo,
-    module_lookup: dict[str, Path],
+    module_lookup: ModuleLookup,
     module_cache: dict[Path, ModuleInfo | None],
     seen: set[tuple[Path, str]],
 ) -> str | int | float | None:
@@ -294,7 +337,7 @@ def _resolve_literal_expr(
 def _resolve_string_from_binding(
     binding: ImportBinding,
     current_file: Path,
-    module_lookup: dict[str, Path],
+    module_lookup: ModuleLookup,
     module_cache: dict[Path, ModuleInfo | None],
     seen: set[tuple[Path, str]],
 ) -> str | None:
@@ -321,7 +364,7 @@ def _resolve_string_from_binding(
 def _resolve_string_expr(
     expr: ast.AST | None,
     module_info: ModuleInfo,
-    module_lookup: dict[str, Path],
+    module_lookup: ModuleLookup,
     module_cache: dict[Path, ModuleInfo | None],
     seen: set[tuple[Path, str]] | None = None,
 ) -> str | None:
@@ -389,7 +432,9 @@ def _resolve_string_expr(
                 }
                 if all(arg is not None for arg in format_args) and all(value is not None for value in format_kwargs.values()):
                     try:
-                        return base.format(*format_args, **format_kwargs)
+                        return _MigrationFormatter().format(base, *format_args, **format_kwargs)
+                    except _FormatLimitError:
+                        raise
                     except Exception:
                         return base
                 return base
@@ -485,23 +530,23 @@ def _dedupe_agent_names(agents: list[AgentCandidate]) -> dict[str, str]:
     return source_key_map
 
 
-def _resolve_absolute_module_path(module_name: str | None, module_lookup: dict[str, Path]) -> Path | None:
+def _resolve_absolute_module_path(module_name: str | None, module_lookup: ModuleLookup) -> Path | None:
     if not module_name:
         return None
-    return module_lookup.get(module_name)
+    return module_lookup.by_name.get(module_name)
 
 
-def _resolve_neighbor_module_path(current_file: Path, module_name: str | None) -> Path | None:
+def _resolve_neighbor_module_path(current_file: Path, module_name: str | None, module_lookup: ModuleLookup) -> Path | None:
     if not module_name:
         return None
     target = current_file.parent.joinpath(*module_name.split("."))
     for candidate in (target.with_suffix(".py"), target / "__init__.py"):
-        if candidate.exists():
-            return candidate
+        if source := module_lookup.by_path.get(candidate.absolute()):
+            return source
     return None
 
 
-def _resolve_relative_module_path(current_file: Path, level: int, module_name: str | None) -> Path | None:
+def _resolve_relative_module_path(current_file: Path, level: int, module_name: str | None, module_lookup: ModuleLookup) -> Path | None:
     base_dir = current_file.parent
     for _ in range(max(level - 1, 0)):
         base_dir = base_dir.parent
@@ -509,31 +554,31 @@ def _resolve_relative_module_path(current_file: Path, level: int, module_name: s
     if module_name:
         target = target.joinpath(*module_name.split("."))
     for candidate in (target.with_suffix(".py"), target / "__init__.py"):
-        if candidate.exists():
-            return candidate
+        if source := module_lookup.by_path.get(candidate.absolute()):
+            return source
     return None
 
 
 def _resolve_imported_symbol_source(
     binding: ImportBinding,
     current_file: Path,
-    module_lookup: dict[str, Path],
+    module_lookup: ModuleLookup,
 ) -> tuple[Path | None, str | None]:
     if binding.kind != "from":
         return None, None
     if binding.level:
-        module_path = _resolve_relative_module_path(current_file, binding.level, binding.module)
+        module_path = _resolve_relative_module_path(current_file, binding.level, binding.module, module_lookup)
         return module_path, binding.name
     module_path = _resolve_absolute_module_path(binding.module, module_lookup)
     if module_path is None:
-        module_path = _resolve_neighbor_module_path(current_file, binding.module)
+        module_path = _resolve_neighbor_module_path(current_file, binding.module, module_lookup)
     return module_path, binding.name
 
 
 def _resolve_imported_tool_source(
     binding: ImportBinding,
     current_file: Path,
-    module_lookup: dict[str, Path],
+    module_lookup: ModuleLookup,
     seen: set[tuple[Path, str]] | None = None,
 ) -> tuple[Path | None, str | None]:
     source_file, function_name = _resolve_imported_symbol_source(binding, current_file, module_lookup)
@@ -562,13 +607,13 @@ def _resolve_imported_tool_source(
 def _resolve_module_alias_source(
     binding: ImportBinding,
     current_file: Path,
-    module_lookup: dict[str, Path],
+    module_lookup: ModuleLookup,
 ) -> Path | None:
     if binding.kind == "import":
-        return _resolve_absolute_module_path(binding.module, module_lookup) or _resolve_neighbor_module_path(current_file, binding.module)
+        return _resolve_absolute_module_path(binding.module, module_lookup) or _resolve_neighbor_module_path(current_file, binding.module, module_lookup)
     if binding.level:
         target = binding.name if not binding.module else f"{binding.module}.{binding.name}"
-        return _resolve_relative_module_path(current_file, binding.level, target)
+        return _resolve_relative_module_path(current_file, binding.level, target, module_lookup)
     if binding.module and binding.name:
         return _resolve_absolute_module_path(f"{binding.module}.{binding.name}", module_lookup)
     return None
@@ -611,7 +656,7 @@ def _unique_tool_candidates(candidates: list[ToolCandidate]) -> list[ToolCandida
 def _resolve_tool_candidates(
     expr: ast.AST | None,
     module_info: ModuleInfo,
-    module_lookup: dict[str, Path],
+    module_lookup: ModuleLookup,
     notes: list[str],
     seen_names: set[str] | None = None,
 ) -> list[ToolCandidate]:
@@ -713,7 +758,7 @@ def _extract_description(prompt: str | None, fallback: str) -> str:
     return first_line[:140]
 
 
-def _extract_langchain_agents(module_info: ModuleInfo, module_lookup: dict[str, Path]) -> list[AgentCandidate]:
+def _extract_langchain_agents(module_info: ModuleInfo, module_lookup: ModuleLookup) -> list[AgentCandidate]:
     agents: list[AgentCandidate] = []
     module_cache: dict[Path, ModuleInfo | None] = {module_info.path: module_info}
     for node in module_info.tree.body:
@@ -761,7 +806,7 @@ def _python_agent_source_id(path: Path, name: str) -> str:
 def _resolve_name_list(
     expr: ast.AST | None,
     module_info: ModuleInfo,
-    module_lookup: dict[str, Path],
+    module_lookup: ModuleLookup,
     seen: set[str] | None = None,
 ) -> list[str]:
     if expr is None:
@@ -807,10 +852,10 @@ def _resolve_name_list(
     return []
 
 
-def _extract_adk_agents(module_info: ModuleInfo, module_lookup: dict[str, Path]) -> list[AgentCandidate]:
+def _extract_adk_agents(module_info: ModuleInfo, module_lookup: ModuleLookup) -> list[AgentCandidate]:
     agents: list[AgentCandidate] = []
     module_cache: dict[Path, ModuleInfo | None] = {module_info.path: module_info}
-    module_names = [name for name, path in module_lookup.items() if path == module_info.path]
+    module_names = [name for name, path in module_lookup.by_name.items() if path == module_info.path]
     supported_calls = {"Agent", "LlmAgent", "SequentialAgent", "ParallelAgent", "LoopAgent"}
     for node in module_info.tree.body:
         if not isinstance(node, ast.Assign) or not isinstance(node.value, ast.Call):
@@ -1366,7 +1411,7 @@ def _rewrite_local_imports(
     source: str,
     source_file: Path,
     source_root: Path,
-    module_lookup: dict[str, Path],
+    module_lookup: ModuleLookup,
 ) -> str:
     tree = ast.parse(source)
     encoded = source.encode()
@@ -1380,7 +1425,7 @@ def _rewrite_local_imports(
         if isinstance(node, ast.ImportFrom) and not node.level and node.module:
             dependency_path = _resolve_absolute_module_path(node.module, module_lookup)
             if dependency_path is None:
-                dependency_path = _resolve_neighbor_module_path(source_file, node.module)
+                dependency_path = _resolve_neighbor_module_path(source_file, node.module, module_lookup)
             if dependency_path is not None and dependency_path.is_relative_to(source_root):
                 destination_relative = _tool_destination_relative(source_root, dependency_path)
                 migrated_module = f"tools.{_tool_module_name_from_relative(destination_relative)}"
@@ -1391,7 +1436,7 @@ def _rewrite_local_imports(
             for alias in node.names:
                 dependency_path = _resolve_absolute_module_path(alias.name, module_lookup)
                 if dependency_path is None:
-                    dependency_path = _resolve_neighbor_module_path(source_file, alias.name)
+                    dependency_path = _resolve_neighbor_module_path(source_file, alias.name, module_lookup)
                 if dependency_path is None or not dependency_path.is_relative_to(source_root):
                     rewritten_imports.append(ast.unparse(ast.Import(names=[alias])))
                     continue
@@ -1429,7 +1474,7 @@ def _rewrite_local_imports(
 def _collect_local_module_dependencies(
     source_file: Path,
     source_root: Path,
-    module_lookup: dict[str, Path],
+    module_lookup: ModuleLookup,
     module_cache: dict[Path, ModuleInfo | None],
     seen: set[Path] | None = None,
 ) -> set[Path]:
@@ -1501,7 +1546,7 @@ def _write_migration_readme(destination_root: Path, framework: str, agents: list
 def _write_requirements_file(source_root: Path, destination_root: Path, report_notes: list[str]) -> None:
     source_requirements = source_root / "requirements.txt"
     if source_requirements.exists():
-        shutil.copy2(source_requirements, destination_root / "requirements.txt")
+        shutil.copy2(contained_source(source_requirements, source_root), destination_root / "requirements.txt")
         return
     (destination_root / "requirements.txt").write_text(
         "# Review and add the dependencies required by your migrated tools\n"

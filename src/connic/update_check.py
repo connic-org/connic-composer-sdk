@@ -385,7 +385,11 @@ def _installed_skill_status(
     versions: list[str | None] = []
     for path in installed:
         try:
-            versions.append(_skill_version(path.read_text()))
+            with path.open() as stream:
+                contents = stream.read(64 * 1024 + 1)
+                if len(contents) > 64 * 1024:
+                    contents = "".join(contents.splitlines(keepends=True)[:-1])
+                versions.append(_skill_version(contents))
         except OSError:
             versions.append(None)
 

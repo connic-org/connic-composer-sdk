@@ -1,13 +1,15 @@
+import hashlib
 import json
 import os
 import re
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
 import zipfile
 from pathlib import Path
-from typing import Literal, NamedTuple
+from typing import BinaryIO, Literal, NamedTuple
 
 import click
 import httpx
@@ -17,6 +19,8 @@ from . import __version__
 from .core import RetryOptions
 from .loader import ProjectLoader
 from .migrate import register_migrate_command
+from .project_paths import contained_source, project_destination
+from .terminal import escape_terminal_text
 from .update_check import (
     CONNIC_PLUGIN_ID,
     PluginInstallation,
@@ -76,34 +80,34 @@ PLUGIN_INSTALLS = (
 def _h1(title: str) -> None:
     """Top-of-command banner. Same shape across every CLI subcommand."""
     click.echo()
-    click.secho(f"  Connic {title}", fg="cyan", bold=True)
+    click.secho(escape_terminal_text(f"  Connic {title}"), fg="cyan", bold=True)
     click.echo("  " + "─" * 30)
     click.echo()
 
 
 def _step(msg: str) -> None:
     """Announce that a step is starting."""
-    click.echo(f"  → {msg}")
+    click.echo(escape_terminal_text(f"  → {msg}"))
 
 
 def _ok(msg: str) -> None:
     """Sub-detail under a step: success."""
-    click.secho(f"    ✓ {msg}", fg="green")
+    click.secho(escape_terminal_text(f"    ✓ {msg}"), fg="green")
 
 
 def _err(msg: str) -> None:
     """Sub-detail under a step: failure. Always to stderr."""
-    click.secho(f"    ✗ {msg}", fg="red", err=True)
+    click.secho(escape_terminal_text(f"    ✗ {msg}"), fg="red", err=True)
 
 
 def _warn(msg: str) -> None:
     """Sub-detail under a step: warning."""
-    click.secho(f"    ! {msg}", fg="yellow")
+    click.secho(escape_terminal_text(f"    ! {msg}"), fg="yellow")
 
 
 def _info(msg: str) -> None:
     """Sub-detail under a step: neutral info, no glyph."""
-    click.echo(f"    {msg}")
+    click.echo(escape_terminal_text(f"    {msg}"))
 
 
 def _select_option(message: str, choices: list[str], default: int = 0) -> int:
@@ -137,7 +141,7 @@ def _select_option(message: str, choices: list[str], default: int = 0) -> int:
 def _done(msg: str = "Done.") -> None:
     """Final line of a successful command."""
     click.echo()
-    click.secho(f"  ✓ {msg}", fg="green", bold=True)
+    click.secho(escape_terminal_text(f"  ✓ {msg}"), fg="green", bold=True)
     click.echo()
 
 
@@ -241,7 +245,7 @@ def _render_trace_tree(traces: list[dict], indent: int) -> None:
         for s in spans:
             ok = s.get("status") == "ok"
             glyph = click.style("✓", fg="green") if ok else click.style("✗", fg="red")
-            line = f"{pad}{'  ' * depth}{glyph} {_trace_label(s)}"
+            line = f"{pad}{'  ' * depth}{glyph} {escape_terminal_text(str(_trace_label(s)))}"
             dur = s.get("duration_ms")
             if dur is not None:
                 line += f" ({int(dur)}ms)"
@@ -252,7 +256,7 @@ def _render_trace_tree(traces: list[dict], indent: int) -> None:
                     meta = {}
                 err = meta.get("error") or meta.get("message")
                 if err:
-                    line += f" — {_truncate(str(err), 160)}"
+                    line += f" — {escape_terminal_text(_truncate(str(err), 160))}"
             click.echo(line)
             sid = s.get("span_id")
             if sid and sid not in seen:
@@ -340,7 +344,64 @@ def _is_under(path: Path, prefix: str) -> bool:
     return parts[: len(prefix_parts)] == prefix_parts
 
 
-def _validate_project_files() -> tuple[bool, str, list[Path]]:
+class _HashingReader:
+    def __init__(self, stream: BinaryIO):
+        self.stream = stream
+        self.digest = hashlib.sha256()
+
+    def read(self, size: int = -1) -> bytes:
+        chunk = self.stream.read(size)
+        self.digest.update(chunk)
+        return chunk
+
+
+def _open_project_file(path: Path) -> BinaryIO:
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
+    stream = os.fdopen(os.open(path, flags), "rb")
+    if not stat.S_ISREG(os.fstat(stream.fileno()).st_mode):
+        stream.close()
+        raise OSError(f"Project file is no longer a regular file: {path}")
+    return stream
+
+
+def _bounded_file_size(path: Path, limit: int, *, file_hashes: dict[Path, bytes] | None = None) -> int:
+    size = path.stat().st_size
+    if size > limit:
+        return size
+    size = 0
+    with (path.open("rb") if file_hashes is None else _open_project_file(path)) as stream:
+        reader = _HashingReader(stream)
+        while chunk := reader.read(min(64 * 1024, limit - size + 1)):
+            size += len(chunk)
+            if size > limit:
+                break
+        if file_hashes is not None and size <= limit:
+            file_hashes[path] = reader.digest.digest()
+    return size
+
+
+def _file_signature(file_stat: os.stat_result) -> tuple[int, ...]:
+    return (
+        file_stat.st_dev, file_stat.st_ino, file_stat.st_mode, file_stat.st_nlink,
+        file_stat.st_size, file_stat.st_mtime_ns, file_stat.st_ctime_ns,
+    )
+
+
+def _project_file_state(path: Path) -> tuple[int, ...] | None:
+    try:
+        return _file_signature(path.lstat())
+    except FileNotFoundError:
+        return None
+
+
+def _project_files_changed(file_states: dict[Path, tuple[int, ...] | None]) -> bool:
+    return any(_project_file_state(path) != state for path, state in file_states.items())
+
+
+def _validate_project_files(
+    *, file_states: dict[Path, tuple[int, ...] | None] | None = None,
+    file_hashes: dict[Path, bytes] | None = None,
+) -> tuple[bool, str, list[Path]]:
     """
     Validate all project files before packaging.
 
@@ -356,6 +417,8 @@ def _validate_project_files() -> tuple[bool, str, list[Path]]:
 
     for dirname in PROJECT_DIRECTORIES:
         dirpath = Path(dirname)
+        if file_states is not None:
+            file_states[dirpath] = _project_file_state(dirpath)
         if dirpath.is_symlink():
             return False, f"Symbolic links are not allowed: {dirpath}", []
         if not dirpath.exists():
@@ -367,17 +430,22 @@ def _validate_project_files() -> tuple[bool, str, list[Path]]:
                 continue
             if "__pycache__" in str(filepath) or filepath.suffix == ".pyc":
                 continue
+            if file_states is not None:
+                file_states[filepath] = _project_file_state(filepath)
             if filepath.is_symlink():
                 return False, f"Symbolic links are not allowed: {filepath}", []
             if not filepath.is_file():
                 continue
 
             try:
-                content = filepath.read_bytes()
+                limit = MAX_UPLOAD_SIZE - total_size
+                if not _is_under(filepath, TEST_FILES_PREFIX):
+                    limit = min(limit, MAX_CODE_SIZE - code_size)
+                size = _bounded_file_size(filepath, limit, file_hashes=file_hashes)
             except IOError as e:
                 return False, f"Could not read {filepath}: {e}", []
 
-            total_size += len(content)
+            total_size += size
             if total_size > MAX_UPLOAD_SIZE:
                 return False, f"Total file size exceeds {MAX_UPLOAD_SIZE:,} byte limit", []
 
@@ -393,7 +461,7 @@ def _validate_project_files() -> tuple[bool, str, list[Path]]:
                         f"{filepath}: only .py files are allowed under "
                         f"{TEST_BUILDERS_PREFIX}/"
                     ), []
-                code_size += len(content)
+                code_size += size
                 if code_size > MAX_CODE_SIZE:
                     return False, (
                         f"Code/config size exceeds {MAX_CODE_SIZE:,} byte limit. "
@@ -406,7 +474,7 @@ def _validate_project_files() -> tuple[bool, str, list[Path]]:
             if ext not in ALLOWED_EXTENSIONS:
                 return False, f"{filepath}: File type '{ext}' not allowed. Allowed: {', '.join(sorted(ALLOWED_EXTENSIONS))}", []
 
-            code_size += len(content)
+            code_size += size
             if code_size > MAX_CODE_SIZE:
                 return False, (
                     f"Code/config size exceeds {MAX_CODE_SIZE:,} byte limit. "
@@ -417,15 +485,19 @@ def _validate_project_files() -> tuple[bool, str, list[Path]]:
 
     # Check requirements.txt
     req_file = Path("requirements.txt")
+    if file_states is not None:
+        file_states[req_file] = _project_file_state(req_file)
     if req_file.is_symlink():
         return False, f"Symbolic links are not allowed: {req_file}", []
     if req_file.exists():
         try:
-            content = req_file.read_bytes()
-            total_size += len(content)
+            size = _bounded_file_size(
+                req_file, min(MAX_UPLOAD_SIZE - total_size, MAX_CODE_SIZE - code_size), file_hashes=file_hashes,
+            )
+            total_size += size
             if total_size > MAX_UPLOAD_SIZE:
                 return False, f"Total file size exceeds {MAX_UPLOAD_SIZE:,} byte limit", []
-            code_size += len(content)
+            code_size += size
             if code_size > MAX_CODE_SIZE:
                 return False, (
                     f"Code/config size exceeds {MAX_CODE_SIZE:,} byte limit. "
@@ -435,21 +507,70 @@ def _validate_project_files() -> tuple[bool, str, list[Path]]:
         except IOError as e:
             return False, f"Could not read requirements.txt: {e}", []
 
-    hard_links: dict[tuple[int, int], Path] = {}
     for filepath in valid_files:
         try:
             file_stat = filepath.lstat()
         except OSError as e:
             return False, f"Could not inspect {filepath}: {e}", []
-        if file_stat.st_nlink <= 1 or file_stat.st_ino == 0:
-            continue
-        inode = file_stat.st_ino, file_stat.st_dev
-        linked_path = hard_links.get(inode)
-        if linked_path is not None:
-            return False, f"Hard links are not allowed: {filepath} links to {linked_path}", []
-        hard_links[inode] = filepath
+        if file_stat.st_nlink > 1:
+            return False, f"Hard links are not allowed: {filepath}", []
 
     return True, "", valid_files
+
+
+def _package_project_files() -> tuple[bytes, list[Path]]:
+    import io
+    import tarfile
+
+    while True:
+        file_states: dict[Path, tuple[int, ...] | None] = {}
+        file_hashes: dict[Path, bytes] = {}
+        try:
+            is_valid, error, valid_files = _validate_project_files(file_states=file_states, file_hashes=file_hashes)
+            if _project_files_changed(file_states):
+                continue
+            if not is_valid:
+                raise ValueError(f"File validation failed: {error}")
+
+            buffer = io.BytesIO()
+            changed = False
+            with tarfile.open(fileobj=buffer, mode="w:gz") as tar:
+                for filepath in valid_files:
+                    with _open_project_file(filepath) as stream:
+                        info = tar.gettarinfo(str(filepath), arcname=str(filepath), fileobj=stream)
+                        file_stat = filepath.lstat()
+                        if (
+                            not info.isreg() or info.size != file_stat.st_size
+                            or _file_signature(file_stat) != file_states[filepath]
+                            or not os.path.samestat(os.fstat(stream.fileno()), file_stat)
+                        ):
+                            changed = True
+                            break
+                        info.mode = file_stat.st_mode & 0o7777
+                        reader = _HashingReader(stream)
+                        tar.addfile(info, reader)
+                        if reader.digest.digest() != file_hashes[filepath]:
+                            changed = True
+                            break
+
+            if changed or _project_files_changed(file_states):
+                continue
+            current_states: dict[Path, tuple[int, ...] | None] = {}
+            current_hashes: dict[Path, bytes] = {}
+            is_valid, _, _ = _validate_project_files(file_states=current_states, file_hashes=current_hashes)
+            if (
+                not is_valid or current_states != file_states or current_hashes != file_hashes
+                or _project_files_changed(current_states)
+            ):
+                continue
+            tar_data = buffer.getvalue()
+            if len(tar_data) > MAX_UPLOAD_SIZE:
+                raise ValueError(f"Package size ({len(tar_data):,} bytes) exceeds {MAX_UPLOAD_SIZE:,} byte limit")
+            return tar_data, valid_files
+        except (OSError, tarfile.TarError) as exc:
+            if _project_files_changed(file_states):
+                continue
+            raise ValueError(f"Failed to package files: {exc}") from exc
 
 
 def _apply_update_action(action: UpdateAction | None) -> bool:
@@ -485,7 +606,7 @@ def _write_essential_files(base_path: Path, quiet: bool = False):
     """Write files that are always created during project init."""
 
     # .gitignore
-    gitignore = base_path / ".gitignore"
+    gitignore = project_destination(base_path / ".gitignore", base_path)
     if not gitignore.exists():
         gitignore.write_text('''# Connic
 .connic
@@ -517,7 +638,7 @@ Thumbs.db
 ''')
 
     # requirements.txt
-    requirements = base_path / "requirements.txt"
+    requirements = project_destination(base_path / "requirements.txt", base_path)
     if not requirements.exists():
         requirements.write_text('''# Add your tool dependencies below
 # httpx>=0.25.0  # For async HTTP requests
@@ -525,7 +646,7 @@ Thumbs.db
 ''')
 
     # README.md
-    readme = base_path / "README.md"
+    readme = project_destination(base_path / "README.md", base_path)
     if not readme.exists():
         readme.write_text('''# Connic Agent Project
 
@@ -587,15 +708,6 @@ See the [Connic Composer docs]({base_url}/docs/v1/build/project-structure) for:
         _done(f"Initialized Connic project in {base_path.resolve()}")
 
 
-def _get_local_templates_path() -> Path | None:
-    """Find local connic-awesome-agents directory for development."""
-    cwd = Path.cwd()
-    for candidate in [cwd / "connic-awesome-agents", cwd.parent / "connic-awesome-agents"]:
-        if candidate.exists():
-            return candidate
-    return None
-
-
 def _fetch_templates_from_github() -> Path | None:
     """Download repo zip and extract. Returns path to extracted dir or None."""
     try:
@@ -647,9 +759,14 @@ def _fetch_skill_from_github() -> Path | None:
         return None
 
 
-def _install_skill(source: Path, destination: Path = SKILL_DESTINATION) -> None:
+def _install_skill(source: Path, destination: Path = SKILL_DESTINATION, *, base_path: Path = Path(".")) -> None:
     """Replace the project-local Connic skill with source contents."""
-    if destination.is_symlink() or destination.is_file():
+    project_destination(destination, base_path)
+    for path in source.rglob("*"):
+        contained_source(path, source)
+        if path.is_symlink():
+            raise ValueError(f"Symbolic links are not allowed: {path}")
+    if destination.is_file():
         destination.unlink()
     elif destination.exists():
         shutil.rmtree(destination)
@@ -667,7 +784,7 @@ def _install_skill_from_github(base_path: Path = Path(".")) -> None:
     for relative_destination in SKILL_DESTINATIONS:
         destination = base_path / relative_destination
         _step(f"Installing to {destination.as_posix()}...")
-        _install_skill(source, destination)
+        _install_skill(source, destination, base_path=base_path)
         _ok("Installed")
 
 
@@ -781,7 +898,7 @@ def _update_skill_installations(base_path: Path = Path(".")) -> bool:
         _ok("Fetched")
         for destination in destinations:
             _step(f"Updating {destination.as_posix()}...")
-            _install_skill(source, destination)
+            _install_skill(source, destination, base_path=base_path)
             _ok("Updated")
 
     installations, check_failures = get_installed_plugins()
@@ -869,25 +986,30 @@ def _merge_template_into_project(
     
     Returns the template README content if it exists, None otherwise.
     """
-    for subdir in ["agents", "tools", "middleware", "schemas", "guardrails", "hooks", "tests"]:
+    for subdir in PROJECT_DIRECTORIES:
         src_dir = template_src / subdir
-        dst_dir = base_path / subdir
+        dst_dir = project_destination(base_path / subdir, base_path)
         if src_dir.exists():
+            contained_source(src_dir, template_src)
             dst_dir.mkdir(exist_ok=True)
             for f in src_dir.rglob("*"):
                 is_agent_defaults = subdir == "agents" and f.name == "_defaults.yaml"
                 if not f.is_file() or (f.name.startswith("_") and not is_agent_defaults):
                     continue
                 relative_path = f.relative_to(src_dir)
-                destination = dst_dir / template_id / relative_path if subdir == "agents" else dst_dir / relative_path
+                source = contained_source(f, template_src)
+                destination = project_destination(
+                    dst_dir / template_id / relative_path if subdir == "agents" else dst_dir / relative_path,
+                    base_path,
+                )
                 destination.parent.mkdir(parents=True, exist_ok=True)
-                destination.write_bytes(f.read_bytes())
+                destination.write_bytes(source.read_bytes())
     req_file = template_src / "requirements.txt"
     if req_file.exists():
-        requirements_lines.extend(req_file.read_text().strip().splitlines())
+        requirements_lines.extend(contained_source(req_file, template_src).read_text().strip().splitlines())
     readme_file = template_src / "README.md"
     if readme_file.exists():
-        return readme_file.read_text().strip()
+        return contained_source(readme_file, template_src).read_text().strip()
     return None
 
 
@@ -906,12 +1028,12 @@ def _write_merged_requirements(base_path: Path, lines: list[str]) -> None:
             if pkg and pkg not in seen:
                 seen.add(pkg)
                 unique.append(line)
-    (base_path / "requirements.txt").write_text("\n".join(unique) + "\n")
+    project_destination(base_path / "requirements.txt", base_path).write_text("\n".join(unique) + "\n")
 
 
 def _append_template_readmes(base_path: Path, template_readmes: list[str]) -> None:
     """Append template README content to the project README."""
-    readme = base_path / "README.md"
+    readme = project_destination(base_path / "README.md", base_path)
     if not readme.exists():
         return
     existing = readme.read_text()
@@ -969,10 +1091,8 @@ def init(name: str, templates: str | None, skill: bool):
         _step(f"Created directory: {name}")
 
     _step("Creating project structure...")
-    (base_path / "agents").mkdir(exist_ok=True)
-    (base_path / "tools").mkdir(exist_ok=True)
-    (base_path / "middleware").mkdir(exist_ok=True)
-    (base_path / "schemas").mkdir(exist_ok=True)
+    for directory in ("agents", "tools", "middleware", "schemas"):
+        project_destination(base_path / directory, base_path).mkdir(exist_ok=True)
     _ok("agents/, tools/, middleware/, schemas/")
 
     if templates:
@@ -980,16 +1100,13 @@ def init(name: str, templates: str | None, skill: bool):
         template_ids = [t.strip().lower() for t in templates.split(",") if t.strip()]
         if not template_ids:
             _fail_and_exit("No valid template names provided.")
+        if any(not re.fullmatch(r"[a-z0-9][a-z0-9_-]*", tid) for tid in template_ids):
+            _fail_and_exit("Template names must be bare names containing letters, numbers, underscores, or hyphens.")
 
         _step("Fetching templates from connic-awesome-agents...")
         extracted = _fetch_templates_from_github()
         if not extracted:
-            local_path = _get_local_templates_path()
-            if local_path:
-                extracted = local_path
-                _warn("GitHub unavailable; using local connic-awesome-agents")
-            else:
-                _fail_and_exit("Could not fetch templates. Try again or use a local connic-awesome-agents folder.")
+            _fail_and_exit("Could not fetch templates. Try again.")
         else:
             _ok("Fetched")
 
@@ -997,7 +1114,7 @@ def init(name: str, templates: str | None, skill: bool):
         requirements_lines = []
         template_readmes: list[str] = []
         for tid in template_ids:
-            template_dir = extracted / tid
+            template_dir = contained_source(extracted / tid, extracted)
             if not template_dir.is_dir():
                 _fail_and_exit(f"Template '{tid}' not found in connic-awesome-agents")
             readme_content = _merge_template_into_project(template_dir, base_path, requirements_lines, tid)
@@ -1147,7 +1264,7 @@ def _run_lint(verbose: bool = False, quiet: bool = False, project_root: str = ".
     errors: list[str] = []
 
     try:
-        loader = ProjectLoader(project_root)
+        loader = ProjectLoader(project_root, validation_only=True)
     except Exception as e:
         _err(str(e))
         return False
@@ -1275,21 +1392,21 @@ def _run_lint(verbose: bool = False, quiet: bool = False, project_root: str = ".
         agent_type = config.type.value if hasattr(config.type, 'value') else str(config.type)
         type_label = {"llm": "🧠 LLM", "sequential": "🔗 Sequential", "tool": "🔧 Tool"}.get(agent_type, agent_type)
 
-        click.echo(f"  ┌─ {config.name} [{type_label}]")
+        click.echo(escape_terminal_text(f"  ┌─ {config.name} [{type_label}]"))
         if config.source_path:
-            click.echo(f"  │  Path: {config.source_path}")
-        click.echo(f"  │  Description: {config.description}")
+            click.echo(escape_terminal_text(f"  │  Path: {config.source_path}"))
+        click.echo(escape_terminal_text(f"  │  Description: {config.description}"))
 
         if agent_type == "llm":
-            click.echo(f"  │  Model: {config.model}")
+            click.echo(escape_terminal_text(f"  │  Model: {config.model}"))
             if config.fallback_model:
-                click.echo(f"  │  Fallback Model: {config.fallback_model}")
+                click.echo(escape_terminal_text(f"  │  Fallback Model: {config.fallback_model}"))
             if verbose:
                 click.echo(f"  │  Temperature: {config.temperature}")
         elif agent_type == "sequential":
-            click.echo(f"  │  Chain: {' → '.join(config.agents)}")
+            click.echo(escape_terminal_text(f"  │  Chain: {' → '.join(config.agents)}"))
         elif agent_type == "tool":
-            click.echo(f"  │  Tool: {config.tool_name}")
+            click.echo(escape_terminal_text(f"  │  Tool: {config.tool_name}"))
 
         if verbose:
             click.echo(f"  │  Max Concurrent Runs: {config.max_concurrent_runs}")
@@ -1310,21 +1427,21 @@ def _run_lint(verbose: bool = False, quiet: bool = False, project_root: str = ".
         if agent_type == "llm":
             if agent.tools:
                 tool_names = [t.ref or t.name for t in agent.tools]
-                click.echo(f"  │  Tools: {', '.join(tool_names)}")
+                click.echo(escape_terminal_text(f"  │  Tools: {', '.join(tool_names)}"))
             else:
                 click.echo("  │  Tools: (none)")
 
             if config.mcp_servers:
                 for mcp_server in config.mcp_servers:
                     bridge_suffix = f" via bridge {mcp_server.bridge}" if mcp_server.bridge else ""
-                    click.echo(
+                    click.echo(escape_terminal_text(
                         f"  │  MCP Server: {mcp_server.name} ({mcp_server.url}){bridge_suffix}"
-                    )
+                    ))
 
         if agent_type == "sequential":
             for ref in config.agents:
                 if ref not in loaded_agent_names:
-                    click.echo(f"  │  ✗ Unknown agent: '{ref}'")
+                    click.echo(escape_terminal_text(f"  │  ✗ Unknown agent: '{ref}'"))
 
         click.echo("  └─")
         click.echo()
@@ -1364,7 +1481,7 @@ def tools():
     """List all available tools in the project."""
     _h1("Tools")
     try:
-        loader = ProjectLoader(".")
+        loader = ProjectLoader(".", validation_only=True)
         discovered = loader.discover_tools()
     except FileNotFoundError:
         _fail_and_exit("No tools/ directory found.")
@@ -1425,25 +1542,13 @@ def _package_project_for_tests(*, quiet: bool = False) -> tuple[bytes, list[Path
     on validation or size errors. Whether ``n_test_files == 0`` is fatal is
     up to the caller.
     """
-    import io
-    import tarfile
-
     if not quiet:
         _step("Validating project files...")
-    is_valid, err, valid_files = _validate_project_files()
-    if not is_valid:
-        raise ValueError(f"File validation failed: {err}")
+    tar_data, valid_files = _package_project_files()
     test_files = [f for f in valid_files if f.parts and f.parts[0] == "tests"]
     if not quiet:
         _ok(f"{len(valid_files)} files, {len(test_files)} test file(s)")
         _step("Packaging upload...")
-    buf = io.BytesIO()
-    with tarfile.open(fileobj=buf, mode="w:gz") as tar:
-        for f in valid_files:
-            tar.add(f, arcname=str(f))
-    tar_data = buf.getvalue()
-    if len(tar_data) > MAX_UPLOAD_SIZE:
-        raise ValueError(f"Package size ({len(tar_data):,} bytes) exceeds {MAX_UPLOAD_SIZE:,} byte limit")
     if not quiet:
         _ok(f"{len(tar_data):,} bytes")
     return tar_data, valid_files, len(test_files)
@@ -1531,9 +1636,9 @@ def _render_test_cases(cases: list[dict]) -> None:
         )
         rows.append([
             cell,
-            f"{c['agent_name']}::{c['test_name']}",
-            f"{c['successes']}/{c['runs']}",
-            f"{c['success_threshold']}%",
+            escape_terminal_text(f"{c['agent_name']}::{c['test_name']}"),
+            escape_terminal_text(f"{c['successes']}/{c['runs']}"),
+            escape_terminal_text(f"{c['success_threshold']}%"),
         ])
     _table(["Result", "Test", "Runs", "Threshold"], rows)
 
@@ -1598,6 +1703,8 @@ def _compute_local_coverage(project_root: Path) -> dict:
     load_error = "; ".join(loader._load_errors) or None
 
     tests_dir = project_root / "tests"
+    if tests_dir.is_symlink():
+        return {"agents": [], "overall": 0.0, "error": f"Symbolic links are not allowed: {tests_dir}"}
     DISCOVERY_MARKERS = {"search_tools", "use_tool"}
 
     test_suites: dict[str, list[tuple[TestFile | None, str | None]]] = {}
@@ -1607,7 +1714,7 @@ def _compute_local_coverage(project_root: Path) -> dict:
                 continue
             agent_name = path.stem
             try:
-                with open(path) as f:
+                with open(contained_source(path, tests_dir)) as f:
                     doc = _yaml.safe_load(f) or {}
                 if isinstance(doc, dict) and isinstance(doc.get("agent"), str):
                     agent_name = doc["agent"]
@@ -1725,7 +1832,7 @@ def _render_coverage(report: dict) -> None:
         else:
             tools_cell = f"{r['tools_covered']}/{r['tools_total']}"
         pct_cell = click.style(f"{r['percent']:5.1f}%", fg=_coverage_color(r["percent"]), bold=True)
-        table_rows.append([r["name"], r["type"], tools_cell, pct_cell])
+        table_rows.append([escape_terminal_text(r["name"]), escape_terminal_text(r["type"]), tools_cell, pct_cell])
 
     _table(["Agent", "Type", "Tools covered", "Coverage"], table_rows)
 
@@ -1885,10 +1992,8 @@ def dev(name: str | None, quick: bool, api_url: str, api_key: str, project_id: s
         CONNIC_PROJECT_ID   - Your project ID
     """
     import hashlib
-    import io
     import queue
     import signal
-    import tarfile
     import threading
     import time
 
@@ -2072,24 +2177,7 @@ def dev(name: str | None, quick: bool, api_url: str, api_key: str, project_id: s
         # Create and upload tarball of agent files
         def create_tarball() -> tuple[bytes, str]:
             """Create a tarball of agent files and return (content, hash)."""
-            # Validate files first
-            is_valid, error, valid_files = _validate_project_files()
-            if not is_valid:
-                raise ValueError(f"File validation failed: {error}")
-            
-            buffer = io.BytesIO()
-            with tarfile.open(fileobj=buffer, mode="w:gz") as tar:
-                # Add only validated files
-                for filepath in valid_files:
-                    arcname = str(filepath)
-                    tar.add(filepath, arcname=arcname)
-            
-            content = buffer.getvalue()
-            
-            # Final size check on compressed tarball
-            if len(content) > MAX_UPLOAD_SIZE:
-                raise ValueError(f"Package size ({len(content):,} bytes) exceeds {MAX_UPLOAD_SIZE:,} byte limit")
-            
+            content, _ = _package_project_files()
             content_hash = hashlib.sha256(content).hexdigest()
             return content, content_hash
         
@@ -2439,7 +2527,7 @@ def test(env: str | None, filter_name: str | None, coverage: bool, as_json: bool
             if report.get("error"):
                 _fail_and_exit(report["error"])
             _render_coverage(report)
-        sys.exit(0)
+        sys.exit(1 if report.get("error") or any(r.get("parse_error") for r in report["agents"]) else 0)
 
 
     import httpx
@@ -2711,8 +2799,6 @@ def deploy(
     """
     import base64
     import hashlib
-    import io
-    import tarfile
 
     import httpx
     
@@ -2805,28 +2891,14 @@ def deploy(
     # Package files into tarball
     _step("Packaging upload...")
     try:
-        is_valid, error, valid_files = _validate_project_files()
-        if not is_valid:
-            _fail_and_exit(f"File validation failed: {error}")
-
-        tar_buffer = io.BytesIO()
-        with tarfile.open(fileobj=tar_buffer, mode='w:gz') as tar:
-            for f in valid_files:
-                tar.add(f, arcname=str(f))
-
-        tar_data = tar_buffer.getvalue()
-
-        if len(tar_data) > MAX_UPLOAD_SIZE:
-            _fail_and_exit(
-                f"Package size ({len(tar_data):,} bytes) exceeds "
-                f"{MAX_UPLOAD_SIZE:,} byte limit (25MB)"
-            )
-
+        tar_data, valid_files = _package_project_files()
         files_b64 = base64.b64encode(tar_data).decode('utf-8')
         files_hash = hashlib.sha256(tar_data).hexdigest()[:12]
 
         _ok(f"{len(valid_files)} files, {len(tar_data):,} bytes")
 
+    except ValueError as e:
+        _fail_and_exit(str(e))
     except Exception as e:
         _fail_and_exit(f"Failed to package files: {e}")
 

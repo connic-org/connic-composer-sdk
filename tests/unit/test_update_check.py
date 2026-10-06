@@ -1,6 +1,7 @@
 import json
 import subprocess
 import sys
+import tracemalloc
 from pathlib import Path
 
 import pytest
@@ -615,6 +616,48 @@ def test_missing_project_skill_destination_is_not_installed_by_update(monkeypatc
     assert status.current_skill_version == "2.0.0"
     assert status.installed_skill_paths == (agents_skill,)
     assert status.missing_skill_paths == (tmp_path / update_check.SKILL_PATHS[1],)
+
+
+@pytest.mark.parametrize("complete_frontmatter", [True, False])
+def test_oversized_installed_skill_check_uses_bounded_memory(monkeypatch, tmp_path, complete_frontmatter):
+    skill_path = tmp_path / update_check.SKILL_PATHS[0]
+    skill_path.parent.mkdir(parents=True)
+    prefix = _skill("2.0.0") if complete_frontmatter else '---\nmetadata:\n  version: "2.0.0"\n'
+    skill_path.write_text(prefix + "x" * (8 * 1024 * 1024))
+    monkeypatch.setattr(
+        update_check,
+        "_fetch_remote_versions",
+        lambda **kwargs: (update_check.__version__, "2.0.0", None, True, True, True),
+    )
+
+    tracemalloc.start()
+    try:
+        status = update_check.get_update_status(project_root=tmp_path)
+        _, peak_memory = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+
+    assert peak_memory < 2 * 1024 * 1024
+    assert status.current_skill_version == ("2.0.0" if complete_frontmatter else "legacy")
+    assert status.skill_update_available is not complete_frontmatter
+
+
+@pytest.mark.parametrize("closing_line", ["---", "---invalid"])
+def test_installed_skill_prefix_preserves_frontmatter_delimiter(monkeypatch, tmp_path, closing_line):
+    skill_path = tmp_path / update_check.SKILL_PATHS[0]
+    skill_path.parent.mkdir(parents=True)
+    prefix = '---\nmetadata:\n  version: "2.0.0"\n# '
+    skill_path.write_text(prefix + "x" * (64 * 1024 - len(prefix) - 4) + "\n" + closing_line)
+    monkeypatch.setattr(
+        update_check,
+        "_fetch_remote_versions",
+        lambda **kwargs: (update_check.__version__, "2.0.0", None, True, True, True),
+    )
+
+    status = update_check.get_update_status(project_root=tmp_path)
+
+    assert status.current_skill_version == ("2.0.0" if closing_line == "---" else "legacy")
+    assert status.skill_update_available is (closing_line != "---")
 
 
 def test_legacy_installed_skill_is_outdated_when_remote_is_versioned(monkeypatch, tmp_path):

@@ -110,7 +110,8 @@ def test_coverage_is_zero_for_agent_without_test_file(tmp_path):
     assert report["overall"] == 0.0
 
 
-def test_coverage_is_full_when_every_tool_appears_in_expected_tool_calls(tmp_path):
+@pytest.mark.parametrize("suite_layout", ["direct", "nested", "symlink"])
+def test_coverage_is_full_when_every_tool_appears_in_expected_tool_calls(tmp_path, suite_layout):
     _write_calculator_tool(tmp_path)
     _write_llm_agent(tmp_path, "math-agent", tools=["calculator.add", "calculator.subtract"])
     _write_test_file(
@@ -118,6 +119,15 @@ def test_coverage_is_full_when_every_tool_appears_in_expected_tool_calls(tmp_pat
         "math-agent",
         [["calculator.add", "calculator.subtract"]],
     )
+    if suite_layout != "direct":
+        suite = tmp_path / "tests" / "math-agent.yaml"
+        nested = tmp_path / "tests" / "nested" / suite.name
+        if suite_layout == "symlink":
+            nested = nested.with_suffix(".fixture")
+        nested.parent.mkdir()
+        suite.rename(nested)
+        if suite_layout == "symlink":
+            suite.symlink_to(Path("nested") / nested.name)
 
     report = cli._compute_local_coverage(tmp_path)
 
@@ -540,19 +550,23 @@ def test_test_command_with_coverage_reports_empty_project(tmp_path, monkeypatch)
     assert "API key and project ID required" not in result.output
 
 
-def test_test_command_with_coverage_reports_missing_project(tmp_path, monkeypatch):
+@pytest.mark.parametrize("as_json", [False, True])
+def test_test_command_with_coverage_reports_missing_project(tmp_path, monkeypatch, as_json):
     monkeypatch.chdir(tmp_path)
     monkeypatch.delenv("CONNIC_API_KEY", raising=False)
     monkeypatch.delenv("CONNIC_PROJECT_ID", raising=False)
 
-    result = CliRunner().invoke(cli.main, ["test", "--coverage"])
+    result = CliRunner().invoke(cli.main, ["test", "--coverage"] + (["--json"] if as_json else []))
 
     assert result.exit_code != 0
     assert "Agents directory not found" in result.output
     assert "API key and project ID required" not in result.output
+    if as_json:
+        assert "Agents directory not found" in json.loads(result.stdout)["error"]
 
 
-def test_test_command_with_coverage_stops_on_unparseable_test_file(tmp_path, monkeypatch):
+@pytest.mark.parametrize("as_json", [False, True])
+def test_test_command_with_coverage_stops_on_unparseable_test_file(tmp_path, monkeypatch, as_json):
     monkeypatch.chdir(tmp_path)
     _write_calculator_tool(tmp_path)
     _write_llm_agent(tmp_path, "math-agent", tools=["calculator.add"])
@@ -560,12 +574,53 @@ def test_test_command_with_coverage_stops_on_unparseable_test_file(tmp_path, mon
     monkeypatch.delenv("CONNIC_API_KEY", raising=False)
     monkeypatch.delenv("CONNIC_PROJECT_ID", raising=False)
 
-    result = CliRunner().invoke(cli.main, ["test", "--coverage"])
+    result = CliRunner().invoke(cli.main, ["test", "--coverage"] + (["--json"] if as_json else []))
 
     assert result.exit_code != 0
-    assert "Test files failed to parse" in result.output
     assert "math-agent" in result.output
     assert "Overall coverage" not in result.output
+    if as_json:
+        [agent] = json.loads(result.stdout)["agents"]
+        assert "tests/math-agent.yaml" in agent["parse_error"]
+    else:
+        assert "Test files failed to parse" in result.output
+
+
+@pytest.mark.parametrize("link_kind", ["file", "file_in_project", "file_chain", "root", "root_in_project"])
+def test_test_command_with_coverage_rejects_suites_outside_tests(tmp_path, monkeypatch, link_kind):
+    project = tmp_path / "project"
+    suite_project = project / "elsewhere" if link_kind.endswith("in_project") else tmp_path / "outside"
+    _write_llm_agent(project, "math-agent", tools=["web_search"])
+    _write_test_file(suite_project, "math-agent", [["web_search"]])
+    target = suite_project / "tests" / "math-agent.yaml"
+    tests_dir = project / "tests"
+    if link_kind.startswith("root"):
+        tests_dir.symlink_to(target.parent, target_is_directory=True)
+    else:
+        tests_dir.mkdir()
+        source = target
+        if link_kind == "file_chain":
+            source = tests_dir / "alias.link"
+            source.symlink_to(target)
+        (tests_dir / "linked-suite.yaml").symlink_to(source)
+
+    opened_paths = []
+    original_open = open
+
+    def record_open(path, *args, **kwargs):
+        opened_paths.append(Path(path).resolve())
+        return original_open(path, *args, **kwargs)
+
+    monkeypatch.setattr("builtins.open", record_open)
+    monkeypatch.chdir(project)
+
+    result = CliRunner().invoke(cli.main, ["test", "--coverage", "--json"])
+
+    assert target not in opened_paths, "Coverage opened a suite outside tests/"
+    assert result.exit_code == 1, result.output
+    payload = json.loads(result.stdout)
+    assert payload["error"]
+    assert "tests" in payload["error"]
 
 
 def test_test_command_with_coverage_stops_on_orphaned_invalid_split_suite(tmp_path, monkeypatch):
@@ -626,7 +681,7 @@ def test_test_command_with_coverage_json_reports_unloadable_agent_file(tmp_path,
 
     result = CliRunner().invoke(cli.main, ["test", "--coverage", "--json"])
 
-    assert result.exit_code == 0, result.output
+    assert result.exit_code == 1, result.output
     payload = json.loads(result.stdout)
     assert "agents/broken-agent.yaml" in payload["error"]
     assert "missing required field(s): name" in payload["error"]
@@ -641,7 +696,7 @@ def test_test_command_with_coverage_json_reports_orphaned_invalid_split_suite(tm
 
     result = CliRunner().invoke(cli.main, ["test", "--coverage", "--json"])
 
-    assert result.exit_code == 0, result.output
+    assert result.exit_code == 1, result.output
     payload = json.loads(result.stdout)
     assert "tests/math-agent-invalid.yaml" in payload["error"]
     assert [agent["name"] for agent in payload["agents"]] == ["math-agent"]

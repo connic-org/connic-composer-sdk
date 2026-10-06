@@ -30,6 +30,8 @@ from .core import (
     Tool,
     ToolHook,
 )
+from .project_paths import contained_source
+from .terminal import escape_terminal_text
 
 # List of predefined tool names - SDK knows names only, not implementations
 # Actual implementations are in the runner (backend/app/templates/predefined_tools/)
@@ -112,7 +114,7 @@ class ProjectLoader:
         self.guardrails_dir = self.project_root / "guardrails"
         self.hooks_dir = self.project_root / "hooks"
 
-        # When True, use AST parsing instead of importing tool modules.
+        # When True, use AST parsing instead of importing tool, middleware, or hook modules.
         # This avoids executing code and needing external dependencies at validation time.
         self._validation_only = validation_only
 
@@ -568,9 +570,9 @@ class ProjectLoader:
                     schema_dict = self._load_schema(config.output_schema)
                     config.output_schema_dict = schema_dict
                 except Exception as e:
-                    print(f"Warning: Could not load output schema '{config.output_schema}' for agent '{config.name}': {e}")
+                    print(escape_terminal_text(f"Warning: Could not load output schema '{config.output_schema}' for agent '{config.name}': {e}"))
             else:
-                print(f"Warning: output_schema is only supported for LLM agents. Ignoring for '{config.name}' (type: {config.type.value})")
+                print(escape_terminal_text(f"Warning: output_schema is only supported for LLM agents. Ignoring for '{config.name}' (type: {config.type.value})"))
         
         tools = []
         discoverable_tools = []
@@ -860,11 +862,17 @@ class ProjectLoader:
             FileNotFoundError: If schema file doesn't exist
             json.JSONDecodeError: If schema file is not valid JSON
         """
+        if not schema_name or schema_name in {".", ".."} or any(char in schema_name for char in "/\\:\0"):
+            raise ValueError(f"Schema '{schema_name}' must be a bare identifier (no path separators)")
+
         # Check cache first
         if schema_name in self._loaded_schemas:
             return self._loaded_schemas[schema_name]
         
-        schema_file = self.schemas_dir / f"{schema_name}.json"
+        if self.schemas_dir.is_symlink():
+            raise ValueError(f"Schema '{schema_name}' must stay within the project's schemas directory")
+        schemas_root = contained_source(self.schemas_dir, self.project_root)
+        schema_file = contained_source(schemas_root / f"{schema_name}.json", schemas_root)
         if not schema_file.exists():
             raise FileNotFoundError(f"Schema '{schema_name}' not found at {schema_file}")
         
@@ -1102,7 +1110,9 @@ class ProjectLoader:
         if self._validation_only:
             if module_name in self._loaded_modules:
                 return self._loaded_modules[module_name]
-            return self._load_tool_module_from_ast(module_name, file_path)
+            module = self._load_module_from_ast(f"tools.{module_name}", file_path)
+            self._loaded_modules[module_name] = module
+            return module
 
         with _TOOL_IMPORT_LOCK:
             self._activate_tool_imports()
@@ -1206,16 +1216,15 @@ class ProjectLoader:
             if any(Path(path).resolve().is_relative_to(tools_root) for path in module_paths):
                 self._runtime_tool_modules[name] = module
 
-    def _load_tool_module_from_ast(self, module_name: str, file_path: Path):
+    def _load_module_from_ast(self, import_name: str, file_path: Path):
         """
-        Parse a tool module via AST to extract function metadata without executing code.
+        Parse a Python module via AST to extract function metadata without executing code.
         Creates a synthetic module with stub functions that have correct signatures,
         docstrings, and async flags for validation and schema generation.
         """
-        source = file_path.read_text()
+        source = file_path.read_bytes()
         tree = ast.parse(source, filename=str(file_path))
 
-        import_name = f"tools.{module_name}"
         module = types.ModuleType(import_name)
         module.__file__ = str(file_path)
         module.__name__ = import_name
@@ -1229,7 +1238,6 @@ class ProjectLoader:
             stub = self._create_ast_stub(node, import_name)
             setattr(module, node.name, stub)
 
-        self._loaded_modules[module_name] = module
         return module
 
     def _create_ast_stub(self, node: ast.AST, module_name: str):
@@ -1253,9 +1261,6 @@ class ProjectLoader:
         first_default_idx = len(positional_args) - len(args.defaults)
 
         def append_parameter(arg, kind, default=inspect.Parameter.empty):
-            if arg.arg == "self":
-                return
-
             annotation = inspect.Parameter.empty
             if arg.annotation:
                 annotation = self._resolve_ast_annotation(arg.annotation)
@@ -1461,16 +1466,19 @@ class ProjectLoader:
         
         try:
             # Load the middleware module
-            spec = importlib.util.spec_from_file_location(
-                f"middleware.{agent_name}", middleware_file
-            )
-            if not spec or not spec.loader:
-                self._loaded_middlewares[agent_name] = None
-                return None
-            
-            module = importlib.util.module_from_spec(spec)
-            sys.modules[f"middleware.{agent_name}"] = module
-            spec.loader.exec_module(module)
+            if self._validation_only:
+                module = self._load_module_from_ast(f"middleware.{agent_name}", middleware_file)
+            else:
+                spec = importlib.util.spec_from_file_location(
+                    f"middleware.{agent_name}", middleware_file
+                )
+                if not spec or not spec.loader:
+                    self._loaded_middlewares[agent_name] = None
+                    return None
+
+                module = importlib.util.module_from_spec(spec)
+                sys.modules[f"middleware.{agent_name}"] = module
+                spec.loader.exec_module(module)
             
             # Extract before and after functions
             before_func = getattr(module, 'before', None)
@@ -1492,7 +1500,7 @@ class ProjectLoader:
             return middleware
             
         except Exception as e:
-            print(f"Warning: Failed to load middleware for {agent_name}: {e}")
+            print(escape_terminal_text(f"Warning: Failed to load middleware for {agent_name}: {e}"))
             self._loaded_middlewares[agent_name] = None
             return None
 
@@ -1523,7 +1531,7 @@ class ProjectLoader:
                     if hooks:
                         middlewares[agent_name] = hooks
             except Exception as e:
-                print(f"Warning: Could not discover middleware for {agent_name}: {e}")
+                print(escape_terminal_text(f"Warning: Could not discover middleware for {agent_name}: {e}"))
         
         return middlewares
 
@@ -1549,16 +1557,19 @@ class ProjectLoader:
             return None
 
         try:
-            spec = importlib.util.spec_from_file_location(
-                f"hooks.{agent_name}", hook_file
-            )
-            if not spec or not spec.loader:
-                self._loaded_tool_hooks[agent_name] = None
-                return None
+            if self._validation_only:
+                module = self._load_module_from_ast(f"hooks.{agent_name}", hook_file)
+            else:
+                spec = importlib.util.spec_from_file_location(
+                    f"hooks.{agent_name}", hook_file
+                )
+                if not spec or not spec.loader:
+                    self._loaded_tool_hooks[agent_name] = None
+                    return None
 
-            module = importlib.util.module_from_spec(spec)
-            sys.modules[f"hooks.{agent_name}"] = module
-            spec.loader.exec_module(module)
+                module = importlib.util.module_from_spec(spec)
+                sys.modules[f"hooks.{agent_name}"] = module
+                spec.loader.exec_module(module)
 
             before_func = getattr(module, 'before', None)
             after_func = getattr(module, 'after', None)
@@ -1577,7 +1588,7 @@ class ProjectLoader:
             return hook
 
         except Exception as e:
-            print(f"Warning: Failed to load tool hooks for {agent_name}: {e}")
+            print(escape_terminal_text(f"Warning: Failed to load tool hooks for {agent_name}: {e}"))
             self._loaded_tool_hooks[agent_name] = None
             return None
 
@@ -1608,7 +1619,7 @@ class ProjectLoader:
                     if available:
                         hooks[agent_name] = available
             except Exception as e:
-                print(f"Warning: Could not discover hooks for {agent_name}: {e}")
+                print(escape_terminal_text(f"Warning: Could not discover hooks for {agent_name}: {e}"))
 
         return hooks
 
@@ -1628,13 +1639,31 @@ class ProjectLoader:
         """
         if name in self._loaded_guardrails:
             return self._loaded_guardrails[name]
-        
-        guardrail_file = self.guardrails_dir / f"{name}.py"
-        if not guardrail_file.exists():
+
+        if not name or name in {".", ".."} or any(char in name for char in "/\\:\0"):
+            self._load_errors.append(
+                f"Custom guardrail '{name}': name must be a bare filename (no path separators)"
+            )
             self._loaded_guardrails[name] = None
             return None
-        
+
         try:
+            guardrails_root = self.guardrails_dir.resolve()
+            guardrail_file = (guardrails_root / f"{name}.py").resolve()
+            if (
+                self.guardrails_dir.is_symlink()
+                or not guardrails_root.is_relative_to(self.project_root)
+                or not guardrail_file.is_relative_to(guardrails_root)
+            ):
+                self._load_errors.append(
+                    f"Custom guardrail '{name}': file must stay within the project's guardrails directory"
+                )
+                self._loaded_guardrails[name] = None
+                return None
+            if not guardrail_file.exists():
+                self._loaded_guardrails[name] = None
+                return None
+
             spec = importlib.util.spec_from_file_location(
                 f"guardrails.{name}", guardrail_file
             )

@@ -26,6 +26,104 @@ def make_migrate_cli(run_lint=lambda **kwargs: True):
     return group
 
 
+@pytest.mark.parametrize("filename", ["agent.py", "root_agent.yaml"])
+def test_migration_rejects_source_symlinks_outside_root(tmp_path, filename):
+    source = tmp_path / "source"
+    source.mkdir()
+    outside = tmp_path / filename
+    outside.write_text("# Outside source\n")
+    (source / filename).symlink_to(outside)
+
+    with pytest.raises(ValueError, match="outside"):
+        migrate._build_migration_candidates(source)
+
+
+def test_migration_does_not_resolve_imports_outside_source_inventory(tmp_path):
+    source = tmp_path / "source"
+    write(tmp_path / "outside.py", 'PROMPT = "Private external prompt"')
+    write(source / "agent.py", '''
+        from langchain.agents import create_agent
+        from ..outside import PROMPT
+        agent = create_agent(model="openai:gpt-4o", tools=[], system_prompt=PROMPT)
+    ''')
+
+    _, _, agents, _ = migrate._build_migration_candidates(source)
+
+    assert len(agents) == 1
+    assert agents[0].system_prompt is None
+
+
+def test_migration_resolves_relative_import_from_source_root_package(tmp_path):
+    source = tmp_path / "source"
+    write(source / "__init__.py", 'PROMPT = "Valid package prompt"')
+    write(source / "agent.py", '''
+        from langchain.agents import create_agent
+        from . import PROMPT
+        agent = create_agent(model="openai:gpt-4o", tools=[], system_prompt=PROMPT)
+    ''')
+
+    _, _, agents, _ = migrate._build_migration_candidates(source)
+
+    assert agents[0].system_prompt == "Valid package prompt"
+
+
+def test_migration_rejects_external_requirements_symlink(tmp_path):
+    source = tmp_path / "source"
+    source.mkdir()
+    outside = tmp_path / "outside.txt"
+    outside.write_text("private-package\n")
+    (source / "requirements.txt").symlink_to(outside)
+    destination = tmp_path / "destination"
+    destination.mkdir()
+
+    with pytest.raises(ValueError, match="outside"):
+        migrate._write_requirements_file(source, destination, [])
+
+    assert not (destination / "requirements.txt").exists()
+
+
+@pytest.mark.parametrize("prompt", ['"{value:4097}".format(value="x")', '"{value:.4097f}".format(value=1.0)', '"{value:{width}}".format(value="x", width=4097)'])
+def test_migration_rejects_excessive_format_width_and_precision(tmp_path, prompt):
+    source = tmp_path / "source"
+    write(source / "agent.py", f'''
+        from langchain.agents import create_agent
+        PROMPT = {prompt}
+        agent = create_agent(model="openai:gpt-4o", tools=[], system_prompt=PROMPT)
+    ''')
+
+    with pytest.raises(ValueError, match="format.*limit"):
+        migrate._build_migration_candidates(source)
+
+
+def test_migration_caps_cumulative_formatted_output(tmp_path):
+    source = tmp_path / "source"
+    template = "{value:4096}" * 257
+    write(source / "agent.py", f'''
+        from langchain.agents import create_agent
+        PROMPT = {template!r}.format(value="x")
+        agent = create_agent(model="openai:gpt-4o", tools=[], system_prompt=PROMPT)
+    ''')
+
+    with pytest.raises(ValueError, match="format output.*limit"):
+        migrate._build_migration_candidates(source)
+
+
+@pytest.mark.parametrize("format_spec, audience", [("000012", "team00000000"), ("٠٠٠٠١٢", "team        ")])
+def test_migration_preserves_bounded_formatting_and_literal_braces(tmp_path, format_spec, audience):
+    source = tmp_path / "source"
+    write(source / "agent.py", '''
+        from langchain.agents import create_agent
+        PROMPT = "{{Report}} {audience:000012}: {value:{width}.{precision}f}".format(
+            audience="team", value=1.25, width=6, precision=2
+        )
+        agent = create_agent(model="openai:gpt-4o", tools=[], system_prompt=PROMPT)
+    '''.replace("000012", format_spec))
+
+    _, _, agents, _ = migrate._build_migration_candidates(source)
+
+    assert agents[0].system_prompt == f"{{Report}} {audience}:   1.25"
+
+
 @pytest.mark.parametrize(
     ("fixture_name", "expected_agent_names"),
     [

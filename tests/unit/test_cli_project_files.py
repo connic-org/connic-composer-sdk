@@ -3,6 +3,7 @@ import io
 import json
 import os
 import signal
+import stat
 import sys
 import tarfile
 import threading
@@ -19,6 +20,24 @@ from connic import cli, update_check
 @pytest.fixture(autouse=True)
 def hide_installed_plugin_clients(monkeypatch):
     monkeypatch.setattr(update_check.shutil, "which", lambda executable: None)
+
+
+def _model_windows_stat(monkeypatch):
+    original_lstat = Path.lstat
+    original_fstat = os.fstat
+
+    class WindowsStat:
+        def __init__(self, file_stat, *, descriptor=False):
+            self._stat = file_stat
+            self.st_ctime_ns = 0
+            self.st_size = 0 if stat.S_ISDIR(file_stat.st_mode) else file_stat.st_size
+            self.st_mode = file_stat.st_mode & ~0o111 if descriptor else file_stat.st_mode
+
+        def __getattr__(self, name):
+            return getattr(self._stat, name)
+
+    monkeypatch.setattr(Path, "lstat", lambda path: WindowsStat(original_lstat(path)))
+    monkeypatch.setattr(os, "fstat", lambda fd: WindowsStat(original_fstat(fd), descriptor=True))
 
 
 def _write_minimal_support_agent(project: Path) -> None:
@@ -128,19 +147,21 @@ def test_package_project_for_tests_rejects_requirements_hard_link(tmp_path, monk
         cli._package_project_for_tests(quiet=True)
 
 
-def test_package_project_for_tests_allows_file_hard_linked_outside_upload(tmp_path, monkeypatch):
-    monkeypatch.chdir(tmp_path)
-    shared_source = tmp_path / "shared_lookup.py"
+@pytest.mark.parametrize("project_path", ["tools/lookup.py", "requirements.txt", "tests/files/fixture.bin"])
+@pytest.mark.parametrize("alias_path", ["../shared_lookup.py", "shared_lookup.py", "tools/.hidden.py", "tools/__pycache__/lookup.pyc"])
+def test_package_project_for_tests_rejects_file_hard_linked_outside_upload(tmp_path, monkeypatch, project_path, alias_path):
+    project = tmp_path / "project"
+    project.mkdir()
+    monkeypatch.chdir(project)
+    shared_source = project / alias_path
+    shared_source.parent.mkdir(parents=True, exist_ok=True)
     shared_source.write_text("def lookup():\n    return {'status': 'ok'}\n")
-    tool = tmp_path / "tools" / "lookup.py"
-    tool.parent.mkdir()
-    tool.hardlink_to(shared_source)
+    selected_file = project / project_path
+    selected_file.parent.mkdir(parents=True, exist_ok=True)
+    selected_file.hardlink_to(shared_source)
 
-    tar_data, files, _ = cli._package_project_for_tests(quiet=True)
-
-    assert files == [Path("tools/lookup.py")]
-    with tarfile.open(fileobj=io.BytesIO(tar_data), mode="r:gz") as archive:
-        assert archive.getmember("tools/lookup.py").isreg()
+    with pytest.raises(ValueError, match="Hard links are not allowed"):
+        cli._package_project_for_tests(quiet=True)
 
 
 def test_validate_project_files_reports_file_removed_during_hard_link_check(tmp_path, monkeypatch):
@@ -168,13 +189,15 @@ def test_validate_project_files_reports_file_removed_during_hard_link_check(tmp_
     assert files == []
 
 
-def test_validate_project_files_allows_zero_inode_files(tmp_path, monkeypatch):
+@pytest.mark.parametrize("hard_link", [False, True])
+def test_validate_project_files_checks_hard_links_with_zero_inode(tmp_path, monkeypatch, hard_link):
     monkeypatch.chdir(tmp_path)
     source = Path("tools/lookup.py")
     source.parent.mkdir()
     source.write_text("def lookup():\n    return {'status': 'ok'}\n")
     alias = Path("tools/lookup_alias.py")
-    alias.hardlink_to(source)
+    if hard_link:
+        alias.hardlink_to(source)
     original_lstat = Path.lstat
 
     def lstat(path):
@@ -189,9 +212,189 @@ def test_validate_project_files_allows_zero_inode_files(tmp_path, monkeypatch):
 
     is_valid, error, files = cli._validate_project_files()
 
-    assert is_valid is True
-    assert error == ""
-    assert set(files) == {source, alias}
+    if hard_link:
+        assert is_valid is False
+        assert "Hard links are not allowed" in error
+        assert files == []
+    else:
+        assert is_valid is True
+        assert error == ""
+        assert files == [source]
+
+
+@pytest.mark.parametrize("filename", ["tools/lookup.py", "requirements.txt", "tests/files/fixture.bin"])
+@pytest.mark.parametrize("preserve_timestamps", [False, True])
+def test_packaging_restarts_when_file_content_changes(tmp_path, monkeypatch, filename, preserve_timestamps):
+    monkeypatch.chdir(tmp_path)
+    file = Path(filename)
+    file.parent.mkdir(parents=True, exist_ok=True)
+    file.write_bytes(b"# original\n")
+    file.chmod(0o755)
+    original_stat = file.stat()
+    changed = False
+    original_addfile = tarfile.TarFile.addfile
+
+    def change_file():
+        nonlocal changed
+        if not changed:
+            changed = True
+            file.write_bytes(b"# replaced\n")
+            if preserve_timestamps:
+                os.utime(file, ns=(original_stat.st_atime_ns, original_stat.st_mtime_ns))
+
+    if preserve_timestamps:
+        _model_windows_stat(monkeypatch)
+
+    def addfile(archive, member, fileobj=None):
+        original_addfile(archive, member, fileobj)
+        if member.name == filename:
+            change_file()
+
+    monkeypatch.setattr(tarfile.TarFile, "addfile", addfile)
+
+    tar_data, _, _ = cli._package_project_for_tests(quiet=True)
+
+    assert changed
+    with tarfile.open(fileobj=io.BytesIO(tar_data), mode="r:gz") as archive:
+        member = archive.getmember(filename)
+        assert member.isreg()
+        assert member.mode == 0o755
+        assert archive.extractfile(member).read() == b"# replaced\n"
+
+
+@pytest.mark.parametrize(
+    ("change", "stage", "error"),
+    [
+        ("growth", "during_validation", "Code/config size exceeds"),
+        ("growth", "after_validation", "Code/config size exceeds"),
+        ("symlink", "after_validation", "Symbolic links are not allowed"),
+        ("hardlink", "after_validation", "Hard links are not allowed"),
+        ("directory", "after_validation", "File type '.env' not allowed"),
+    ],
+)
+def test_packaging_revalidates_changed_file(tmp_path, monkeypatch, change, stage, error):
+    monkeypatch.chdir(tmp_path)
+    file = Path("tools/lookup.py")
+    file.parent.mkdir()
+    file.write_bytes(b"# original\n")
+    outside = Path("outside.py")
+    outside.write_bytes(b"SECRET = 'outside project'\n")
+    monkeypatch.setattr(cli, "MAX_CODE_SIZE", 32)
+    original_size = cli._bounded_file_size
+    original_validate = cli._validate_project_files
+    changed = False
+
+    def change_file():
+        nonlocal changed
+        if not changed:
+            changed = True
+            if change == "growth":
+                file.write_bytes(b"x" * 33)
+            else:
+                file.unlink()
+                if change == "symlink":
+                    file.symlink_to(outside.absolute())
+                elif change == "hardlink":
+                    file.hardlink_to(outside)
+                else:
+                    file.mkdir()
+                    (file / "secret.env").write_bytes(b"SECRET=unvalidated\n")
+
+    def bounded_size(path, limit, **kwargs):
+        size = original_size(path, limit, **kwargs)
+        if path == file and stage == "during_validation":
+            change_file()
+        return size
+
+    def validate(**kwargs):
+        result = original_validate(**kwargs)
+        if stage == "after_validation":
+            change_file()
+        return result
+
+    monkeypatch.setattr(cli, "_bounded_file_size", bounded_size)
+    monkeypatch.setattr(cli, "_validate_project_files", validate)
+
+    with pytest.raises(ValueError, match=error):
+        cli._package_project_for_tests(quiet=True)
+
+
+def test_packaging_discards_content_temporarily_changed_during_tar_read(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    file = Path("tools/lookup.py")
+    file.parent.mkdir()
+    file.write_bytes(b"# original\n")
+    initial_stat = file.stat()
+    _model_windows_stat(monkeypatch)
+    original_addfile = tarfile.TarFile.addfile
+    changed = False
+
+    def write(content):
+        file.write_bytes(content)
+        os.utime(file, ns=(initial_stat.st_atime_ns, initial_stat.st_mtime_ns))
+
+    def addfile(archive, member, fileobj=None):
+        nonlocal changed
+        if changed:
+            original_addfile(archive, member, fileobj)
+            return
+        changed = True
+        write(b"# replaced\n")
+        original_addfile(archive, member, fileobj)
+        write(b"# original\n")
+
+    monkeypatch.setattr(tarfile.TarFile, "addfile", addfile)
+
+    tar_data, _, _ = cli._package_project_for_tests(quiet=True)
+
+    assert changed
+    with tarfile.open(fileobj=io.BytesIO(tar_data), mode="r:gz") as archive:
+        assert archive.extractfile(str(file)).read() == b"# original\n"
+
+
+@pytest.mark.parametrize(
+    ("new_file", "preserve_timestamps"),
+    [
+        ("tools/nested/new.py", False), ("tools/nested/new.py", True),
+        ("hooks/new.py", False), ("requirements.txt", False), (None, False),
+    ],
+)
+def test_packaging_restarts_when_project_file_set_changes(tmp_path, monkeypatch, new_file, preserve_timestamps):
+    monkeypatch.chdir(tmp_path)
+    file = Path("tools/nested/lookup.py")
+    file.parent.mkdir(parents=True)
+    file.write_bytes(b"# original\n")
+    directory_stats = {parent: parent.stat() for parent in file.parents}
+    if preserve_timestamps:
+        _model_windows_stat(monkeypatch)
+    original_addfile = tarfile.TarFile.addfile
+    changed = False
+
+    def addfile(archive, member, fileobj=None):
+        nonlocal changed
+        original_addfile(archive, member, fileobj)
+        if not changed:
+            changed = True
+            if new_file is None:
+                file.unlink()
+            else:
+                added = Path(new_file)
+                added.parent.mkdir(parents=True, exist_ok=True)
+                added.write_bytes(b"# added\n")
+            if preserve_timestamps:
+                for directory, original_stat in directory_stats.items():
+                    os.utime(directory, ns=(original_stat.st_atime_ns, original_stat.st_mtime_ns))
+
+    monkeypatch.setattr(tarfile.TarFile, "addfile", addfile)
+
+    tar_data, _, _ = cli._package_project_for_tests(quiet=True)
+
+    with tarfile.open(fileobj=io.BytesIO(tar_data), mode="r:gz") as archive:
+        if new_file is None:
+            assert archive.getnames() == []
+        else:
+            assert set(archive.getnames()) == {str(file), new_file}
+            assert archive.extractfile(new_file).read() == b"# added\n"
 
 
 def test_validate_project_files_rejects_unsupported_files_before_upload(tmp_path, monkeypatch):
@@ -354,14 +557,15 @@ def test_install_skill_replaces_existing_project_skill(tmp_path):
     destination.mkdir(parents=True)
     (destination / "stale.md").write_text("remove me\n")
 
-    cli._install_skill(source, destination)
+    cli._install_skill(source, destination, base_path=tmp_path)
 
     assert (destination / "SKILL.md").read_text() == "# Connic\n"
     assert (destination / "references" / "agent-yaml.md").read_text() == "agent docs\n"
     assert not (destination / "stale.md").exists()
 
 
-def test_install_skill_replaces_existing_skill_symlink(tmp_path):
+def test_install_skill_rejects_existing_skill_symlink(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
     source = tmp_path / "source"
     source.mkdir()
     (source / "SKILL.md").write_text("# Current\n")
@@ -372,10 +576,148 @@ def test_install_skill_replaces_existing_skill_symlink(tmp_path):
     destination.parent.mkdir(parents=True)
     destination.symlink_to(legacy, target_is_directory=True)
 
-    cli._install_skill(source, destination)
+    with pytest.raises(ValueError, match="Symbolic links are not allowed"):
+        cli._install_skill(source, destination)
 
-    assert not destination.is_symlink()
-    assert (destination / "SKILL.md").read_text() == "# Current\n"
+    assert destination.is_symlink()
+    assert (legacy / "SKILL.md").read_text() == "# Legacy\n"
+
+
+@pytest.mark.parametrize("component", [".agents", ".agents/skills"])
+def test_install_skill_rejects_symlinked_parent(tmp_path, monkeypatch, component):
+    project = tmp_path / "project"
+    project.mkdir()
+    monkeypatch.chdir(project)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    source = tmp_path / "source"
+    source.mkdir()
+    (source / "SKILL.md").write_text("# Current\n")
+    link = project / component
+    link.parent.mkdir(parents=True, exist_ok=True)
+    link.symlink_to(outside, target_is_directory=True)
+
+    with pytest.raises(ValueError, match="Symbolic links are not allowed"):
+        cli._install_skill(source, project / cli.SKILL_DESTINATION)
+
+    assert list(outside.iterdir()) == []
+
+
+@pytest.mark.parametrize("linked_path", ["tools", "tools/lookup.py", "requirements.txt", "README.md"])
+def test_merge_template_rejects_sources_outside_template(tmp_path, linked_path):
+    template = tmp_path / "template"
+    template.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "lookup.py").write_text("def lookup(): return 'outside'\n")
+    linked = template / linked_path
+    linked.parent.mkdir(parents=True, exist_ok=True)
+    linked.symlink_to(outside if linked_path == "tools" else outside / "lookup.py")
+    project = tmp_path / "project"
+    project.mkdir()
+
+    with pytest.raises(ValueError, match="outside"):
+        cli._merge_template_into_project(template, project, [], "template")
+
+    assert not (project / "tools" / "lookup.py").exists()
+
+
+@pytest.mark.parametrize("linked_path", ["tools", "tools/lookup.py"])
+def test_merge_template_rejects_symlinked_destination(tmp_path, linked_path):
+    template = tmp_path / "template"
+    (template / "tools").mkdir(parents=True)
+    (template / "tools" / "lookup.py").write_text("def lookup(): return 'template'\n")
+    project = tmp_path / "project"
+    project.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    sentinel = outside / "lookup.py"
+    sentinel.write_text("unchanged\n")
+    linked = project / linked_path
+    linked.parent.mkdir(parents=True, exist_ok=True)
+    linked.symlink_to(outside if linked_path == "tools" else sentinel)
+
+    with pytest.raises(ValueError, match="Symbolic links are not allowed"):
+        cli._merge_template_into_project(template, project, [], "template")
+
+    assert sentinel.read_text() == "unchanged\n"
+
+
+@pytest.mark.parametrize("filename", ["tests/files/large.bin", "requirements.txt"])
+def test_upload_validation_rejects_oversized_file_before_open(tmp_path, monkeypatch, filename):
+    monkeypatch.chdir(tmp_path)
+    file = Path(filename)
+    file.parent.mkdir(parents=True, exist_ok=True)
+    with file.open("wb") as stream:
+        stream.truncate(cli.MAX_UPLOAD_SIZE + 1)
+    monkeypatch.setattr(Path, "open", lambda *args, **kwargs: pytest.fail("Oversized file was opened"))
+
+    valid, error, files = cli._validate_project_files()
+
+    assert not valid
+    assert "Total file size exceeds" in error
+    assert files == []
+
+
+def test_upload_validation_caps_read_when_file_grows(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    file = Path("tests/files/growing.bin")
+    file.parent.mkdir(parents=True)
+    file.write_bytes(b"small")
+    monkeypatch.setattr(cli, "MAX_UPLOAD_SIZE", 100)
+
+    class GrowingFile(io.BytesIO):
+        consumed = 0
+
+        def read(self, size=-1):
+            result = super().read(size)
+            self.consumed += len(result)
+            return result
+
+    stream = GrowingFile(b"x" * 1000)
+    monkeypatch.setattr(Path, "open", lambda *args, **kwargs: stream)
+
+    valid, error, files = cli._validate_project_files()
+
+    assert not valid
+    assert "Total file size exceeds" in error
+    assert files == []
+    assert stream.consumed <= 101
+
+
+@pytest.mark.parametrize("write", [cli._write_merged_requirements, cli._append_template_readmes])
+def test_template_metadata_writes_reject_destination_symlinks(tmp_path, write):
+    project = tmp_path / "project"
+    project.mkdir()
+    outside = tmp_path / "outside.txt"
+    outside.write_text("unchanged\n")
+    filename = "requirements.txt" if write is cli._write_merged_requirements else "README.md"
+    (project / filename).symlink_to(outside)
+
+    with pytest.raises(ValueError, match="Symbolic links are not allowed"):
+        write(project, ["httpx>=0.25"])
+
+    assert outside.read_text() == "unchanged\n"
+
+
+@pytest.mark.parametrize("template_id", ["../outside", "linked"])
+def test_init_rejects_templates_outside_catalog(tmp_path, monkeypatch, template_id):
+    project = tmp_path / "project"
+    project.mkdir()
+    monkeypatch.chdir(project)
+    monkeypatch.setattr(cli, "print_update_hint", lambda: None)
+    catalog = tmp_path / "catalog"
+    catalog.mkdir()
+    outside = tmp_path / "outside"
+    (outside / "tools").mkdir(parents=True)
+    (outside / "tools" / "private.py").write_text("private\n")
+    (catalog / "linked").symlink_to(outside, target_is_directory=True)
+    monkeypatch.setattr(cli, "_fetch_templates_from_github", lambda: catalog)
+
+    result = CliRunner().invoke(cli.main, ["init", ".", "--templates", template_id])
+
+    assert result.exit_code != 0
+    assert not (project / "tools" / "private.py").exists()
 
 
 def test_skill_command_installs_fetched_skill_into_current_directory(tmp_path, monkeypatch):
@@ -1143,38 +1485,6 @@ def test_init_command_reports_missing_template_from_fetched_catalog(tmp_path, mo
     assert "Template 'missing' not found" in result.output
 
 
-def test_init_command_merges_local_templates_when_github_is_unavailable(tmp_path, monkeypatch):
-    workspace = tmp_path / "workspace"
-    workspace.mkdir()
-    templates = tmp_path / "connic-awesome-agents" / "invoice"
-    (templates / "agents").mkdir(parents=True)
-    (templates / "tools").mkdir()
-    (templates / "tests" / "mocks").mkdir(parents=True)
-    (templates / "agents" / "extractor.yaml").write_text("name: invoice-extractor\n")
-    (templates / "tools" / "invoice_tools.py").write_text("def parse_invoice():\n    return {}\n")
-    (templates / "tests" / "invoice-extractor.yaml").write_text("agent: invoice-extractor\n")
-    (templates / "tests" / "mocks" / "invoice_mocks.py").write_text("def mock_lookup():\n    return {}\n")
-    (templates / "requirements.txt").write_text("pypdf>=4\n")
-    (templates / "README.md").write_text("# Invoice Agent\n\nExtract invoices.\n")
-
-    monkeypatch.chdir(workspace)
-    monkeypatch.setattr(cli, "print_update_hint", lambda: None)
-    monkeypatch.setattr(cli, "_fetch_templates_from_github", lambda: None)
-
-    result = CliRunner().invoke(cli.main, ["init", "project", "--templates=invoice"])
-
-    assert result.exit_code == 0, result.output
-    project = workspace / "project"
-    assert (project / "agents" / "invoice" / "extractor.yaml").read_text() == "name: invoice-extractor\n"
-    assert (project / "tools" / "invoice_tools.py").exists()
-    assert (project / "tests" / "invoice-extractor.yaml").read_text() == "agent: invoice-extractor\n"
-    assert (project / "tests" / "mocks" / "invoice_mocks.py").exists()
-    assert (project / "requirements.txt").read_text() == "pypdf>=4\n"
-    assert "## Invoice Agent" in (project / "README.md").read_text()
-    assert "using local connic-awesome-agents" in result.output
-    assert "Initialized with templates: invoice" in result.output
-
-
 def test_fetch_templates_from_github_extracts_main_branch_archive(tmp_path, monkeypatch):
     zip_buffer = io.BytesIO()
     with zipfile.ZipFile(zip_buffer, "w") as archive:
@@ -1289,9 +1599,17 @@ def test_fetch_templates_from_github_reports_extract_errors(tmp_path, monkeypatc
     assert result is None
 
 
-def test_init_command_stops_when_template_catalog_is_unavailable(tmp_path, monkeypatch):
+@pytest.mark.parametrize("local_catalog_location", [None, ".", ".."])
+def test_init_command_stops_when_template_catalog_is_unavailable(tmp_path, monkeypatch, local_catalog_location):
     workspace = tmp_path / "workspace"
     workspace.mkdir()
+    if local_catalog_location is not None:
+        template = workspace / local_catalog_location / "connic-awesome-agents" / "invoice"
+        (template / "agents").mkdir(parents=True)
+        (template / "tools").mkdir()
+        (template / "agents" / "extractor.yaml").write_text("name: invoice-extractor\n")
+        (template / "tools" / "invoice_tools.py").write_text("def parse_invoice():\n    return {}\n")
+        (template / "requirements.txt").write_text("pypdf>=4\n")
     monkeypatch.chdir(workspace)
     monkeypatch.setattr(cli, "print_update_hint", lambda: None)
     monkeypatch.setattr(cli, "_fetch_templates_from_github", lambda: None)
@@ -1300,7 +1618,7 @@ def test_init_command_stops_when_template_catalog_is_unavailable(tmp_path, monke
 
     assert result.exit_code == 1
     assert "Could not fetch templates" in result.output
-    assert not (workspace / "project" / "agents" / "invoice").exists()
+    assert not any(path.is_file() for path in (workspace / "project").rglob("*"))
 
 
 def test_init_command_merges_fetched_templates_into_documented_project(tmp_path, monkeypatch):
@@ -1367,6 +1685,47 @@ def test_lint_command_validates_documented_project_with_verbose_summary(tmp_path
     assert "Tools: billing.lookup_invoice" in result.output
     assert "Temperature:" in result.output
     assert "Project validation complete" in result.output
+
+
+@pytest.mark.parametrize("command", ["lint", "tools"])
+@pytest.mark.parametrize("encoding", ["utf-8", "utf-8-sig", "cp1252"])
+def test_project_inspection_discovers_python_without_importing_it(tmp_path, monkeypatch, command, encoding):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(cli, "print_update_hint", lambda: None)
+    _write_minimal_support_agent(tmp_path)
+    agent_file = tmp_path / "agents" / "support.yaml"
+    agent_file.write_text(agent_file.read_text() + "tools:\n  - billing.tickets.lookup_ticket\n")
+    (tmp_path / "tools" / "billing").mkdir(parents=True)
+    for package in (tmp_path / "tools", tmp_path / "tools" / "billing"):
+        (package / "__init__.py").write_text("import dependency_that_is_not_installed\n")
+    (tmp_path / "tools" / "billing" / "tickets.py").write_text(
+        f"# coding: {encoding.replace('-sig', '')}\n"
+        "import dependency_that_is_not_installed\n\n"
+        "async def lookup_ticket(ticket_id: str) -> dict:\n"
+        '    """Look up a support ticket’s status."""\n'
+        "    return dependency_that_is_not_installed.lookup(ticket_id)\n",
+        encoding=encoding,
+    )
+    for directory in ("middleware", "hooks"):
+        (tmp_path / directory).mkdir()
+        (tmp_path / directory / "support.py").write_text(
+            "import dependency_that_is_not_installed\n\n"
+            "async def before(context):\n"
+            "    return context\n\n"
+            "def after(context):\n"
+            "    return context\n"
+        )
+
+    result = CliRunner().invoke(cli.main, [command])
+
+    assert result.exit_code == 0, result.output
+    assert "lookup_ticket" in result.output
+    if command == "lint":
+        assert result.output.count("support: before, after") == 2
+        assert "Project validation complete" in result.output
+    else:
+        assert "billing/tickets.py:" in result.output
+        assert "lookup_ticket: Look up a support ticket’s status." in result.output
 
 
 def test_lint_command_warns_for_deprecated_reasoning_budget(tmp_path, monkeypatch):
@@ -2117,7 +2476,6 @@ def test_deploy_command_packages_project_files_and_uploads_to_default_environmen
 ):
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(cli, "print_update_hint", lambda: None)
-    monkeypatch.setattr(cli, "_run_lint", lambda quiet=False, **kwargs: quiet is True)
     (tmp_path / ".connic").write_text(json.dumps({"api_key": "cnc_live_secret", "project_id": "proj_123"}))
     (tmp_path / "agents").mkdir()
     (tmp_path / "tools").mkdir()
@@ -2130,7 +2488,10 @@ def test_deploy_command_packages_project_files_and_uploads_to_default_environmen
         "model: openai/gpt-4o\n"
         "system_prompt: Help customers.\n"
     )
-    (tmp_path / "tools" / "tickets.py").write_text("def lookup_ticket(ticket_id: str) -> dict:\n    return {}\n")
+    (tmp_path / "tools" / "tickets.py").write_text(
+        "import dependency_that_is_not_installed\n\n"
+        "def lookup_ticket(ticket_id: str) -> dict:\n    return {}\n"
+    )
     (tmp_path / "schemas" / "reply.json").write_text('{"type":"object"}\n')
     (tmp_path / "requirements.txt").write_text("httpx>=0.25\n")
 

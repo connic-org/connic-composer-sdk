@@ -1350,6 +1350,78 @@ def test_async_custom_guardrail_is_detected_and_executable(tmp_path):
     assert result.message == "Enterprise plan required."
 
 
+@pytest.mark.parametrize(
+    "name",
+    ["", ".", "..", "../outside", "nested/policy", r"nested\policy", "C:policy", r"C:\policy", "absolute"],
+)
+def test_custom_guardrail_rejects_path_names_before_executing_module(tmp_path, name):
+    if sys.platform == "win32" and ":" in name:
+        pytest.skip("Windows drive syntax is exercised as a literal filename on POSIX")
+    project_root = tmp_path / "project"
+    (project_root / "guardrails").mkdir(parents=True)
+    marker = tmp_path / "executed"
+    if name == "absolute":
+        name = str(tmp_path / "outside")
+    write_file(
+        project_root / "guardrails" / f"{name}.py",
+        f"""
+        from pathlib import Path
+
+        Path({str(marker)!r}).write_text("executed")
+
+        def check(content: str, context: dict) -> bool:
+            return True
+        """,
+    )
+    loader = ProjectLoader(str(project_root))
+
+    guardrail = loader.load_guardrail(name)
+
+    assert not marker.exists()
+    assert guardrail is None
+    assert loader.load_guardrail(name) is None
+    assert len(loader._load_errors) == 1
+    assert "must be a bare filename" in loader._load_errors[0]
+
+
+@pytest.mark.parametrize("symlink_kind", ["file", "directory", "directory-inside-project"])
+def test_custom_guardrail_rejects_symlinks_outside_guardrails_before_execution(tmp_path, symlink_kind):
+    project_root = tmp_path / "project"
+    project_root.mkdir()
+    external_directory = project_root / "tools" if symlink_kind == "directory-inside-project" else tmp_path / "outside"
+    external_file = external_directory / "policy.py"
+    marker = tmp_path / "executed"
+    write_file(
+        external_file,
+        f"""
+        from pathlib import Path
+
+        Path({str(marker)!r}).write_text("executed")
+
+        def check(content: str, context: dict) -> bool:
+            return True
+        """,
+    )
+    guardrails_directory = project_root / "guardrails"
+    try:
+        if symlink_kind.startswith("directory"):
+            guardrails_directory.symlink_to(external_directory, target_is_directory=True)
+        else:
+            guardrails_directory.mkdir()
+            (guardrails_directory / "policy.py").symlink_to(external_file)
+    except OSError:
+        pytest.skip("symlinks not available in this environment")
+    loader = ProjectLoader(str(project_root))
+
+    guardrail = loader.load_guardrail("policy")
+
+    assert not marker.exists()
+    assert guardrail is None
+    assert loader.load_guardrail("policy") is None
+    assert len(loader._load_errors) == 1
+    assert "must stay within" in loader._load_errors[0]
+
+
 def test_invalid_guardrail_configuration_is_reported_with_agent_context(tmp_path):
     write_file(
         tmp_path / "agents" / "unsafe-agent.yaml",
@@ -1603,6 +1675,7 @@ def test_tool_agent_rejects_non_custom_tool_name(tmp_path, tool_name, expected):
     [
         ("to: str, subject: str", "must declare a 'payload' parameter"),
         ("payload: dict, to: str", "remove these parameters: to"),
+        ("payload: dict, self: str", "remove these parameters: self"),
         ("payload: dict, *args", "unsupported parameters: args (*args)"),
         ("payload: dict, **kwargs", "unsupported parameters: kwargs (**kwargs)"),
     ],
@@ -2367,6 +2440,45 @@ def test_load_schema_missing_type(tmp_path):
     loader = ProjectLoader(str(tmp_path))
     with pytest.raises(ValueError, match="must have a 'type' field"):
         loader._load_schema("notype")
+
+
+@pytest.mark.parametrize(
+    "name",
+    ["", ".", "..", "../outside", "nested/order", r"nested\order", "C:order", r"C:\order", "absolute"],
+)
+def test_load_schema_rejects_path_names(tmp_path, name):
+    if sys.platform == "win32" and ":" in name:
+        pytest.skip("Windows drive syntax is exercised as a literal filename on POSIX")
+    project_root = tmp_path / "project"
+    if name == "absolute":
+        name = str(tmp_path / "outside")
+    write_file(project_root / "schemas" / f"{name}.json", '{"type": "object"}')
+    loader = ProjectLoader(str(project_root))
+
+    with pytest.raises(ValueError, match="must be a bare identifier"):
+        loader._load_schema(name)
+
+
+@pytest.mark.parametrize("symlink_kind", ["file", "directory", "directory-inside-project"])
+def test_load_schema_rejects_symlink_escape(tmp_path, symlink_kind):
+    project_root = tmp_path / "project"
+    project_root.mkdir()
+    external_directory = project_root / "schemas-sibling" if symlink_kind != "directory" else tmp_path / "outside"
+    external_file = external_directory / "order.json"
+    write_file(external_file, '{"type": "object"}')
+    schemas_directory = project_root / "schemas"
+    try:
+        if symlink_kind.startswith("directory"):
+            schemas_directory.symlink_to(external_directory, target_is_directory=True)
+        else:
+            schemas_directory.mkdir()
+            (schemas_directory / "order.json").symlink_to(external_file)
+    except OSError:
+        pytest.skip("symlinks not available in this environment")
+    loader = ProjectLoader(str(project_root))
+
+    with pytest.raises(ValueError, match="outside|must stay within"):
+        loader._load_schema("order")
 
 
 def test_discover_schemas_empty(tmp_path):

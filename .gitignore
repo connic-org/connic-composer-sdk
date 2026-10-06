@@ -49,6 +49,10 @@ htmlcov/
 /tests/unit/**/*.py[cod]
 !/tests/langchain/
 /tests/langchain/*
+!/tests/langchain/research-swarm/
+/tests/langchain/research-swarm/**
+!/tests/langchain/research-swarm/**/
+!/tests/langchain/research-swarm/tools/src/agent/utils.py
 !/tests/langchain/VALIDATION.md
 !/tests/langchain/sources/
 /tests/langchain/sources/*
