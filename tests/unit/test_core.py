@@ -350,6 +350,24 @@ def test_mcp_server_config_headers_support_context_placeholder():
     assert cfg.headers == {"Authorization": "Bearer ${MCP_TOKEN}", "X-User-Id": "${context.user_id}"}
 
 
+def test_mcp_server_config_condition_and_optional():
+    default = McpServerConfig(name="srv", url="https://mcp.example.com/mcp")
+    assert default.condition is None
+    assert default.optional is False
+
+    cfg = McpServerConfig(
+        name="analytics",
+        url="https://mcp.example.com/mcp",
+        condition="context.analytics_token != null",
+        optional=True,
+    )
+    assert cfg.condition == "context.analytics_token != null"
+    assert cfg.optional is True
+
+    with pytest.raises(ValueError, match="Invalid condition syntax"):
+        McpServerConfig(name="bad", url="https://mcp.example.com/mcp", condition="context.token !=")
+
+
 # ---------------------------------------------------------------------------
 # Tool.execute / execute_sync
 # ---------------------------------------------------------------------------

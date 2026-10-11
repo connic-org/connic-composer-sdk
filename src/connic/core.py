@@ -1,3 +1,4 @@
+import ast
 import asyncio
 import keyword
 from dataclasses import dataclass
@@ -736,6 +737,14 @@ class McpServerConfig(BaseModel):
           - name: internal-mcp
             url: http://mcp.internal:8080/mcp
             bridge: ${INTERNAL_BRIDGE_ID}
+
+        # Per-user server, attached only when middleware set a token:
+          - name: analytics
+            url: https://analytics.example.com/mcp
+            headers:
+              Authorization: "Bearer ${context.analytics_token}"
+            condition: context.analytics_token != null
+            optional: true
     """
     name: str = Field(..., description="Unique identifier for this MCP server connection")
     url: str = Field(..., description="URL of the MCP server endpoint")
@@ -762,6 +771,30 @@ class McpServerConfig(BaseModel):
             "reached without exposing them publicly. Supports ${VAR} substitution."
         ),
     )
+    condition: Optional[str] = Field(
+        default=None,
+        description=(
+            "Optional expression evaluated per run with the same grammar as conditional tools. "
+            "The server is only connected when it evaluates to true."
+        ),
+    )
+    optional: bool = Field(
+        default=False,
+        description=(
+            "When true, a failure to connect or list tools skips this server for the run "
+            "instead of failing the run. The failure is recorded in context['mcp_errors']."
+        ),
+    )
+
+    @field_validator("condition")
+    @classmethod
+    def _validate_condition(cls, condition: Optional[str]) -> Optional[str]:
+        if condition is not None:
+            try:
+                ast.parse(condition, mode="eval")
+            except SyntaxError as e:
+                raise ValueError(f"Invalid condition syntax '{condition}': {e}") from e
+        return condition
 
 
 class Tool(BaseModel):

@@ -513,6 +513,8 @@ def test_loads_mcp_server_with_bridge(tmp_path):
             bridge: ${INTERNAL_BRIDGE_ID}
           - name: public-mcp
             url: https://mcp.example.com/mcp
+            condition: context.analytics_token != null
+            optional: true
         """,
     )
 
@@ -521,6 +523,9 @@ def test_loads_mcp_server_with_bridge(tmp_path):
     servers_by_name = {s.name: s for s in agent.config.mcp_servers}
     assert servers_by_name["internal-mcp"].bridge == "${INTERNAL_BRIDGE_ID}"
     assert servers_by_name["public-mcp"].bridge is None
+    assert servers_by_name["internal-mcp"].condition is None
+    assert servers_by_name["public-mcp"].condition == "context.analytics_token != null"
+    assert servers_by_name["public-mcp"].optional is True
 
 
 @pytest.mark.parametrize("session_yaml,expected", [
