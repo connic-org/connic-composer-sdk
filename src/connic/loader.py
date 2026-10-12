@@ -12,6 +12,7 @@ from typing import Any, Dict, List, Literal, Optional, Union, get_args, get_orig
 
 import yaml
 
+from .connector_schema import VOICE_TYPES, ConnectorFile
 from .core import (
     Agent,
     AgentConfig,
@@ -113,6 +114,7 @@ class ProjectLoader:
         self.schemas_dir = self.project_root / "schemas"
         self.guardrails_dir = self.project_root / "guardrails"
         self.hooks_dir = self.project_root / "hooks"
+        self.connectors_dir = self.project_root / "connectors"
 
         # When True, use AST parsing instead of importing tool, middleware, or hook modules.
         # This avoids executing code and needing external dependencies at validation time.
@@ -298,6 +300,78 @@ class ProjectLoader:
                 return agent
 
         raise FileNotFoundError(f"Agent '{name}' not found under {self.agents_dir}")
+
+    def load_connectors(self, agents: List[Agent]) -> Dict[str, ConnectorFile]:
+        """
+        Load the connectors declared in connectors/*.yaml, keyed by file name.
+
+        A project without a connectors/ directory declares no connectors.
+        Links are checked against ``agents``.
+        """
+        if self.connectors_dir.is_symlink():
+            self._load_errors.append(f"Symbolic links are not allowed: {self.connectors_dir}")
+            return {}
+        if not self.connectors_dir.is_dir():
+            return {}
+
+        connectors: Dict[str, ConnectorFile] = {}
+        for path in sorted(self.connectors_dir.rglob("*")):
+            relative_parts = path.relative_to(self.connectors_dir).parts
+            if any(part.startswith(".") for part in relative_parts) or not path.is_file():
+                continue
+            relative = path.relative_to(self.project_root).as_posix()
+            if path.suffix == ".yml":
+                self._load_errors.append(f"{relative}: connector files must use the .yaml extension")
+                continue
+            if path.suffix != ".yaml":
+                continue
+            if len(relative_parts) > 1:
+                self._load_errors.append(f"{relative}: connector files must be directly inside connectors/")
+                continue
+            try:
+                with open(contained_source(path, self.connectors_dir), "r") as f:
+                    data = yaml.safe_load(f)
+                if not isinstance(data, dict):
+                    raise ValueError("connector file must be a YAML mapping")
+                if "key" in data:
+                    raise ValueError("'key' comes from the file name and can't be set in the file")
+                connectors[path.stem] = ConnectorFile.model_validate({**data, "key": path.stem})
+            except Exception as e:
+                self._load_errors.append(f"Failed to load connector: {relative}: {e}")
+
+        agents_by_name = {agent.config.name: agent for agent in agents}
+        names: List[tuple[Optional[str], str, str]] = []
+        for key, connector in connectors.items():
+            location = f"connectors/{key}.yaml"
+            for environment, spec in connector.specs():
+                where = f" (environment '{environment}')" if environment else ""
+                for link in spec["agents"]:
+                    agent = agents_by_name.get(link.name)
+                    if agent is None:
+                        self._load_errors.append(f"{location}{where}: agent '{link.name}' doesn't exist in agents/")
+                    elif connector.type in VOICE_TYPES and agent.config.voice_config is None:
+                        self._load_errors.append(
+                            f"{location}{where}: agent '{link.name}' needs voice_config to answer calls"
+                        )
+                    source = link.outbound.source if link.outbound else None
+                    for source_key in source or []:
+                        if source_key not in connectors:
+                            self._load_errors.append(
+                                f"{location}{where}: outbound source '{source_key}' isn't a connector in connectors/"
+                            )
+                for other_environment, other_name, other_key in names:
+                    if (
+                        other_key != key
+                        and other_name == spec["name"]
+                        and (environment is None or other_environment is None or environment == other_environment)
+                    ):
+                        self._load_errors.append(
+                            f"{location}{where}: connector name '{spec['name']}' is also used by "
+                            f"connectors/{other_key}.yaml"
+                        )
+                names.append((environment, spec["name"], key))
+
+        return connectors
 
     def _parse_tool_entry(self, tool_entry: Any, label: str) -> tuple[str, Optional[str]]:
         if isinstance(tool_entry, str):

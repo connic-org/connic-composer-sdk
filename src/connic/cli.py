@@ -312,7 +312,7 @@ def _fetch_failed_run_details(
 # File Validation Constants and Helpers
 # =============================================================================
 
-PROJECT_DIRECTORIES = ("agents", "tools", "middleware", "schemas", "guardrails", "hooks", "tests")
+PROJECT_DIRECTORIES = ("agents", "tools", "middleware", "schemas", "guardrails", "hooks", "tests", "connectors")
 
 # Allowed file extensions
 ALLOWED_EXTENSIONS = {
@@ -1372,6 +1372,22 @@ def _run_lint(verbose: bool = False, quiet: bool = False, project_root: str = ".
     for warning in deprecation_warnings:
         _warn(warning)
 
+    # Load connectors
+    if not quiet:
+        _step("Loading connectors...")
+    connectors = loader.load_connectors(agents)
+    errors.extend(loader._load_errors)
+    loader._load_errors.clear()
+    if not quiet:
+        if connectors:
+            _ok(f"{len(connectors)} connector(s) loaded")
+            for key, connector in connectors.items():
+                linked = sorted({link.name for _, spec in connector.specs() for link in spec["agents"]})
+                environments = f" [{', '.join(connector.environments)}]" if connector.environments else ""
+                _info(f"{key}: {connector.type} ({connector.mode}) → {', '.join(linked)}{environments}")
+        elif not loader.connectors_dir.exists():
+            _info("No connectors/ directory found")
+
     if quiet:
         if errors:
             for err in errors:
@@ -1380,7 +1396,8 @@ def _run_lint(verbose: bool = False, quiet: bool = False, project_root: str = ".
         if api_spec_warnings:
             _info(f"{len(api_spec_warnings)} API spec tool ref(s) skipped (validated at deploy time)")
         agent_names = [a.config.name for a in agents]
-        _ok(f"Lint passed: {len(agents)} agent(s) validated ({', '.join(agent_names)})")
+        connector_summary = f", {len(connectors)} connector(s)" if connectors else ""
+        _ok(f"Lint passed: {len(agents)} agent(s) validated ({', '.join(agent_names)}){connector_summary}")
         return True
 
     # Verbose output: print per-agent boxes
