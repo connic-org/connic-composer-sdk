@@ -657,7 +657,7 @@ async def db_find(
     Args:
         collection: Name of the collection to query.
         filter: JSON filter dict. Supports $eq, $ne, $gt, $gte, $lt, $lte,
-                $in, $nin, $and, $or, $not, $exists, $contains, $regex.
+                $in, $nin, $and, $or, $not, $exists, $contains, $regex, $near.
         sort: Sort dict. 1 = ascending, -1 = descending. e.g. {"created_at": -1}
         limit: Max documents to return (default 100, max 1000).
         skip: Documents to skip for pagination.

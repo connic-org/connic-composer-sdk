@@ -1436,8 +1436,12 @@ def _run_lint(verbose: bool = False, quiet: bool = False, project_root: str = ".
                     bridge_suffix = f" via bridge {mcp_server.bridge}" if mcp_server.bridge else ""
                     condition_suffix = f" [if: {mcp_server.condition}]" if mcp_server.condition else ""
                     optional_suffix = " (optional)" if mcp_server.optional else ""
+                    oauth_suffix = (
+                        f" [oauth: {mcp_server.oauth.app} for {mcp_server.oauth.user}]" if mcp_server.oauth else ""
+                    )
                     click.echo(escape_terminal_text(
-                        f"  │  MCP Server: {mcp_server.name} ({mcp_server.url}){bridge_suffix}{condition_suffix}{optional_suffix}"
+                        f"  │  MCP Server: {mcp_server.name} ({mcp_server.url})"
+                        f"{bridge_suffix}{condition_suffix}{optional_suffix}{oauth_suffix}"
                     ))
 
         if agent_type == "sequential":

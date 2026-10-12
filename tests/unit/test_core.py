@@ -368,6 +368,47 @@ def test_mcp_server_config_condition_and_optional():
         McpServerConfig(name="bad", url="https://mcp.example.com/mcp", condition="context.token !=")
 
 
+def test_mcp_server_config_oauth():
+    cfg = McpServerConfig(
+        name="sisense",
+        url="https://sisense.example.com/mcp",
+        headers={"X-Tenant": "${TENANT}"},
+        oauth={"app": "sisense", "user": "context.user.id", "connect_tool": True},
+    )
+    assert cfg.oauth.app == "sisense"
+    assert cfg.oauth.user == "context.user.id"
+    assert cfg.oauth.connect_tool is True
+    assert McpServerConfig(name="srv", url="https://mcp.example.com/mcp").oauth is None
+    assert McpServerConfig(
+        name="srv", url="https://mcp.example.com/mcp", oauth={"app": "srv", "user": "context.user_id"},
+    ).oauth.connect_tool is False
+
+
+@pytest.mark.parametrize("user", ["user_id", "input.user_id", "context.", "context._system", "context.user..id"])
+def test_mcp_server_config_oauth_rejects_invalid_user_path(user):
+    with pytest.raises(ValueError, match="oauth.user must be a context"):
+        McpServerConfig(name="srv", url="https://mcp.example.com/mcp", oauth={"app": "srv", "user": user})
+
+
+@pytest.mark.parametrize("oauth", [
+    {"app": "Sisense", "user": "context.user_id"},
+    {"app": "sisense", "user": "context.user_id", "scopes": "read"},
+])
+def test_mcp_server_config_oauth_rejects_invalid_fields(oauth):
+    with pytest.raises(ValueError):
+        McpServerConfig(name="srv", url="https://mcp.example.com/mcp", oauth=oauth)
+
+
+def test_mcp_server_config_oauth_rejects_authorization_header():
+    with pytest.raises(ValueError, match="cannot set an Authorization header together with oauth"):
+        McpServerConfig(
+            name="srv",
+            url="https://mcp.example.com/mcp",
+            headers={"authorization": "Bearer ${TOKEN}"},
+            oauth={"app": "srv", "user": "context.user_id"},
+        )
+
+
 # ---------------------------------------------------------------------------
 # Tool.execute / execute_sync
 # ---------------------------------------------------------------------------
