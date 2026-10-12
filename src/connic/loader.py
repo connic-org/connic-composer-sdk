@@ -584,6 +584,14 @@ class ProjectLoader:
                 config.discoverable_tools,
                 "discoverable tool",
             )
+            keypad = config.voice_config.keypad if config.voice_config else None
+            for key, tool_ref in (keypad or {}).items():
+                tool = next((tool for tool in tools if tool.ref == tool_ref), None)
+                if tool and tool.parameters.get("required"):
+                    self._load_errors.append(
+                        f"Agent '{config.name}': voice_config.keypad key '{key}' runs '{tool_ref}' without arguments, "
+                        "so the tool cannot have required parameters"
+                    )
 
         elif config.type == AgentType.TOOL:
             # Tool agents: resolve the single tool_name

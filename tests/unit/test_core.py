@@ -488,6 +488,10 @@ def test_concurrency_config_defaults():
     assert cfg.on_conflict == "queue"
 
 
+def test_concurrency_config_accepts_coalesce():
+    assert ConcurrencyConfig(key="process_id", on_conflict="coalesce").on_conflict == "coalesce"
+
+
 def test_guardrail_result_basic():
     result = GuardrailResult(passed=True)
     assert result.passed is True

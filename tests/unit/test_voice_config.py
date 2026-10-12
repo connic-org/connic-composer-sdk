@@ -3,7 +3,7 @@
 import pytest
 from pydantic import ValidationError
 
-from connic import ProjectLoader, VoiceConfig
+from connic import ProjectLoader, TransferCall, VoiceConfig
 from connic.core import AgentConfig, resolve_voice_model
 
 
@@ -189,3 +189,61 @@ session:
     assert agent.config.session.key == "context.customer_id"
     assert {tool.name for tool in agent.tools} == {"retrieval_query", "trigger_agent"}
     assert all(tool.is_predefined for tool in agent.tools)
+
+
+def test_keypad_maps_keys_to_listed_tools():
+    agent = voice_agent(
+        tools=["phone.transfer_to_operator", {"phone.transfer_to_sales": "context.verified"}],
+        voice_config={"keypad": {0: "phone.transfer_to_operator", "#": "phone.transfer_to_sales"}},
+    )
+    assert agent.voice_config.keypad == {"0": "phone.transfer_to_operator", "#": "phone.transfer_to_sales"}
+
+
+@pytest.mark.parametrize(("keypad", "error"), [
+    ({"10": "phone.transfer_to_operator"}, "keypad keys"),
+    ({"A": "phone.transfer_to_operator"}, "keypad keys"),
+    ({"1": "phone.unlisted"}, "must reference a tool listed in tools"),
+])
+def test_keypad_rejects_unknown_keys_and_unlisted_tools(keypad, error):
+    with pytest.raises(ValidationError, match=error):
+        voice_agent(tools=["phone.transfer_to_operator"], voice_config={"keypad": keypad})
+
+
+def test_keypad_tools_cannot_require_arguments(tmp_path):
+    (tmp_path / "agents").mkdir()
+    (tmp_path / "tools").mkdir()
+    (tmp_path / "tools" / "phone.py").write_text('''
+def transfer_to_operator(context: dict) -> str:
+    """Transfer the caller to an operator."""
+    return "transferring"
+
+
+def look_up_order(order_id: str) -> str:
+    """Look up an order."""
+    return order_id
+''')
+    (tmp_path / "agents" / "phone-agent.yaml").write_text('''
+version: "1.0"
+name: phone-agent
+description: Phone assistant
+model: openai/gpt-realtime
+system_prompt: Help the caller.
+tools:
+  - phone.transfer_to_operator
+  - phone.look_up_order
+voice_config:
+  keypad:
+    "0": phone.transfer_to_operator
+    "2": phone.look_up_order
+''')
+    loader = ProjectLoader(str(tmp_path))
+    loader.load_agent("phone-agent")
+    assert len(loader._load_errors) == 1
+    assert "keypad key '2'" in loader._load_errors[0]
+
+
+def test_transfer_call_requires_an_e164_number():
+    assert TransferCall("+4930123456789").number == "+4930123456789"
+    for number in ("030123456789", "+0301234", "+49 30 123456"):
+        with pytest.raises(ValueError, match="E.164"):
+            TransferCall(number)

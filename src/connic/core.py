@@ -1,6 +1,7 @@
 import ast
 import asyncio
 import keyword
+import re
 from dataclasses import dataclass
 from enum import Enum
 from typing import Any, Callable, Dict, List, Literal, Optional, Union
@@ -99,6 +100,25 @@ class AbortTool(Exception):
     def __init__(self, result: str | dict):
         self.result = result
         super().__init__(str(result))
+
+
+class TransferCall(Exception):
+    """
+    Raise this in a voice agent's tool or tool hook to transfer the caller to
+    a phone number. Speech that is already playing finishes first. The number
+    must be one of the voice connector's transfer numbers.
+
+    Tool example:
+        from connic import TransferCall
+
+        def transfer_to_sales(context: dict) -> str:
+            raise TransferCall("+4930123456789")
+    """
+    def __init__(self, number: str):
+        if not isinstance(number, str) or not re.fullmatch(r"\+[1-9][0-9]{1,14}", number):
+            raise ValueError("TransferCall requires an E.164 phone number, such as +4930123456789")
+        self.number = number
+        super().__init__(f"Transfer the call to {number}")
 
 
 class Middleware(BaseModel):
@@ -240,6 +260,21 @@ class VoiceConfig(BaseModel):
         default=None, gt=0,
         description="End the voice session after this many seconds of conversational inactivity.",
     )
+    keypad: Optional[Dict[str, str]] = Field(
+        default=None,
+        description="Map keypad keys (0-9, *, #) to tools listed in tools. A key press runs its tool directly, without a model turn.",
+    )
+
+    @field_validator("keypad", mode="before")
+    @classmethod
+    def validate_keypad(cls, value):
+        # YAML reads unquoted digit keys as integers.
+        if isinstance(value, dict):
+            value = {str(key): tool for key, tool in value.items()}
+            invalid = [key for key in value if len(key) != 1 or key not in "0123456789*#"]
+            if invalid:
+                raise ValueError(f"keypad keys must be 0-9, * or #, got: {', '.join(invalid)}")
+        return value
 
 
 def resolve_voice_model(model: str) -> tuple[Literal["openai", "azure", "gemini", "vertex_ai"], str]:
@@ -379,9 +414,12 @@ class ConcurrencyConfig(BaseModel):
           on_conflict: queue
     """
     key: str = Field(..., min_length=1, description="Dot-path to extract concurrency key from trigger payload (e.g., 'process_id', 'data.customer_id')")
-    on_conflict: Literal["queue", "drop"] = Field(
+    on_conflict: Literal["queue", "drop", "coalesce"] = Field(
         default="queue",
-        description="'queue' waits for active run to finish; 'drop' cancels the new run immediately"
+        description=(
+            "'queue' waits for active run to finish; 'drop' cancels the new run immediately; "
+            "'coalesce' keeps at most one waiting run per key, replaced by newer events"
+        )
     )
 
 
@@ -1064,6 +1102,10 @@ class AgentConfig(BaseModel):
                 for field in ("approval", "output_schema", "output_schema_dict", "fallback_model", "context_compression"):
                     if getattr(self, field) is not None:
                         raise ValueError(f"{field} is not supported for voice agents")
+                listed = {next(iter(entry), None) if isinstance(entry, dict) else entry for entry in self.tools}
+                for key, tool_ref in (self.voice_config.keypad or {}).items():
+                    if tool_ref not in listed:
+                        raise ValueError(f"voice_config.keypad key '{key}' must reference a tool listed in tools")
         elif self.type == AgentType.SEQUENTIAL:
             if self.context_compression:
                 raise ValueError("context_compression is only supported for LLM agents")
