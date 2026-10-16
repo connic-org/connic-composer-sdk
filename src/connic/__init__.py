@@ -52,7 +52,7 @@ from .core import (
 )
 from .loader import ProjectLoader
 
-__version__ = "0.1.51"
+__version__ = "0.1.52"
 
 __all__ = [
     "AbortTool",

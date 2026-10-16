@@ -1844,7 +1844,7 @@ def test_dev_command_requires_credentials_before_loading_project(tmp_path, monke
 
     assert result.exit_code == 1
     assert "API key required. Set CONNIC_API_KEY or use --api-key" in result.output
-    assert "Create one in the dashboard: Project Settings → CLI → Create Key" in result.output
+    assert "Create one in the dashboard: Project Settings → API Keys & MCP Auth → Create Key" in result.output
 
 
 def test_dev_command_rejects_loader_errors_before_creating_cloud_session(tmp_path, monkeypatch):

@@ -216,13 +216,13 @@ tools:
   - web_browser_*
 ```
 
-This includes `web_browser_open`, `web_browser_observe`, `web_browser_act`, `web_browser_screenshot`, `web_browser_mouse`, `web_browser_tabs`, `web_browser_dialog`, `web_browser_upload`, `web_browser_download`, and `web_browser_close`. Individual tool names are also supported.
+This includes `web_browser_open`, `web_browser_observe`, `web_browser_read`, `web_browser_act`, `web_browser_screenshot`, `web_browser_mouse`, `web_browser_tabs`, `web_browser_dialog`, `web_browser_eval`, `web_browser_console`, `web_browser_upload`, `web_browser_download`, `web_browser_pdf`, and `web_browser_close`. Individual tool names are also supported.
 
 Each run uses one browser, selected automatically for every browser tool call. Calling `web_browser_open` again returns "Browser already open"; use `web_browser_tabs` for additional pages. The browser closes when its run ends. Runs attached to the same Connic session reuse saved cookies and local storage when `session.browser` is enabled.
 
-The agent can type into the focused field, hold and release keys, double-click, switch tabs and popups, and handle browser dialogs. Screenshots are sent as images to vision-capable text and voice models.
+The agent can type into the focused field, hold and release keys, double-click, hover, check boxes, wait for text, URLs or elements, switch tabs and popups, and handle browser dialogs. `web_browser_observe` can limit the snapshot to interactive elements or a CSS selector. `web_browser_read()` returns the current page as Markdown. `web_browser_eval(script)` runs JavaScript in the current page and returns its JSON result. `web_browser_console()` returns recent console messages and JavaScript errors. Screenshots are sent as images to vision-capable text and voice models.
 
-`web_browser_download(target, include_content=...)` keeps the downloaded file in the browser session and returns `download_id`, `name`, and `mime_type`. Set `include_content=True` to also return the file as an attachment, or `False` for metadata only. `web_browser_upload(target, download_id)` selects that file for upload in the same session. Files are limited to 25 MiB and remain available until the browser session closes.
+`web_browser_download(target, include_content=...)` keeps the downloaded file in the browser session and returns `download_id`, `name`, and `mime_type`. Set `include_content=True` to also return the file as an attachment, or `False` for metadata only. `web_browser_pdf(include_content=...)` saves the current page as a PDF the same way. `web_browser_upload(target, download_id)` selects that file for upload in the same session. Files are limited to 25 MiB and remain available until the browser session closes.
 
 ### Human Input and Approvals
 

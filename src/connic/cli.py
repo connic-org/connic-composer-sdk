@@ -2050,13 +2050,13 @@ def dev(name: str | None, quick: bool, api_url: str, api_key: str, project_id: s
 
     if not api_key:
         _err("API key required. Set CONNIC_API_KEY or use --api-key")
-        _info("Create one in the dashboard: Project Settings → CLI → Create Key")
+        _info("Create one in the dashboard: Project Settings → API Keys & MCP Auth → Create Key")
         _info("Or run: connic login")
         sys.exit(1)
 
     if not project_id:
         _err("Project ID required. Set CONNIC_PROJECT_ID or use --project-id")
-        _info("Find your Project ID in the dashboard: Project Settings → CLI")
+        _info("Find your Project ID in the dashboard: Project Settings → General")
         _info("Or run: connic login")
         sys.exit(1)
 
@@ -2840,8 +2840,8 @@ def deploy(
         missing = "API key" if not api_key else "Project ID"
         _err(f"{missing} required.")
         _info("Run `connic login` to save your credentials interactively, or set:")
-        _info("  CONNIC_API_KEY    — Project Settings → CLI → Create Key")
-        _info("  CONNIC_PROJECT_ID — Project Settings → CLI")
+        _info("  CONNIC_API_KEY    — Project Settings → API Keys & MCP Auth → Create Key")
+        _info("  CONNIC_PROJECT_ID — Project Settings → General")
         sys.exit(1)
 
     # Lint before deploying

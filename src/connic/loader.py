@@ -47,14 +47,18 @@ PREDEFINED_TOOL_NAMES = {
     "web_read_page",        # Fetch a web page as markdown (billed at your plan's web tool pricing)
     "web_browser_open",
     "web_browser_observe",
+    "web_browser_read",
     "web_browser_act",
     "web_browser_close",
     "web_browser_screenshot",
     "web_browser_mouse",
     "web_browser_tabs",
     "web_browser_dialog",
+    "web_browser_eval",
+    "web_browser_console",
     "web_browser_upload",
     "web_browser_download",
+    "web_browser_pdf",
     # Database tools
     "db_find",              # Query documents with JSON filters
     "db_insert",            # Insert documents into a collection (auto-creates collection)

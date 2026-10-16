@@ -21,14 +21,18 @@ DOCUMENTED_PREDEFINED_TOOLS = [
     "web_read_page",
     "web_browser_open",
     "web_browser_observe",
+    "web_browser_read",
     "web_browser_act",
     "web_browser_close",
     "web_browser_screenshot",
     "web_browser_mouse",
     "web_browser_tabs",
     "web_browser_dialog",
+    "web_browser_eval",
+    "web_browser_console",
     "web_browser_upload",
     "web_browser_download",
+    "web_browser_pdf",
     "db_find",
     "db_insert",
     "db_update",
@@ -64,14 +68,18 @@ def test_documented_predefined_tools_can_be_referenced_from_agent_yaml(tmp_path)
           - web_read_page
           - web_browser_open
           - web_browser_observe
+          - web_browser_read
           - web_browser_act
           - web_browser_close
           - web_browser_screenshot
           - web_browser_mouse
           - web_browser_tabs
           - web_browser_dialog
+          - web_browser_eval
+          - web_browser_console
           - web_browser_upload
           - web_browser_download
+          - web_browser_pdf
           - db_find
           - db_insert
           - db_update
@@ -92,20 +100,30 @@ def test_browser_tool_parameters_expose_actions_without_internal_session_control
     loader = ProjectLoader(str(tmp_path))
     schemas = {
         name: loader._generate_schema(getattr(connic_tools, name))
-        for name in ("web_browser_open", "web_browser_observe", "web_browser_act", "web_browser_close", "web_browser_screenshot", "web_browser_mouse")
+        for name in (
+            "web_browser_open", "web_browser_observe", "web_browser_read", "web_browser_act",
+            "web_browser_close", "web_browser_screenshot", "web_browser_mouse",
+        )
     }
 
     assert schemas["web_browser_open"]["required"] == ["url"]
     assert set(schemas["web_browser_open"]["properties"]) == {"url"}
-    for name in ("web_browser_observe", "web_browser_close", "web_browser_screenshot"):
+    for name in ("web_browser_read", "web_browser_close"):
         assert schemas[name]["required"] == []
         assert set(schemas[name]["properties"]) == set()
+    assert schemas["web_browser_observe"]["required"] == []
+    assert set(schemas["web_browser_observe"]["properties"]) == {"interactive_only", "selector", "include_urls"}
+    assert schemas["web_browser_observe"]["properties"]["interactive_only"]["type"] == "boolean"
+    assert schemas["web_browser_screenshot"]["required"] == []
+    assert set(schemas["web_browser_screenshot"]["properties"]) == {"full_page"}
     action_schema = schemas["web_browser_act"]
     assert action_schema["required"] == ["action"]
     assert set(action_schema["properties"]) == {"action", "target", "value"}
     assert action_schema["properties"]["action"]["type"] == "string"
     assert action_schema["properties"]["action"]["enum"] == [
-        "click", "double_click", "fill", "type", "select", "press", "keydown", "keyup", "scroll", "navigate", "back", "wait"
+        "click", "double_click", "hover", "fill", "type", "select", "check", "uncheck", "press", "keydown", "keyup",
+        "scroll", "scroll_into_view", "navigate", "back", "forward", "reload",
+        "wait", "wait_for_text", "wait_for_url", "wait_for_selector", "wait_for_network_idle",
     ]
     assert action_schema["properties"]["target"]["type"] == "string"
     assert action_schema["properties"]["value"]["type"] == "string"
@@ -2082,9 +2100,10 @@ def test_browser_wildcard_loads_concrete_predefined_tools(tmp_path, validation_o
     browser_tools = getattr(agent, tool_list)
 
     assert {tool.name for tool in browser_tools} == {
-        "web_browser_open", "web_browser_observe", "web_browser_act", "web_browser_close",
+        "web_browser_open", "web_browser_observe", "web_browser_read", "web_browser_act", "web_browser_close",
         "web_browser_screenshot", "web_browser_mouse",
-        "web_browser_tabs", "web_browser_dialog", "web_browser_upload", "web_browser_download",
+        "web_browser_tabs", "web_browser_dialog", "web_browser_eval", "web_browser_console", "web_browser_upload",
+        "web_browser_download", "web_browser_pdf",
     }
     assert all(tool.is_predefined and tool.ref == tool.name for tool in browser_tools)
     assert not loader._load_errors
@@ -2092,7 +2111,7 @@ def test_browser_wildcard_loads_concrete_predefined_tools(tmp_path, validation_o
         assert {tool.name for tool in agent.tools} == {"search_tools", "use_tool"}
 
 
-@pytest.mark.parametrize("pattern,count", [("web_browser_*", 10), ("db_*", 7), ("*_delete", 2)])
+@pytest.mark.parametrize("pattern,count", [("web_browser_*", 14), ("db_*", 7), ("*_delete", 2)])
 def test_predefined_wildcard_applies_condition_to_each_tool(tmp_path, pattern, count):
     write_file(
         tmp_path / "agents" / "browser.yaml",
@@ -3598,6 +3617,9 @@ def test_browser_file_and_tab_schema_exposes_only_agent_inputs(tmp_path):
     for name, required in (
         ("tabs", []),
         ("dialog", ["action"]),
+        ("eval", ["script"]),
+        ("console", []),
+        ("pdf", ["include_content"]),
         ("upload", ["target", "download_id"]),
         ("download", ["target", "include_content"]),
     ):

@@ -441,12 +441,48 @@ async def web_browser_download(target: str, include_content: bool) -> Union[Dict
     )
 
 
+async def web_browser_console() -> Dict[str, Any]:
+    """Read recent console messages and JavaScript errors from the browser.
+
+    Returns:
+        status, url, console_messages with type and text (the 50 most recent),
+        and page_errors with text, line and column (the 20 most recent).
+        Entries accumulate while the browser is open, newest last.
+        console_truncated means older entries or long text were cut off.
+    """
+
+    raise RuntimeError(
+        "web_browser_console will be auto-injected when running via connic CLI or after deployment. "
+        "Run 'connic test' to test your agents with predefined tools."
+    )
+
+
+async def web_browser_pdf(include_content: bool) -> Union[Dict[str, Any], List[Any]]:
+    """Save the current page as a PDF. Maximum size: 25 MiB.
+
+    Args:
+        include_content: Attach the PDF for the agent to read. False returns
+            only download_id and file metadata.
+
+    Returns:
+        Metadata containing download_id, name and mime_type, plus a PDF attachment
+        when include_content is true. Pass download_id to web_browser_upload in
+        the same session to upload it. The PDF remains in the browser until the
+        session closes.
+    """
+
+    raise RuntimeError(
+        "web_browser_pdf will be auto-injected when running via connic CLI or after deployment. "
+        "Run 'connic test' to test your agents with predefined tools."
+    )
+
+
 async def web_browser_upload(target: str, download_id: str) -> Dict[str, Any]:
     """Select a previously downloaded file in a browser upload field.
 
     Args:
         target: File input reference such as e11 or @e11 from the latest snapshot.
-        download_id: ID returned by web_browser_download in this session.
+        download_id: ID returned by web_browser_download or web_browser_pdf in this session.
 
     Returns:
         Updated page after selecting the downloaded file. Submit the form
@@ -476,6 +512,29 @@ async def web_browser_dialog(
 
     raise RuntimeError(
         "web_browser_dialog will be auto-injected when running via connic CLI or after deployment. "
+        "Run 'connic test' to test your agents with predefined tools."
+    )
+
+
+async def web_browser_eval(script: str) -> Dict[str, Any]:
+    """Run JavaScript in the current page and return its result.
+
+    Args:
+        script: JavaScript expression of up to 16384 characters, evaluated in the
+            active tab. The value of the last expression is returned and promises
+            are awaited. Wrap statements that use return or await in an async
+            function, such as (async () => { ... })().
+
+    Returns:
+        status, result, url and a fresh snapshot. result is the expression's
+        value as JSON, so return plain data rather than DOM nodes. Results
+        over 32000 characters set result_truncated and are cut off, with
+        non-string values returned as JSON text. Script errors return
+        error_code script_error with the error message.
+    """
+
+    raise RuntimeError(
+        "web_browser_eval will be auto-injected when running via connic CLI or after deployment. "
         "Run 'connic test' to test your agents with predefined tools."
     )
 
@@ -526,12 +585,25 @@ async def web_browser_open(url: str) -> Dict[str, Any]:
     )
 
 
-async def web_browser_observe() -> Dict[str, Any]:
+async def web_browser_observe(
+    interactive_only: bool = False,
+    selector: Optional[str] = None,
+    include_urls: bool = False,
+) -> Dict[str, Any]:
     """Read the current browser page and refresh its element references.
+
+    Args:
+        interactive_only: Include only buttons, links, inputs and other
+            elements the agent can act on.
+        selector: CSS selector, such as main or form, that limits the
+            snapshot to one region of the page.
+        include_urls: Include the URL of each link.
 
     Returns:
         status, url and a snapshot containing page text and current
         element references. Use the latest references when acting on the page.
+        Snapshots are cut off at 32000 characters; narrow long pages with
+        interactive_only or selector.
     """
 
     raise RuntimeError(
@@ -541,34 +613,61 @@ async def web_browser_observe() -> Dict[str, Any]:
 
 
 async def web_browser_act(
-    action: Literal["click", "double_click", "fill", "type", "select", "press", "keydown", "keyup", "scroll", "navigate", "back", "wait"],
+    action: Literal[
+        "click", "double_click", "hover", "fill", "type", "select", "check", "uncheck", "press", "keydown", "keyup",
+        "scroll", "scroll_into_view", "navigate", "back", "forward", "reload",
+        "wait", "wait_for_text", "wait_for_url", "wait_for_selector", "wait_for_network_idle",
+    ],
     target: Optional[str] = None,
     value: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Perform one browser action and return the resulting page snapshot.
 
     Args:
-        action: click, double_click, fill, type, select, press, keydown, keyup,
-            scroll, navigate, back or wait.
+        action: click, double_click, hover, fill, type, select, check, uncheck,
+            press, keydown, keyup, scroll, scroll_into_view, navigate, back,
+            forward, reload, wait, wait_for_text, wait_for_url, wait_for_selector
+            or wait_for_network_idle.
         target: Element reference such as e11 or @e11 from the latest snapshot
-            for click, double_click, fill or select; optional for type, press, keydown
-            or keyup. Omit target to type into the currently focused field. Do not invent selectors
-            or references.
+            for click, double_click, hover, fill, select, check, uncheck or
+            scroll_into_view; optional for type, press, keydown or keyup. Omit
+            target to type into the currently focused field. Do not invent
+            references.
         value: Text for fill (replace) or type (insert), option value for select,
             key such as Enter for press or Shift for keydown/keyup, direction (up/down/left/right) for scroll, or URL for navigate.
             For wait, milliseconds from 100 to 10000, with no target.
-            Omit for click, double_click and back. keydown holds a key until keyup.
+            For wait_for_text, text to appear on the page; for wait_for_url, a URL
+            or pattern such as **/dashboard; for wait_for_selector, a CSS selector.
+            These waits give up after 10 seconds.
+            Omit for click, double_click, hover, check, uncheck, scroll_into_view,
+            back, forward, reload and wait_for_network_idle. keydown holds a key until keyup.
 
     Returns:
         status, url and a fresh snapshot, including after a blocked
         action. Disabled targets return an error without clicking or typing.
-        Use wait when the page is loading instead of repeating the previous action.
+        Use wait or a wait_for action when the page is loading instead of repeating the previous action.
         action_completed means the action ran even if observing the page failed.
         If the outcome is unknown, observe before deciding whether to act again.
     """
 
     raise RuntimeError(
         "web_browser_act will be auto-injected when running via connic CLI or after deployment. "
+        "Run 'connic test' to test your agents with predefined tools."
+    )
+
+
+async def web_browser_read() -> Dict[str, Any]:
+    """Read the current page's content as Markdown.
+
+    Uses the page as rendered in this browser, including content behind a login.
+
+    Returns:
+        status, url and content. Content over 32000 characters is cut off and
+        sets content_truncated. Use web_browser_observe for element references.
+    """
+
+    raise RuntimeError(
+        "web_browser_read will be auto-injected when running via connic CLI or after deployment. "
         "Run 'connic test' to test your agents with predefined tools."
     )
 
@@ -586,8 +685,13 @@ async def web_browser_close() -> Dict[str, Any]:
     )
 
 
-async def web_browser_screenshot() -> Union[Dict[str, Any], List[Any]]:
+async def web_browser_screenshot(full_page: bool = False) -> Union[Dict[str, Any], List[Any]]:
     """Capture the visible browser viewport and return an image the model can see.
+
+    Args:
+        full_page: Capture the whole scrollable page instead of the visible
+            viewport. Full-page images cannot be used for mouse coordinates,
+            and very long pages can exceed the 10 MB image limit.
 
     Returns:
         Page metadata and a PNG image attachment. width and height are image
@@ -850,14 +954,18 @@ __all__ = [
     "web_read_page",
     "web_browser_open",
     "web_browser_observe",
+    "web_browser_read",
     "web_browser_act",
     "web_browser_close",
     "web_browser_screenshot",
     "web_browser_mouse",
     "web_browser_tabs",
     "web_browser_dialog",
+    "web_browser_eval",
+    "web_browser_console",
     "web_browser_upload",
     "web_browser_download",
+    "web_browser_pdf",
     # Database tools
     "db_find",
     "db_insert",
