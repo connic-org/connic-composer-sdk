@@ -80,7 +80,7 @@ PLUGIN_INSTALLS = (
 def _h1(title: str) -> None:
     """Top-of-command banner. Same shape across every CLI subcommand."""
     click.echo()
-    click.secho(escape_terminal_text(f"  Connic {title}"), fg="cyan", bold=True)
+    click.secho(escape_terminal_text(f"  connic {title}"), fg="cyan", bold=True)
     click.echo("  " + "─" * 30)
     click.echo()
 
@@ -576,12 +576,12 @@ def _package_project_files() -> tuple[bytes, list[Path]]:
 def _apply_update_action(action: UpdateAction | None) -> bool:
     if action in {UpdateAction.BOTH, UpdateAction.SKILL}:
         if not _update_skill_installations():
-            _fail_and_exit("Could not update every installed Connic skill or plugin.")
+            _fail_and_exit("Could not update every installed connic skill or plugin.")
 
     if action in {UpdateAction.BOTH, UpdateAction.SDK}:
-        _step("Updating the Connic SDK...")
+        _step("Updating the connic SDK...")
         if not update_sdk():
-            _fail_and_exit("Could not update the Connic SDK. Run `pip install --upgrade connic-composer-sdk`.")
+            _fail_and_exit("Could not update the connic SDK. Run `pip install --upgrade connic-composer-sdk`.")
         _ok("SDK updated")
         return True
 
@@ -592,7 +592,7 @@ def _apply_update_action(action: UpdateAction | None) -> bool:
 @click.version_option(version=__version__, prog_name="connic")
 @click.pass_context
 def main(ctx: click.Context):
-    """Connic Composer SDK - Build agents with code."""
+    """connic composer SDK - Build agents with code."""
     if ctx.invoked_subcommand in {"skill", "update"}:
         return
 
@@ -608,7 +608,7 @@ def _write_essential_files(base_path: Path, quiet: bool = False):
     # .gitignore
     gitignore = project_destination(base_path / ".gitignore", base_path)
     if not gitignore.exists():
-        gitignore.write_text('''# Connic
+        gitignore.write_text('''# connic
 .connic
 
 # Python
@@ -648,9 +648,9 @@ Thumbs.db
     # README.md
     readme = project_destination(base_path / "README.md", base_path)
     if not readme.exists():
-        readme.write_text('''# Connic Agent Project
+        readme.write_text('''# connic Agent Project
 
-This project contains AI agents built with the Connic Composer SDK.
+This project contains AI agents built with the connic composer SDK.
 
 ## Structure
 
@@ -684,12 +684,12 @@ This project contains AI agents built with the Connic Composer SDK.
 
 4. Run `connic dev` to choose a reusable environment or a quick test with hot reload.
 
-5. Connect your repository to Connic and push to deploy, or run `connic deploy`
+5. Connect your repository to connic and push to deploy, or run `connic deploy`
    to choose an environment and confirm the deployment.
 
 ## Documentation
 
-See the [Connic Composer docs]({base_url}/docs/v1/build/project-structure) for:
+See the [connic composer docs]({base_url}/docs/v1/build/project-structure) for:
 - [Agent Configuration]({base_url}/docs/v1/build/agent-configuration)
 - [Writing Tools]({base_url}/docs/v1/build/tools)
 - [Middleware]({base_url}/docs/v1/build/middleware)
@@ -705,7 +705,7 @@ See the [Connic Composer docs]({base_url}/docs/v1/build/project-structure) for:
         _info("1. Create your first agent anywhere under agents/")
         _info("2. Run `connic lint` to validate your project")
         _info("3. Push to your connected repository to deploy")
-        _done(f"Initialized Connic project in {base_path.resolve()}")
+        _done(f"Initialized connic project in {base_path.resolve()}")
 
 
 def _fetch_templates_from_github() -> Path | None:
@@ -760,7 +760,7 @@ def _fetch_skill_from_github() -> Path | None:
 
 
 def _install_skill(source: Path, destination: Path = SKILL_DESTINATION, *, base_path: Path = Path(".")) -> None:
-    """Replace the project-local Connic skill with source contents."""
+    """Replace the project-local connic skill with source contents."""
     project_destination(destination, base_path)
     for path in source.rglob("*"):
         contained_source(path, source)
@@ -775,10 +775,10 @@ def _install_skill(source: Path, destination: Path = SKILL_DESTINATION, *, base_
 
 
 def _install_skill_from_github(base_path: Path = Path(".")) -> None:
-    _step("Fetching the Connic skill from GitHub...")
+    _step("Fetching the connic skill from GitHub...")
     source = _fetch_skill_from_github()
     if not source:
-        _fail_and_exit("Could not fetch the Connic skill. Try again from a networked environment.")
+        _fail_and_exit("Could not fetch the connic skill. Try again from a networked environment.")
     _ok("Fetched")
 
     for relative_destination in SKILL_DESTINATIONS:
@@ -830,7 +830,7 @@ def _update_installed_plugins(
 ) -> bool:
     succeeded = not check_failures
     for label in check_failures:
-        _warn(f"Could not check the installed Connic plugin for {label}.")
+        _warn(f"Could not check the installed connic plugin for {label}.")
 
     if any(installation.executable == "codex" for installation in installations):
         succeeded = _run_plugin_update(
@@ -890,10 +890,10 @@ def _update_skill_installations(base_path: Path = Path(".")) -> bool:
         if (base_path / destination / "SKILL.md").is_file()
     )
     if destinations:
-        _step("Fetching the Connic skill from GitHub...")
+        _step("Fetching the connic skill from GitHub...")
         source = _fetch_skill_from_github()
         if not source:
-            _warn("Could not fetch the Connic skill from GitHub.")
+            _warn("Could not fetch the connic skill from GitHub.")
             return False
         _ok("Fetched")
         for destination in destinations:
@@ -904,7 +904,7 @@ def _update_skill_installations(base_path: Path = Path(".")) -> bool:
     installations, check_failures = get_installed_plugins()
     plugins_updated = _update_installed_plugins(installations, check_failures)
     if not destinations and not installations and not check_failures:
-        _info("No installed Connic skills or plugins found")
+        _info("No installed connic skills or plugins found")
     return plugins_updated
 
 
@@ -942,7 +942,7 @@ def _plugin_is_installed(executable: str) -> bool:
 
 
 def _install_plugin_for_client(label: str, commands: tuple[tuple[str, ...], ...]) -> None:
-    _step(f"Installing the Connic plugin for {label}...")
+    _step(f"Installing the connic plugin for {label}...")
     try:
         subprocess.run(commands[0], check=False)
         result = subprocess.run(commands[1], check=False)
@@ -965,10 +965,10 @@ def _offer_plugin_installs() -> None:
     if _can_prompt_for_plugins():
         for label, executable, commands in detected:
             if _plugin_is_installed(executable):
-                _info(f"Connic plugin is already installed for {label}")
+                _info(f"connic plugin is already installed for {label}")
                 continue
             if click.confirm(
-                f"  {label} detected. Install the Connic plugin (skill + MCP)?",
+                f"  {label} detected. Install the connic plugin (skill + MCP)?",
                 default=False,
             ):
                 _install_plugin_for_client(label, commands)
@@ -1063,20 +1063,20 @@ def _append_template_readmes(base_path: Path, template_readmes: list[str]) -> No
 @click.option(
     "--skill",
     is_flag=True,
-    help="Install the Connic skill and offer full plugins for detected Codex and Claude Code clients",
+    help="Install the connic skill and offer full plugins for detected Codex and Claude Code clients",
 )
 def init(name: str, templates: str | None, skill: bool):
-    """Initialize a new Connic project.
+    """Initialize a new connic project.
 
     Creates the project structure. Use --templates to add agent templates from
-    connic-awesome-agents. Use --skill to install the Connic skill and optionally
+    connic-awesome-agents. Use --skill to install the connic skill and optionally
     the full plugin for detected coding clients. Without --templates, creates a
     clean scaffold only.
 
     Examples:
         connic init                                # Clean project, no examples
         connic init my-project                     # Clean project in new directory
-        connic init my-project --skill             # Clean project with Connic skill
+        connic init my-project --skill             # Clean project with connic skill
         connic init . --templates=invoice          # Project with invoice template
         connic init app --templates=invoice --skill
     """
@@ -1149,17 +1149,17 @@ def init(name: str, templates: str | None, skill: bool):
         _info("1. Create your first agent anywhere under agents/")
         _info("2. Run `connic lint` to validate your project")
         _info("3. Push to your connected repository to deploy")
-        _done(f"Initialized Connic project in {base_path.resolve()}")
+        _done(f"Initialized connic project in {base_path.resolve()}")
 
 
 @main.command()
 def skill():
-    """Install the Connic skill and offer plugins for detected coding clients."""
+    """Install the connic skill and offer plugins for detected coding clients."""
     _h1("Skill")
 
     _install_skill_from_github()
     _offer_plugin_installs()
-    _done("Connic skill is ready.")
+    _done("connic skill is ready.")
 
 
 def _require_complete_update_check(status) -> None:
@@ -1182,19 +1182,19 @@ def _require_complete_update_check(status) -> None:
 
 def _report_current_versions(status) -> None:
     if status.installed_skill_paths or status.installed_plugins:
-        _ok("SDK and detected Connic skill/plugin installations are up to date")
+        _ok("SDK and detected connic skill/plugin installations are up to date")
     else:
-        _ok("SDK is up to date; no installed Connic skill or plugin was detected")
+        _ok("SDK is up to date; no installed connic skill or plugin was detected")
 
 
 @main.command()
 @click.option("--check", is_flag=True, help="Check for updates without installing them")
-@click.option("--sdk", "sdk_only", is_flag=True, help="Update only the Connic SDK")
+@click.option("--sdk", "sdk_only", is_flag=True, help="Update only the connic SDK")
 @click.option(
     "--skill",
     "skill_only",
     is_flag=True,
-    help="Update only installed Connic skills and client plugins",
+    help="Update only installed connic skills and client plugins",
 )
 @click.option(
     "--enable-reminders",
@@ -1992,12 +1992,12 @@ def _choose_dev_environment(client: "httpx.Client", project_id: str, config: dic
 @main.command()
 @click.argument("name", required=False, default=None)
 @click.option("--quick", is_flag=True, help="Start an ephemeral test without prompting; deleted on exit.")
-@click.option("--api-url", envvar="CONNIC_API_URL", default=DEFAULT_API_URL, help="Connic API URL")
-@click.option("--api-key", envvar="CONNIC_API_KEY", default=None, help="Connic API key")
-@click.option("--project-id", envvar="CONNIC_PROJECT_ID", default=None, help="Connic project ID")
+@click.option("--api-url", envvar="CONNIC_API_URL", default=DEFAULT_API_URL, help="connic API URL")
+@click.option("--api-key", envvar="CONNIC_API_KEY", default=None, help="connic API key")
+@click.option("--project-id", envvar="CONNIC_PROJECT_ID", default=None, help="connic project ID")
 def dev(name: str | None, quick: bool, api_url: str, api_key: str, project_id: str):
     """
-    Start a dev session with hot-reload against Connic cloud.
+    Start a dev session with hot-reload against connic cloud.
 
     Creates an isolated test environment and syncs your local source files
     for rapid development. Source changes are reflected in 2-5 seconds;
@@ -2515,12 +2515,12 @@ def dev(name: str | None, quick: bool, api_url: str, api_key: str, project_id: s
 @click.option("--filter", "filter_name", help="Run only tests whose name matches this string.")
 @click.option("--coverage", is_flag=True, help="Print local test coverage per agent and exit (no backend call, no credentials needed).")
 @click.option("--json", "as_json", is_flag=True, help="Emit machine-readable JSON for CI.")
-@click.option("--api-url", envvar="CONNIC_API_URL", default=DEFAULT_API_URL, help="Connic API URL")
-@click.option("--api-key", envvar="CONNIC_API_KEY", default=None, help="Connic API key")
-@click.option("--project-id", envvar="CONNIC_PROJECT_ID", default=None, help="Connic project ID")
+@click.option("--api-url", envvar="CONNIC_API_URL", default=DEFAULT_API_URL, help="connic API URL")
+@click.option("--api-key", envvar="CONNIC_API_KEY", default=None, help="connic API key")
+@click.option("--project-id", envvar="CONNIC_PROJECT_ID", default=None, help="connic project ID")
 def test(env: str | None, filter_name: str | None, coverage: bool, as_json: bool, api_url: str, api_key: str | None, project_id: str | None):
     """
-    Run the test suite from ./tests against a Connic environment.
+    Run the test suite from ./tests against a connic environment.
 
     Discovers `.yaml` suites recursively under `tests/`, invokes each agent N
     times in the chosen environment, and asserts on output and tool-call
@@ -2669,12 +2669,12 @@ def test(env: str | None, filter_name: str | None, coverage: bool, as_json: bool
 
 @main.command()
 @click.option("--token", envvar="CONNIC_TOKEN", help="Login token (project_id:api_key) from the dashboard")
-@click.option("--api-key", envvar="CONNIC_API_KEY", help="Connic API key")
-@click.option("--project-id", envvar="CONNIC_PROJECT_ID", help="Connic project ID")
-@click.option("--base-url", envvar="CONNIC_BASE_URL", default=DEFAULT_BASE_URL, help="Connic dashboard URL")
+@click.option("--api-key", envvar="CONNIC_API_KEY", help="connic API key")
+@click.option("--project-id", envvar="CONNIC_PROJECT_ID", help="connic project ID")
+@click.option("--base-url", envvar="CONNIC_BASE_URL", default=DEFAULT_BASE_URL, help="connic dashboard URL")
 def login(token: str | None, api_key: str | None, project_id: str | None, base_url: str):
     """
-    Save Connic credentials for the current project.
+    Save connic credentials for the current project.
 
     Creates a .connic file with your API key and project ID.
     Run without options for interactive mode - opens the dashboard
@@ -2697,7 +2697,7 @@ def login(token: str | None, api_key: str | None, project_id: str | None, base_u
     if not api_key or not project_id:
         login_url = f"{base_url}/projects?to=/settings/cli?add=1"
 
-        _step("Opening the Connic dashboard to create an API key...")
+        _step("Opening the connic dashboard to create an API key...")
         _info("If the browser doesn't open, visit:")
         click.secho(f"    {login_url}", fg="cyan", underline=True)
 
@@ -2741,7 +2741,7 @@ def _parse_login_token(token: str) -> tuple[str, str]:
 
 
 # =============================================================================
-# Deploy Command - Upload and deploy to Connic cloud
+# Deploy Command - Upload and deploy to connic cloud
 # =============================================================================
 
 def _find_deploy_environment(environments: list[dict], value: str) -> dict:
@@ -2785,9 +2785,9 @@ def _choose_deploy_environment(environments: list[dict]) -> dict:
 @click.option("--env", help="Target environment name (or ID).")
 @click.option("--list", "list_environments", is_flag=True, help="List environments available for deployment and exit.")
 @click.option("--yes", "-y", is_flag=True, help="Skip confirmation; requires an explicit --env.")
-@click.option("--api-url", envvar="CONNIC_API_URL", default=DEFAULT_API_URL, help="Connic API URL")
-@click.option("--api-key", envvar="CONNIC_API_KEY", default=None, help="Connic API key")
-@click.option("--project-id", envvar="CONNIC_PROJECT_ID", default=None, help="Connic project ID")
+@click.option("--api-url", envvar="CONNIC_API_URL", default=DEFAULT_API_URL, help="connic API URL")
+@click.option("--api-key", envvar="CONNIC_API_KEY", default=None, help="connic API key")
+@click.option("--project-id", envvar="CONNIC_PROJECT_ID", default=None, help="connic project ID")
 @click.option("--skip-tests", is_flag=True, help="Skip the test phase even if tests/ exists.")
 def deploy(
     env: str | None,
@@ -2799,7 +2799,7 @@ def deploy(
     skip_tests: bool,
 ):
     """
-    Deploy local agents to Connic cloud.
+    Deploy local agents to connic cloud.
     
     Packages your local agent files and uploads them for deployment.
     Only works for projects without a connected git repository.
@@ -2909,7 +2909,7 @@ def deploy(
             _ok(f"Environment: {target_env['name']}")
 
     except httpx.ConnectError:
-        _fail_and_exit("Failed to connect to Connic API")
+        _fail_and_exit("Failed to connect to connic API")
 
     # Package files into tarball
     _step("Packaging upload...")

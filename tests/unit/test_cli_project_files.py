@@ -494,7 +494,7 @@ def test_write_essential_files_creates_minimal_scaffold_without_overwriting_exis
 
     cli._write_essential_files(tmp_path, quiet=True)
 
-    assert (tmp_path / ".gitignore").read_text().startswith("# Connic")
+    assert (tmp_path / ".gitignore").read_text().startswith("# connic")
     assert "Add your tool dependencies" in (tmp_path / "requirements.txt").read_text()
     assert (tmp_path / "README.md").read_text() == "# Existing\n"
 
@@ -551,7 +551,7 @@ def test_write_merged_requirements_deduplicates_by_package_name(tmp_path):
 def test_install_skill_replaces_existing_project_skill(tmp_path):
     source = tmp_path / "source"
     (source / "references").mkdir(parents=True)
-    (source / "SKILL.md").write_text("# Connic\n")
+    (source / "SKILL.md").write_text("# connic\n")
     (source / "references" / "agent-yaml.md").write_text("agent docs\n")
     destination = tmp_path / ".agents" / "skills" / "connic"
     destination.mkdir(parents=True)
@@ -559,7 +559,7 @@ def test_install_skill_replaces_existing_project_skill(tmp_path):
 
     cli._install_skill(source, destination, base_path=tmp_path)
 
-    assert (destination / "SKILL.md").read_text() == "# Connic\n"
+    assert (destination / "SKILL.md").read_text() == "# connic\n"
     assert (destination / "references" / "agent-yaml.md").read_text() == "agent docs\n"
     assert not (destination / "stale.md").exists()
 
@@ -725,7 +725,7 @@ def test_skill_command_installs_fetched_skill_into_current_directory(tmp_path, m
     monkeypatch.setattr(cli, "print_update_hint", lambda: None)
     source = tmp_path / "fetched-skill"
     source.mkdir(parents=True)
-    (source / "SKILL.md").write_text("# Connic\n")
+    (source / "SKILL.md").write_text("# connic\n")
     monkeypatch.setattr(cli, "_fetch_skill_from_github", lambda: source)
     plugin_offers = []
     monkeypatch.setattr(cli, "_offer_plugin_installs", lambda: plugin_offers.append(True))
@@ -733,10 +733,10 @@ def test_skill_command_installs_fetched_skill_into_current_directory(tmp_path, m
     result = CliRunner().invoke(cli.main, ["skill"])
 
     assert result.exit_code == 0, result.output
-    assert (tmp_path / ".agents" / "skills" / "connic" / "SKILL.md").read_text() == "# Connic\n"
-    assert (tmp_path / ".claude" / "skills" / "connic" / "SKILL.md").read_text() == "# Connic\n"
+    assert (tmp_path / ".agents" / "skills" / "connic" / "SKILL.md").read_text() == "# connic\n"
+    assert (tmp_path / ".claude" / "skills" / "connic" / "SKILL.md").read_text() == "# connic\n"
     assert "Fetched" in result.output
-    assert "Connic skill is ready" in result.output
+    assert "connic skill is ready" in result.output
     assert plugin_offers == [True]
 
 
@@ -764,8 +764,8 @@ def test_plugin_offer_prompts_each_detected_client_and_installs_accepted_client(
     cli._offer_plugin_installs()
 
     assert [prompt for prompt, _ in prompts] == [
-        "  Codex detected. Install the Connic plugin (skill + MCP)?",
-        "  Claude Code detected. Install the Connic plugin (skill + MCP)?",
+        "  Codex detected. Install the connic plugin (skill + MCP)?",
+        "  Claude Code detected. Install the connic plugin (skill + MCP)?",
     ]
     assert [default for _, default in prompts] == [False, False]
     assert commands == [
@@ -814,7 +814,7 @@ def test_noninteractive_plugin_offer_only_prints_setup_link(tmp_path, monkeypatc
     monkeypatch.chdir(tmp_path)
     source = tmp_path / "fetched-skill"
     source.mkdir()
-    (source / "SKILL.md").write_text("# Connic\n")
+    (source / "SKILL.md").write_text("# connic\n")
     monkeypatch.setattr(cli, "print_update_hint", lambda: None)
     monkeypatch.setattr(cli, "_fetch_skill_from_github", lambda: source)
     monkeypatch.setattr(cli, "_can_prompt_for_plugins", lambda: False)
@@ -848,7 +848,7 @@ def test_plugin_install_attempts_install_when_marketplace_add_fails(monkeypatch)
 def test_fetch_skill_from_github_extracts_main_branch_archive(monkeypatch):
     zip_buffer = io.BytesIO()
     with zipfile.ZipFile(zip_buffer, "w") as archive:
-        archive.writestr("connic-skill-main/plugins/connic/skills/connic/SKILL.md", "# Connic\n")
+        archive.writestr("connic-skill-main/plugins/connic/skills/connic/SKILL.md", "# connic\n")
         archive.writestr("connic-skill-main/plugins/connic/skills/connic/references/agent-yaml.md", "agent docs\n")
 
     class Response:
@@ -878,7 +878,7 @@ def test_fetch_skill_from_github_extracts_main_branch_archive(monkeypatch):
     extracted = cli._fetch_skill_from_github()
 
     assert extracted is not None
-    assert (extracted / "SKILL.md").read_text() == "# Connic\n"
+    assert (extracted / "SKILL.md").read_text() == "# connic\n"
     assert (extracted / "references" / "agent-yaml.md").read_text() == "agent docs\n"
 
 
@@ -932,10 +932,10 @@ def test_init_command_creates_documented_minimal_project(tmp_path, monkeypatch):
     assert (project / "tools").is_dir()
     assert (project / "middleware").is_dir()
     assert (project / "schemas").is_dir()
-    assert (project / ".gitignore").read_text().startswith("# Connic")
+    assert (project / ".gitignore").read_text().startswith("# connic")
     assert "Add your tool dependencies" in (project / "requirements.txt").read_text()
     readme = (project / "README.md").read_text()
-    assert "Connic Agent Project" in readme
+    assert "connic Agent Project" in readme
     assert "connic lint" in readme
     assert "Created directory: my-agents" in result.output
 
@@ -945,7 +945,7 @@ def test_init_command_with_skill_installs_skill_into_new_project(tmp_path, monke
     monkeypatch.setattr(cli, "print_update_hint", lambda: None)
     source = tmp_path / "fetched-skill"
     source.mkdir()
-    (source / "SKILL.md").write_text("# Connic\n")
+    (source / "SKILL.md").write_text("# connic\n")
     monkeypatch.setattr(cli, "_fetch_skill_from_github", lambda: source)
     plugin_offers = []
     monkeypatch.setattr(cli, "_offer_plugin_installs", lambda: plugin_offers.append(True))
@@ -954,11 +954,11 @@ def test_init_command_with_skill_installs_skill_into_new_project(tmp_path, monke
 
     assert result.exit_code == 0, result.output
     project = tmp_path / "my-agents"
-    assert (project / ".agents" / "skills" / "connic" / "SKILL.md").read_text() == "# Connic\n"
-    assert (project / ".claude" / "skills" / "connic" / "SKILL.md").read_text() == "# Connic\n"
+    assert (project / ".agents" / "skills" / "connic" / "SKILL.md").read_text() == "# connic\n"
+    assert (project / ".claude" / "skills" / "connic" / "SKILL.md").read_text() == "# connic\n"
     assert "Installing to my-agents/.agents/skills/connic" in result.output
     assert "Installing to my-agents/.claude/skills/connic" in result.output
-    assert "Initialized Connic project" in result.output
+    assert "Initialized connic project" in result.output
     assert plugin_offers == [True]
 
 
@@ -1355,7 +1355,7 @@ def test_update_without_flags_does_not_install_when_versions_are_current(monkeyp
     result = CliRunner().invoke(cli.main, ["update"])
 
     assert result.exit_code == 0, result.output
-    assert "SDK and detected Connic skill/plugin installations are up to date" in result.output
+    assert "SDK and detected connic skill/plugin installations are up to date" in result.output
     assert "No updates needed" in result.output
 
 
@@ -1416,7 +1416,7 @@ def test_skill_and_update_commands_skip_automatic_prompt(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     source = tmp_path / "fetched-skill"
     source.mkdir()
-    (source / "SKILL.md").write_text("# Connic\n")
+    (source / "SKILL.md").write_text("# connic\n")
     monkeypatch.setattr(cli, "_fetch_skill_from_github", lambda: source)
     monkeypatch.setattr(
         cli,
@@ -2429,7 +2429,7 @@ def test_login_command_saves_project_credentials_from_explicit_options(tmp_path,
         "api_key": "cnc_explicit_secret",
         "project_id": "proj_live_456",
     }
-    assert "Opening the Connic dashboard" not in result.output
+    assert "Opening the connic dashboard" not in result.output
     assert "Credentials saved to .connic" in result.output
 
 
@@ -2456,7 +2456,7 @@ def test_login_command_interactive_flow_opens_dashboard_and_saves_pasted_token(t
         "api_key": "cnc_interactive_secret",
         "project_id": "proj_interactive",
     }
-    assert "Opening the Connic dashboard" in result.output
+    assert "Opening the connic dashboard" in result.output
     assert "Credentials saved to .connic" in result.output
 
 
@@ -2874,7 +2874,7 @@ def test_deploy_command_reports_environment_lookup_and_connection_errors(tmp_pat
     result = CliRunner().invoke(cli.main, ["deploy"])
 
     assert result.exit_code == 1
-    assert "Failed to connect to Connic API" in result.output
+    assert "Failed to connect to connic API" in result.output
 
 
 def test_deploy_command_uses_first_standard_environment_when_no_default_exists(tmp_path, monkeypatch):

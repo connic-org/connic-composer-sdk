@@ -1,6 +1,6 @@
-# Contributing to Connic Composer SDK
+# Contributing to connic composer SDK
 
-Thank you for your interest in contributing to the Connic Composer SDK!
+Thank you for your interest in contributing to the connic composer SDK!
 
 ## Getting Started
 

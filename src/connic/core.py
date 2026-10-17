@@ -278,7 +278,7 @@ class VoiceConfig(BaseModel):
 
 
 def resolve_voice_model(model: str) -> tuple[Literal["openai", "azure", "gemini", "vertex_ai"], str]:
-    """Resolve the direct native realtime providers supported by Connic Voice."""
+    """Resolve the direct native realtime providers supported by connic voice."""
     provider, _, model_name = model.partition("/")
     if model_name and (
         provider == "openai" or provider == "azure" or provider == "gemini" or provider == "vertex_ai"
@@ -830,7 +830,7 @@ class McpOAuthConfig(BaseModel):
     """
     Per-user OAuth for an MCP server.
 
-    Connic sends the access token stored for the end user named by ``user`` as
+    connic sends the access token stored for the end user named by ``user`` as
     ``Authorization: Bearer``. Without a stored token the server is skipped for
     the run. With ``connect_tool`` the agent gets a ``connect_<server>`` tool
     that returns a sign-in link for that user.
@@ -877,7 +877,7 @@ class McpServerConfig(BaseModel):
               Authorization: "Bearer ${API_TOKEN}"
               X-User-Id: "${context.user_id}"
 
-        # MCP server reachable only inside a private network, routed via a Connic Bridge:
+        # MCP server reachable only inside a private network, routed via a connic bridge:
           - name: internal-mcp
             url: http://mcp.internal:8080/mcp
             bridge: ${INTERNAL_BRIDGE_ID}
@@ -917,7 +917,7 @@ class McpServerConfig(BaseModel):
     bridge: Optional[str] = Field(
         default=None,
         description=(
-            "Optional Connic Bridge ID. When set, the MCP server's URL is "
+            "Optional connic bridge ID. When set, the MCP server's URL is "
             "tunneled through that bridge so private/on-prem MCP servers can be "
             "reached without exposing them publicly. Supports ${VAR} substitution."
         ),

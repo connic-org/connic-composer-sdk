@@ -522,7 +522,7 @@ def test_migrate_command_prompts_for_paths_and_completes_successfully(tmp_path):
 
     assert result.exit_code == 0
     assert "Existing project path" in result.output
-    assert "New Connic project path" in result.output
+    assert "New connic project path" in result.output
     assert "Migration complete." in result.output
     assert lint_calls == [{"quiet": True, "project_root": str(destination.resolve())}]
     assert agent_yaml["model"] == "openai/gpt-4o-mini"
@@ -767,7 +767,7 @@ def test_adk_agent_with_sub_agents_list_variable_becomes_sequential_workflow(tmp
         "description": "Run intake before resolution.",
         "agents": ["intake-agent", "resolution-agent"],
     }
-    assert "ADK sub_agents were migrated as a sequential Connic workflow." in report
+    assert "ADK sub_agents were migrated as a sequential connic workflow." in report
 
 
 def test_adk_migration_maps_agent_tool_and_reports_remaining_wrappers(tmp_path):
@@ -820,10 +820,10 @@ def test_adk_migration_maps_agent_tool_and_reports_remaining_wrappers(tmp_path):
     assert framework == "adk"
     assert triage_yaml["tools"] == ["trigger_agent"]
     assert (
-        "Mapped ADK AgentTool wrapper to Connic trigger_agent. "
+        "Mapped ADK AgentTool wrapper to connic trigger_agent. "
         "Review calls to make sure they pass agent_name='escalation-specialist'."
     ) in report
-    assert "Skipped ADK MCPToolset because it requires manual MCP server mapping in Connic." in report
+    assert "Skipped ADK MCPToolset because it requires manual MCP server mapping in connic." in report
     assert "Could not safely migrate dynamic tool expression 'build_dynamic_tool()'." in report
 
 
@@ -873,7 +873,7 @@ def test_adk_agent_tool_with_dynamic_target_still_maps_to_trigger_agent_with_rev
     assert framework == "adk"
     assert triage_yaml["tools"] == ["trigger_agent"]
     assert (
-        "Mapped ADK AgentTool wrapper to Connic trigger_agent. "
+        "Mapped ADK AgentTool wrapper to connic trigger_agent. "
         "Review calls to make sure they pass the intended agent_name."
     ) in report
 
@@ -927,7 +927,7 @@ def test_adk_llm_agent_with_sub_agents_gets_trigger_agent(tmp_path):
     assert router_yaml["tools"] == ["trigger_agent"]
     assert "Agent refs: escalation-specialist, billing-specialist" in report
     assert (
-        "Mapped ADK sub_agents to Connic trigger_agent for delegation. "
+        "Mapped ADK sub_agents to connic trigger_agent for delegation. "
         "Review the listed agent refs and update prompts as needed."
     ) in report
 
@@ -1051,7 +1051,7 @@ def test_adk_parallel_agent_is_migrated_as_reviewable_sequential_workflow(tmp_pa
         "description": "Migrated from ADK agent 'Checkout Review'.",
         "agents": ["inventory-check", "pricing-check"],
     }
-    assert "Original ADK agent used ParallelAgent; migrated as a sequential Connic agent for review." in report
+    assert "Original ADK agent used ParallelAgent; migrated as a sequential connic agent for review." in report
 
 
 @pytest.mark.parametrize("agent_class", ["ParallelAgent", "LoopAgent"])
@@ -1106,7 +1106,7 @@ def test_adk_yaml_workflow_migration_preserves_child_order_and_requires_review(t
         "agents": ["warehouse-inventory", "store-inventory"],
     }
     report = (destination / "MIGRATION_REPORT.md").read_text()
-    assert f"Original ADK YAML agent used {agent_class}; migrated as a sequential Connic agent for review." in report
+    assert f"Original ADK YAML agent used {agent_class}; migrated as a sequential connic agent for review." in report
     assert "Agent refs: warehouse-inventory, store-inventory" in report
 
     loader = ProjectLoader(str(destination))
@@ -1444,7 +1444,7 @@ def test_adk_yaml_workflow_with_missing_agent_refs_becomes_review_placeholder(tm
     assert agents[0].agent_ref_keys == []
     assert "Removed unresolved workflow reference 'triage-agent'." in agents[0].notes
     assert "Removed unresolved workflow reference 'escalation-agent'." in agents[0].notes
-    assert "Converted unsupported workflow to an LLM placeholder because no valid Connic agent chain was recovered." in agents[0].notes
+    assert "Converted unsupported workflow to an LLM placeholder because no valid connic agent chain was recovered." in agents[0].notes
     assert f"No model could be extracted. Defaulted to {migrate.MIGRATION_DEFAULT_MODEL}." in agents[0].notes
     assert "No static system prompt could be extracted. Added a placeholder prompt." in agents[0].notes
 

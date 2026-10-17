@@ -60,7 +60,7 @@ def test_documented_predefined_tools_can_be_referenced_from_agent_yaml(tmp_path)
         name: assistant
         type: llm
         model: openai/gpt-5.2
-        description: "Assistant using Connic-managed tools"
+        description: "Assistant using connic-managed tools"
         system_prompt: "Use the managed tools when they are relevant."
         tools:
           - trigger_agent
@@ -201,7 +201,7 @@ def test_loads_realistic_support_agent_config(tmp_path):
             Args:
                 customer_id: Stable customer identifier from the support ticket.
                 include_orders: Include recent order history when useful.
-                context: Runtime context injected by Connic.
+                context: Runtime context injected by connic.
             """
             return {"customer_id": customer_id, "include_orders": include_orders}
 
@@ -773,7 +773,7 @@ def test_validation_only_builds_tool_schema_without_importing_module(tmp_path):
                 sku: Stock keeping unit to reserve.
                 quantity: Number of units to reserve.
                 metadata: Optional request metadata for auditing.
-                context: Runtime context injected by Connic.
+                context: Runtime context injected by connic.
             """
             client = dependency_that_is_not_installed.Client()
             return client.reserve(sku, quantity, metadata)
@@ -823,7 +823,7 @@ def test_validation_only_preserves_keyword_only_tool_parameters(tmp_path):
             Args:
                 query: Customer search terms.
                 limit: Maximum number of products to return.
-                context: Runtime context injected by Connic.
+                context: Runtime context injected by connic.
             """
             return dependency_that_is_not_installed.search(query, limit)
         ''',
@@ -922,7 +922,7 @@ def test_validation_only_infers_schema_from_ast_annotations_and_literal_defaults
                 tags: Routing tags already attached by upstream automation.
                 attributes: Numeric attributes used for queue selection.
                 scheduled_for: Optional follow-up time from the helpdesk.
-                context: Runtime context injected by Connic.
+                context: Runtime context injected by connic.
             """
             client = dependency_that_is_not_installed.Client()
             return await client.enrich(ticket_id, tags, attributes, scheduled_for)

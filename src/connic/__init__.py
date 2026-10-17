@@ -1,5 +1,5 @@
 """
-Connic Composer SDK - Build agents with code.
+connic composer SDK - Build agents with code.
 
 This SDK allows you to define AI agents using YAML configuration files
 and extend them with custom Python tools.

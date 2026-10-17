@@ -733,7 +733,7 @@ def test_test_command_with_coverage_and_json_emits_machine_readable_report(tmp_p
 
     assert result.exit_code == 0, result.output
     payload = json.loads(result.stdout)
-    assert result.stderr == ("Connic SDK update available; run `connic update`.\n" if update_available else "")
+    assert result.stderr == ("connic SDK update available; run `connic update`.\n" if update_available else "")
     assert payload["overall"] == 50.0
     [agent] = payload["agents"]
     assert agent["name"] == "math-agent"

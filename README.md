@@ -1,10 +1,10 @@
-# Connic Composer SDK
+# connic composer SDK
 
 <div align="center">
 
-Build Connic agents in code.
+Build connic agents in code.
 
-Define agents in YAML, extend them with Python, test them with hot reload against Connic cloud, and deploy them to Connic-managed environments.
+Define agents in YAML, extend them with Python, test them with hot reload against connic cloud, and deploy them to connic-managed environments.
 
 [![PyPI version](https://img.shields.io/pypi/v/connic-composer-sdk.svg)](https://pypi.org/project/connic-composer-sdk/)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
@@ -18,17 +18,17 @@ Define agents in YAML, extend them with Python, test them with hot reload agains
 
 ## What It Is
 
-`connic-composer-sdk` is the Python SDK and CLI for Connic's code-first agent workflow.
+`connic-composer-sdk` is the Python SDK and CLI for connic's code-first agent workflow.
 
 Use it to:
 
 - define agents in YAML
 - write custom tools as plain Python functions
 - add middleware, schemas, sessions, retries, concurrency, and guardrails
-- connect MCP servers and use Connic's predefined tools
+- connect MCP servers and use connic's predefined tools
 - validate projects locally before uploading anything
 - run hot-reload test sessions in isolated cloud environments
-- deploy to Connic from the CLI or through a connected Git repository
+- deploy to connic from the CLI or through a connected Git repository
 
 ## Installation
 
@@ -45,13 +45,13 @@ Requires Python 3.10 or newer.
 connic init my-agents --skill
 cd my-agents
 
-# Authenticate this project with Connic
+# Authenticate this project with connic
 connic login
 
 # Validate the project locally
 connic lint
 
-# Start a hot-reload dev session in Connic cloud
+# Start a hot-reload dev session in connic cloud
 connic dev
 
 # Run declarative test suites against an environment
@@ -66,13 +66,13 @@ connic init my-agents --templates=invoice,customer-support --skill
 
 Browse available templates at [connic.co/agents](https://connic.co/agents).
 
-The optional `--skill` flag installs the Connic AI coding-agent skill into both `.agents/skills/connic` and `.claude/skills/connic` so supported coding agents can use the Connic project layout, YAML fields, CLI flags, connector patterns, and best practices while editing your repo. For an existing project, run:
+The optional `--skill` flag installs the connic AI coding-agent skill into both `.agents/skills/connic` and `.claude/skills/connic` so supported coding agents can use the connic project layout, YAML fields, CLI flags, connector patterns, and best practices while editing your repo. For an existing project, run:
 
 ```bash
 connic skill
 ```
 
-In an interactive terminal, both commands detect Codex and Claude Code and ask whether to install the full Connic plugin for each detected client. The plugin bundles the same skill with Connic MCP. Declining leaves the project-local skill installation unchanged. See [Coding agent setup](https://connic.co/docs/v1/ai-agent-setup) for manual and client-specific paths.
+In an interactive terminal, both commands detect Codex and Claude Code and ask whether to install the full connic plugin for each detected client. The plugin bundles the same skill with connic MCP. Declining leaves the project-local skill installation unchanged. See [Coding agent setup](https://connic.co/docs/v1/ai-agent-setup) for manual and client-specific paths.
 
 The CLI checks for SDK, project skill, Codex plugin, and Claude Code plugin updates when commands run. It checks every installed Claude Code scope separately. To check without updating, including from an AI coding-agent session, run:
 
@@ -191,7 +191,7 @@ def export_invoice(invoice_id: str) -> ToolFile:
 
 `ToolFile` accepts exactly one of `data` (inline bytes) or `uri`. It also carries an optional `name` and `size_bytes`; inline byte size is inferred and an explicitly supplied size must match. A tool may return one `ToolFile` or include files alongside JSON and text values in a list or tuple. Raw `bytes` are rejected because they do not identify a MIME type; wrap them in `ToolFile(data=..., mime_type=...)`.
 
-The SDK also exposes predefined Connic tools such as the ones documented in [Predefined Tools](https://connic.co/docs/v1/build/tools):
+The SDK also exposes predefined connic tools such as the ones documented in [Predefined Tools](https://connic.co/docs/v1/build/tools):
 
 - `trigger_agent`
 - `trigger_agent_at`
@@ -218,7 +218,7 @@ tools:
 
 This includes `web_browser_open`, `web_browser_observe`, `web_browser_read`, `web_browser_act`, `web_browser_screenshot`, `web_browser_mouse`, `web_browser_tabs`, `web_browser_dialog`, `web_browser_eval`, `web_browser_console`, `web_browser_upload`, `web_browser_download`, `web_browser_pdf`, and `web_browser_close`. Individual tool names are also supported.
 
-Each run uses one browser, selected automatically for every browser tool call. Calling `web_browser_open` again returns "Browser already open"; use `web_browser_tabs` for additional pages. The browser closes when its run ends. Runs attached to the same Connic session reuse saved cookies and local storage when `session.browser` is enabled.
+Each run uses one browser, selected automatically for every browser tool call. Calling `web_browser_open` again returns "Browser already open"; use `web_browser_tabs` for additional pages. The browser closes when its run ends. Runs attached to the same connic session reuse saved cookies and local storage when `session.browser` is enabled.
 
 The agent can type into the focused field, hold and release keys, double-click, hover, check boxes, wait for text, URLs or elements, switch tabs and popups, and handle browser dialogs. `web_browser_observe` can limit the snapshot to interactive elements or a CSS selector. `web_browser_read()` returns the current page as Markdown. `web_browser_eval(script)` runs JavaScript in the current page and returns its JSON result. `web_browser_console()` returns recent console messages and JavaScript errors. Screenshots are sent as images to vision-capable text and voice models.
 
@@ -306,8 +306,8 @@ Related docs:
 | `connic dev [name]`                   | Start or reconnect to a named dev environment directly          |
 | `connic deploy --list`                | List available deployment environments by name                 |
 | `connic test`                         | Run declarative test suites from `tests/` against an environment |
-| `connic deploy`                       | Deploy from the CLI to a Connic environment for projects without a connected Git repository |
-| `connic migrate`                      | Migrate a LangChain or Google ADK project into a Connic project |
+| `connic deploy`                       | Deploy from the CLI to a connic environment for projects without a connected Git repository |
+| `connic migrate`                      | Migrate a LangChain or Google ADK project into a connic project |
 
 Run `connic <command> --help` for flags and examples.
 
@@ -337,9 +337,9 @@ Use `connic test` for one-shot declarative test suites from `tests/`, including 
 
 ### Deployment
 
-Deployment targets Connic-managed environments.
+Deployment targets connic-managed environments.
 
-- If your Connic project is connected to a Git repository, push to the branch configured for the target environment.
+- If your connic project is connected to a Git repository, push to the branch configured for the target environment.
 - If the project has no connected Git repository, use `connic deploy`. Use Up/Down to choose an environment by name and Enter to select it, then confirm the deployment summary before uploading.
 
 `connic deploy --list` lists available targets without deploying. Use `connic deploy --env staging` to select a target by name; environment IDs remain supported. For CI, pass both an explicit target and confirmation: `connic deploy --env staging --yes`.

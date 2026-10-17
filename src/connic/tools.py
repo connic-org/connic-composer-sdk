@@ -576,7 +576,7 @@ async def web_browser_open(url: str) -> Dict[str, Any]:
 
     If the browser is already open, return "Browser already open" without navigating.
     Use web_browser_tabs to open another page in the same browser.
-    With session.browser enabled, runs in the same Connic session reuse saved
+    With session.browser enabled, runs in the same connic session reuse saved
     cookies and local storage.
 
     Args:

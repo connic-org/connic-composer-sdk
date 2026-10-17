@@ -527,7 +527,7 @@ def _noninteractive_warning(status: UpdateStatus) -> str:
         component_names = f"{', '.join(components[:-1])}, and {components[-1]}"
     else:
         component_names = " and ".join(components)
-    return f"Connic {component_names} update available; run `{command}`."
+    return f"connic {component_names} update available; run `{command}`."
 
 
 def print_update_hint() -> UpdateAction:

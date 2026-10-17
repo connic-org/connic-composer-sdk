@@ -115,7 +115,7 @@ def _tool_agent_signature_error(func) -> Optional[str]:
 
 class ProjectLoader:
     """
-    Loads a Connic project from disk, discovering agents, tools, and middlewares.
+    Loads a connic project from disk, discovering agents, tools, and middlewares.
     """
     
     def __init__(self, project_root: str = ".", api_spec_tools: Optional[Dict[str, Dict[str, Any]]] = None, validation_only: bool = False):

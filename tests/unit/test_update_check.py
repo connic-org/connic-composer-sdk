@@ -19,7 +19,7 @@ def isolated_update_state(monkeypatch, tmp_path):
 
 def _skill(version: str | None) -> str:
     metadata = f'\nmetadata:\n  version: "{version}"' if version else ""
-    return f"---\nname: connic{metadata}\n---\n\n# Connic\n"
+    return f"---\nname: connic{metadata}\n---\n\n# connic\n"
 
 
 def _status(*, sdk=False, skill=False, plugin=False):
@@ -785,7 +785,7 @@ def test_noninteractive_check_warns_without_prompting(monkeypatch, capsys):
     action = update_check.print_update_hint()
 
     assert action == update_check.UpdateAction.NONE
-    assert capsys.readouterr().err == ("Connic SDK and skill update available; run `connic update`.\n")
+    assert capsys.readouterr().err == ("connic SDK and skill update available; run `connic update`.\n")
 
 
 def test_noninteractive_skill_update_uses_update_command(monkeypatch, capsys):
@@ -794,7 +794,7 @@ def test_noninteractive_skill_update_uses_update_command(monkeypatch, capsys):
 
     assert update_check.print_update_hint() == update_check.UpdateAction.NONE
     assert capsys.readouterr().err == (
-        "Connic skill update available; run `connic update --skill`.\n"
+        "connic skill update available; run `connic update --skill`.\n"
     )
 
 
@@ -803,11 +803,11 @@ def test_noninteractive_skill_update_uses_update_command(monkeypatch, capsys):
     [
         (
             {"plugin": True},
-            "Connic plugin update available; run `connic update --skill`.\n",
+            "connic plugin update available; run `connic update --skill`.\n",
         ),
         (
             {"sdk": True, "skill": True, "plugin": True},
-            "Connic SDK, skill, and plugin update available; run `connic update`.\n",
+            "connic SDK, skill, and plugin update available; run `connic update`.\n",
         ),
     ],
 )

@@ -78,7 +78,7 @@ Cloned modern upstream repositories/examples:
 - preserved:
   - calendar, email, and supervisor agents
   - low-level calendar and email tool functions
-  - simple sub-agent wrappers rewritten to Connic `trigger_agent` delegation
+  - simple sub-agent wrappers rewritten to connic `trigger_agent` delegation
 - useful regression for credential-free supervisor migration and wrapper isolation
 
 ### Unsupported modern example
@@ -86,7 +86,7 @@ Cloned modern upstream repositories/examples:
 #### `new-langgraph-project`
 
 - source: `tests/langchain/sources/new-langgraph-project`
-- migration result: an empty Connic scaffold and `MIGRATION_REPORT.md` are generated for manual migration
+- migration result: an empty connic scaffold and `MIGRATION_REPORT.md` are generated for manual migration
 - current behavior: `connic migrate` warns `No migratable agents were found. Generating an empty scaffold for manual migration.`
 - reason:
   - this project is a low-level LangGraph `StateGraph` template, not a LangChain `create_agent(...)` codebase
