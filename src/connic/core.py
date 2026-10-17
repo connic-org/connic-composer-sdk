@@ -517,6 +517,76 @@ class RetrievalAccessConfig(BaseModel):
     )
 
 
+class FolderPermissions(BaseModel):
+    """Per-folder permission overrides for file access control."""
+    prevent_delete: Optional[bool] = Field(
+        default=None,
+        description="If true, file_delete is blocked in this folder. Inherits global setting if None."
+    )
+    prevent_write: Optional[bool] = Field(
+        default=None,
+        description="If true, file_write and file_update are blocked in this folder. Inherits global setting if None."
+    )
+    session_only: Optional[bool] = Field(
+        default=None,
+        description="If true, the agent only sees files written in its current session in this folder. "
+                    "Inherits global setting if None."
+    )
+
+
+class FilesAccessConfig(BaseModel):
+    """
+    Access control configuration for file tools.
+
+    Folders match everything below them: "invoices" covers "invoices/2026/acme.pdf".
+
+    Example YAML (simple - flat list, global flags apply to all):
+        files:
+          folders: [invoices, exports]
+          prevent_delete: true
+
+    Example YAML (advanced - per-folder overrides):
+        files:
+          session_only: true
+          folders:
+            uploads: {}
+            templates:
+              session_only: false
+              prevent_write: true
+    """
+    folders: Optional[Dict[str, FolderPermissions]] = Field(
+        default=None,
+        description="Restrict access to these folders and everything below them. None means the whole file tree "
+                    "is accessible. After YAML parsing, this is always a dict mapping folder paths to their permissions."
+    )
+    prevent_delete: bool = Field(
+        default=False,
+        description="If true, file_delete is blocked for all folders (can be overridden per folder)."
+    )
+    prevent_write: bool = Field(
+        default=False,
+        description="If true, file_write and file_update are blocked for all folders (can be overridden per folder)."
+    )
+    session_only: bool = Field(
+        default=False,
+        description="If true, the agent only sees files written in its current session (can be overridden per "
+                    "folder). Requires session to be configured."
+    )
+
+    @field_validator("folders")
+    @classmethod
+    def _normalize_folders(cls, folders: Optional[Dict[str, FolderPermissions]]):
+        if folders is None:
+            return None
+        normalized = {}
+        for name, permissions in folders.items():
+            folder = name.strip("/")
+            if not folder or any(part in {"", ".", ".."} for part in folder.split("/")):
+                raise ValueError(f"Invalid files folder '{name}'")
+            normalized[folder] = permissions
+        return normalized
+
+
 class GuardrailResult(BaseModel):
     """
     Result returned by a guardrail check function.
@@ -979,6 +1049,13 @@ class AgentConfig(BaseModel):
                     "If omitted, the agent has unrestricted retrieval access."
     )
 
+    # File access control
+    files: Optional[FilesAccessConfig] = Field(
+        default=None,
+        description="Access control configuration for file tools. "
+                    "If omitted, the agent has unrestricted file access."
+    )
+
     # MCP server connections
     mcp_servers: List[McpServerConfig] = Field(
         default_factory=list,
@@ -1132,6 +1209,15 @@ class AgentConfig(BaseModel):
             )
             self.reasoning_effort = "off" if self.reasoning is False else "auto"
         self.reasoning = None
+        return self
+
+    @model_validator(mode='after')
+    def validate_files_session_only(self):
+        files = self.files
+        if files and not self.session and (
+            files.session_only or any(p.session_only for p in (files.folders or {}).values())
+        ):
+            raise ValueError("files.session_only requires session to be configured")
         return self
 
     @model_validator(mode='after')

@@ -21,6 +21,8 @@ from .core import (
     CollectionPermissions,
     CustomGuardrail,
     DatabaseAccessConfig,
+    FilesAccessConfig,
+    FolderPermissions,
     GuardrailRule,
     GuardrailsConfig,
     McpServerConfig,
@@ -67,6 +69,12 @@ PREDEFINED_TOOL_NAMES = {
     "db_delete",            # Delete documents matching a filter
     "db_count",             # Count documents matching a filter
     "db_list_collections",  # List all collections in the environment
+    # File tools
+    "file_list",            # List files and folders, with metadata filters
+    "file_read",            # Read a file
+    "file_write",           # Write a text file
+    "file_update",          # Move or rename a file or folder, or update file metadata
+    "file_delete",          # Delete a file or folder
 }
 
 PREDEFINED_TOOL_ALIASES = {
@@ -608,6 +616,20 @@ class ProjectLoader:
                 }
             config_data["retrieval"] = RetrievalAccessConfig(**rt_raw)
         config_data.pop("knowledge", None)
+
+        # Handle files access config
+        if "files" in config_data and config_data["files"]:
+            files_raw = dict(config_data["files"])
+            if "folders" in files_raw and isinstance(files_raw["folders"], list):
+                # Simple format: flat list -> dict with empty per-folder permissions
+                files_raw["folders"] = {name: FolderPermissions() for name in files_raw["folders"]}
+            elif "folders" in files_raw and isinstance(files_raw["folders"], dict):
+                # Advanced format: dict with optional per-folder overrides
+                files_raw["folders"] = {
+                    name: FolderPermissions(**(perms or {}))
+                    for name, perms in files_raw["folders"].items()
+                }
+            config_data["files"] = FilesAccessConfig(**files_raw)
 
         # Handle guardrails config
         if "guardrails" in config_data and config_data["guardrails"]:

@@ -39,6 +39,11 @@ DOCUMENTED_PREDEFINED_TOOLS = [
     "db_delete",
     "db_count",
     "db_list_collections",
+    "file_list",
+    "file_read",
+    "file_write",
+    "file_update",
+    "file_delete",
 ]
 
 
@@ -86,6 +91,11 @@ def test_documented_predefined_tools_can_be_referenced_from_agent_yaml(tmp_path)
           - db_delete
           - db_count
           - db_list_collections
+          - file_list
+          - file_read
+          - file_write
+          - file_update
+          - file_delete
         """,
     )
 
@@ -2062,7 +2072,7 @@ def test_overlap_between_tools_and_discoverable_tools_is_an_error(tmp_path):
 @pytest.mark.parametrize("validation_only", [False, True])
 @pytest.mark.parametrize("pattern,expected", [
     ("db_*", {"db_find", "db_insert", "db_update", "db_upsert", "db_delete", "db_count", "db_list_collections"}),
-    ("*_delete", {"db_delete", "retrieval_delete"}),
+    ("*_delete", {"db_delete", "retrieval_delete", "file_delete"}),
     ("web_*_o*", {"web_browser_open", "web_browser_observe"}),
     ("*browser*load", {"web_browser_upload", "web_browser_download"}),
     ("trigger_*_at", {"trigger_agent_at"}),
@@ -2111,7 +2121,7 @@ def test_browser_wildcard_loads_concrete_predefined_tools(tmp_path, validation_o
         assert {tool.name for tool in agent.tools} == {"search_tools", "use_tool"}
 
 
-@pytest.mark.parametrize("pattern,count", [("web_browser_*", 14), ("db_*", 7), ("*_delete", 2)])
+@pytest.mark.parametrize("pattern,count", [("web_browser_*", 14), ("db_*", 7), ("*_delete", 3)])
 def test_predefined_wildcard_applies_condition_to_each_tool(tmp_path, pattern, count):
     write_file(
         tmp_path / "agents" / "browser.yaml",
@@ -2970,6 +2980,100 @@ def test_retrieval_advanced_dict_format(tmp_path):
     assert agent.config.retrieval.namespaces["faq"].prevent_write is None
 
 
+def test_files_access_config_accepts_lists_and_per_folder_overrides(tmp_path):
+    write_file(
+        tmp_path / "agents" / "files-agent.yaml",
+        """
+        version: "1.0"
+        name: files-agent
+        type: llm
+        model: openai/gpt-5.2
+        description: "Agent with file access config"
+        system_prompt: "Work with files."
+        session:
+          key: context.user_id
+        tools:
+          - file_list
+          - file_read
+          - file_write
+          - file_update
+          - file_delete
+        files:
+          session_only: true
+          prevent_delete: true
+          folders:
+            /uploads/: {}
+            templates:
+              session_only: false
+              prevent_write: true
+        """,
+    )
+    write_file(
+        tmp_path / "agents" / "list-agent.yaml",
+        """
+        version: "1.0"
+        name: list-agent
+        type: llm
+        model: openai/gpt-5.2
+        description: "Agent with flat folder list"
+        system_prompt: "Work with files."
+        files:
+          folders: [exports]
+        """,
+    )
+
+    loader = ProjectLoader(str(tmp_path))
+    files = loader.load_agent("files-agent").config.files
+    assert files.session_only is True and files.prevent_delete is True
+    assert list(files.folders) == ["uploads", "templates"]
+    assert files.folders["templates"].session_only is False
+    assert files.folders["templates"].prevent_write is True
+    assert files.folders["uploads"].prevent_write is None
+    assert list(loader.load_agent("list-agent").config.files.folders) == ["exports"]
+
+
+@pytest.mark.parametrize("files_yaml", [
+    "files:\n  session_only: true",
+    "files:\n  folders:\n    uploads:\n      session_only: true",
+])
+def test_files_session_only_requires_session(tmp_path, files_yaml):
+    write_file(
+        tmp_path / "agents" / "files-agent.yaml",
+        """
+        version: "1.0"
+        name: files-agent
+        type: llm
+        model: openai/gpt-5.2
+        description: "Agent with file access config"
+        system_prompt: "Work with files."
+        """ + files_yaml.replace("\n", "\n        "),
+    )
+
+    loader = ProjectLoader(str(tmp_path))
+    assert loader.load_agents() == []
+    assert any("files.session_only requires session" in error for error in loader._load_errors)
+
+
+def test_files_access_config_rejects_parent_folder_references(tmp_path):
+    write_file(
+        tmp_path / "agents" / "files-agent.yaml",
+        """
+        version: "1.0"
+        name: files-agent
+        type: llm
+        model: openai/gpt-5.2
+        description: "Agent with file access config"
+        system_prompt: "Work with files."
+        files:
+          folders: ["../secrets"]
+        """,
+    )
+
+    loader = ProjectLoader(str(tmp_path))
+    assert loader.load_agents() == []
+    assert any("Invalid files folder" in error for error in loader._load_errors)
+
+
 def test_legacy_knowledge_access_key_loads_into_retrieval_config(tmp_path):
     write_file(
         tmp_path / "agents" / "legacy-agent.yaml",
@@ -3620,7 +3724,7 @@ def test_browser_file_and_tab_schema_exposes_only_agent_inputs(tmp_path):
         ("eval", ["script"]),
         ("console", []),
         ("pdf", ["include_content"]),
-        ("upload", ["target", "download_id"]),
+        ("upload", ["target"]),
         ("download", ["target", "include_content"]),
     ):
         schema = loader._generate_schema(getattr(connic_tools, "web_browser_" + name))

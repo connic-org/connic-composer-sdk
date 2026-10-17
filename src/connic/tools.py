@@ -419,17 +419,21 @@ async def web_read_page(
 
 
 
-async def web_browser_download(target: str, include_content: bool) -> Union[Dict[str, Any], List[Any]]:
-    """Click a download link or button and return its file. Maximum size: 25 MiB.
+async def web_browser_download(
+    target: str, include_content: bool, save_to: Optional[str] = None,
+) -> Union[Dict[str, Any], List[Any]]:
+    """Click a download link or button and return its file. Maximum size: 25 MiB, or 100 MiB with save_to.
 
     Args:
         target: Download link or button reference from the latest snapshot.
         include_content: Attach the file for the agent to read. False returns
             only download_id and file metadata.
+        save_to: Also store the file in project files at this path. A path
+            ending in "/" is a folder and keeps the downloaded file name.
 
     Returns:
         Metadata containing download_id, name and mime_type, plus a file attachment
-        when include_content is true.
+        when include_content is true, and saved_path when save_to is set.
         Pass download_id to web_browser_upload in the same session to upload it.
         Files remain in the browser until the session closes. Browser cookies
         apply to the download.
@@ -457,18 +461,20 @@ async def web_browser_console() -> Dict[str, Any]:
     )
 
 
-async def web_browser_pdf(include_content: bool) -> Union[Dict[str, Any], List[Any]]:
-    """Save the current page as a PDF. Maximum size: 25 MiB.
+async def web_browser_pdf(include_content: bool, save_to: Optional[str] = None) -> Union[Dict[str, Any], List[Any]]:
+    """Save the current page as a PDF. Maximum size: 25 MiB, or 100 MiB with save_to.
 
     Args:
         include_content: Attach the PDF for the agent to read. False returns
             only download_id and file metadata.
+        save_to: Also store the PDF in project files at this path. A path
+            ending in "/" is a folder and keeps the name page.pdf.
 
     Returns:
         Metadata containing download_id, name and mime_type, plus a PDF attachment
-        when include_content is true. Pass download_id to web_browser_upload in
-        the same session to upload it. The PDF remains in the browser until the
-        session closes.
+        when include_content is true, and saved_path when save_to is set. Pass
+        download_id to web_browser_upload in the same session to upload it. The
+        PDF remains in the browser until the session closes.
     """
 
     raise RuntimeError(
@@ -477,16 +483,19 @@ async def web_browser_pdf(include_content: bool) -> Union[Dict[str, Any], List[A
     )
 
 
-async def web_browser_upload(target: str, download_id: str) -> Dict[str, Any]:
-    """Select a previously downloaded file in a browser upload field.
+async def web_browser_upload(
+    target: str, download_id: Optional[str] = None, path: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Select a file in a browser upload field. Pass exactly one of download_id or path.
 
     Args:
         target: File input reference such as e11 or @e11 from the latest snapshot.
         download_id: ID returned by web_browser_download or web_browser_pdf in this session.
+        path: Path of a file in project files, up to 100 MiB.
 
     Returns:
-        Updated page after selecting the downloaded file. Submit the form
-        separately if needed. Files remain available until the session closes.
+        Updated page after selecting the file. Submit the form separately if
+        needed. Downloaded files remain available until the session closes.
     """
 
     raise RuntimeError(
@@ -941,6 +950,137 @@ async def db_list_collections() -> Dict[str, Any]:
     )
 
 
+async def file_list(
+    folder: str = "",
+    recursive: bool = False,
+    filter: Optional[Dict[str, Any]] = None,
+    scope: Literal["all", "session", "run"] = "all",
+    sort: Optional[Dict[str, int]] = None,
+    limit: int = 100,
+    skip: int = 0,
+) -> Dict[str, Any]:
+    """
+    List files and subfolders in a project files folder.
+
+    Args:
+        folder: Folder path such as "invoices/2026". Empty for the root.
+        recursive: Include files in all subfolders instead of listing subfolders.
+        filter: Filter on metadata with the db_find operators. System fields:
+                _name, _path, _folder, _mime_type, _size, _source, _agent,
+                _run_id, _session_id, _created_at, _updated_at.
+        scope: "session" or "run" keeps only files written in the current session or run.
+        sort: Sort dict. 1 = ascending, -1 = descending. Default {"_name": 1}.
+        limit: Max files to return (default 100, max 1000).
+        skip: Files to skip for pagination.
+
+    Returns:
+        {"folder": ..., "folders": [...], "files": [...], "count": N, "total": matching files across all pages}
+
+    Example:
+        result = await file_list("invoices", recursive=True, filter={"status": "pending"})
+    """
+    raise RuntimeError(
+        "file_list will be auto-injected when testing using the connic CLI or deploying. "
+        "Run 'connic test' to test your agents with predefined tools."
+    )
+
+
+async def file_read(path: str) -> Dict[str, Any]:
+    """
+    Read a file from project files.
+
+    Args:
+        path: File path such as "invoices/2026/acme.pdf".
+
+    Returns:
+        {"file": {...}, "content": bytes} for every file type, or {"error": "..."}.
+
+    Example:
+        result = await file_read("reports/summary.md")
+        text = result["content"].decode("utf-8")
+    """
+    raise RuntimeError(
+        "file_read will be auto-injected when testing using the connic CLI or deploying. "
+        "Run 'connic test' to test your agents with predefined tools."
+    )
+
+
+async def file_write(
+    path: str,
+    content: str,
+    mime_type: Optional[str] = None,
+    metadata: Optional[Dict[str, Any]] = None,
+    overwrite: bool = False,
+) -> Dict[str, Any]:
+    """
+    Write a text file to project files. Missing folders are created.
+
+    Args:
+        path: File path such as "reports/2026/summary.md".
+        content: Text content of the file.
+        mime_type: Content type. Guessed from the file name if omitted.
+        metadata: Custom fields to filter on later, e.g. {"status": "pending"}.
+                  Keys must not start with "_".
+        overwrite: Replace an existing file at this path. Without it, an
+                   existing path gets a numbered name such as "summary (2).md".
+
+    Returns:
+        The stored file's metadata, including the final _path.
+
+    Example:
+        result = await file_write("reports/summary.md", "# Summary", metadata={"status": "draft"})
+    """
+    raise RuntimeError(
+        "file_write will be auto-injected when testing using the connic CLI or deploying. "
+        "Run 'connic test' to test your agents with predefined tools."
+    )
+
+
+async def file_update(
+    path: str,
+    new_path: Optional[str] = None,
+    metadata: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """
+    Move or rename a file or folder, or update a file's metadata.
+
+    Args:
+        path: Path of the file or folder.
+        new_path: New path. Moving a folder moves everything in it.
+        metadata: Fields to merge into the file's metadata. A null value removes the field.
+
+    Returns:
+        {"moved": N, "file": {...}} for a file, {"moved": N, "folder": "..."} for a folder.
+
+    Example:
+        await file_update("inbox/acme.pdf", new_path="done/acme.pdf", metadata={"status": "processed"})
+    """
+    raise RuntimeError(
+        "file_update will be auto-injected when testing using the connic CLI or deploying. "
+        "Run 'connic test' to test your agents with predefined tools."
+    )
+
+
+async def file_delete(path: str, recursive: bool = False) -> Dict[str, Any]:
+    """
+    Delete a file, or a folder and everything in it.
+
+    Args:
+        path: Path of the file or folder.
+        recursive: Required to delete a folder.
+
+    Returns:
+        {"deleted": N}
+
+    Example:
+        await file_delete("tmp", recursive=True)
+    """
+    raise RuntimeError(
+        "file_delete will be auto-injected when testing using the connic CLI or deploying. "
+        "Run 'connic test' to test your agents with predefined tools."
+    )
+
+
 # All available predefined tools
 __all__ = [
     "trigger_agent",
@@ -974,4 +1114,10 @@ __all__ = [
     "db_delete",
     "db_count",
     "db_list_collections",
+    # File tools
+    "file_list",
+    "file_read",
+    "file_write",
+    "file_update",
+    "file_delete",
 ]
