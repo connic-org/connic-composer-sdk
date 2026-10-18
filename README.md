@@ -222,7 +222,9 @@ Each run uses one browser, selected automatically for every browser tool call. C
 
 The agent can type into the focused field, hold and release keys, double-click, hover, check boxes, wait for text, URLs or elements, switch tabs and popups, and handle browser dialogs. `web_browser_observe` can limit the snapshot to interactive elements or a CSS selector. `web_browser_read()` returns the current page as Markdown. `web_browser_eval(script)` runs JavaScript in the current page and returns its JSON result. `web_browser_console()` returns recent console messages and JavaScript errors. Screenshots are sent as images to vision-capable text and voice models.
 
-`web_browser_download(target, include_content=...)` keeps the downloaded file in the browser session and returns `download_id`, `name`, and `mime_type`. Set `include_content=True` to also return the file as an attachment, or `False` for metadata only. `web_browser_pdf(include_content=...)` saves the current page as a PDF the same way. `web_browser_upload(target, download_id)` selects that file for upload in the same session. Files are limited to 25 MiB and remain available until the browser session closes.
+`web_browser_download(target, include_content=..., save_to=None)` keeps the downloaded file in the browser session and returns `download_id`, `name`, and `mime_type`. Set `include_content=True` to also return the file as an attachment, or `False` for metadata only. `web_browser_pdf(include_content=..., save_to=None)` saves the current page as a PDF the same way. Downloads and PDFs are limited to 25 MiB, or 100 MiB with `save_to`. Set `save_to` to also store the file in project files; the result includes `saved_path`. A path ending in `/` keeps the downloaded filename in that folder. Files over 25 MiB are saved without an attachment. Files remain available in the browser until the session closes.
+
+`web_browser_upload(target, download_id=None, path=None)` selects a file for upload. Pass exactly one of `download_id` for a file in the same browser session or `path` for a project file of up to 100 MiB.
 
 ### Human Input and Approvals
 
