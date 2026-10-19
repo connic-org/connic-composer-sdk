@@ -117,7 +117,7 @@ def test_browser_tool_parameters_expose_actions_without_internal_session_control
     }
 
     assert schemas["web_browser_open"]["required"] == ["url"]
-    assert set(schemas["web_browser_open"]["properties"]) == {"url"}
+    assert set(schemas["web_browser_open"]["properties"]) == {"url", "country"}
     for name in ("web_browser_read", "web_browser_close"):
         assert schemas[name]["required"] == []
         assert set(schemas[name]["properties"]) == set()
