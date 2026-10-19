@@ -525,7 +525,7 @@ async def web_browser_dialog(
     )
 
 
-async def web_browser_eval(script: str) -> Dict[str, Any]:
+async def web_browser_eval(script: str, include_snapshot: bool = False) -> Dict[str, Any]:
     """Run JavaScript in the current page and return its result.
 
     Args:
@@ -533,13 +533,15 @@ async def web_browser_eval(script: str) -> Dict[str, Any]:
             active tab. The value of the last expression is returned and promises
             are awaited. Wrap statements that use return or await in an async
             function, such as (async () => { ... })().
+        include_snapshot: Wait for the page to settle and return a fresh
+            snapshot as well. Leave false when only the result is needed.
 
     Returns:
-        status, result, url and a fresh snapshot. result is the expression's
-        value as JSON, so return plain data rather than DOM nodes. Results
-        over 32000 characters set result_truncated and are cut off, with
-        non-string values returned as JSON text. Script errors return
-        error_code script_error with the error message.
+        status, result and url, plus a snapshot when include_snapshot is true.
+        result is the expression's value as JSON, so return plain data rather
+        than DOM nodes. Results over 32000 characters set result_truncated and
+        are cut off, with non-string values returned as JSON text. Script
+        errors return error_code script_error with the error message.
     """
 
     raise RuntimeError(
@@ -571,20 +573,25 @@ async def web_browser_tabs(
         "Run 'connic test' to test your agents with predefined tools."
     )
 
-async def web_browser_open(url: str) -> Dict[str, Any]:
+async def web_browser_open(url: str, country: str = "DE") -> Dict[str, Any]:
     """Open the current run's browser and navigate to a URL.
 
     If the browser is already open, return "Browser already open" without navigating.
     Use web_browser_tabs to open another page in the same browser.
     With session.browser enabled, runs in the same connic session reuse saved
-    cookies and local storage.
+    cookies and local storage. While another run of that session saves the
+    profile, this browser opens read-only: its changes, including new logins,
+    are not saved.
 
     Args:
         url: Public HTTP or HTTPS URL to open.
+        country: ISO 3166-1 alpha-2 country code the browser browses from,
+            such as DE, AT or US. Applies when the browser opens.
 
     Returns:
         status, url and a snapshot containing page text and element
-        references. Further browser tools use this browser automatically.
+        references, plus profile_mode (write or read_only) when a saved
+        profile is used. Further browser tools use this browser automatically.
         An already open browser returns only status and a message.
     """
 
