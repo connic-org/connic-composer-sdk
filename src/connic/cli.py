@@ -1058,7 +1058,7 @@ def _append_template_readmes(base_path: Path, template_readmes: list[str]) -> No
     "--templates",
     "-t",
     default=None,
-    help="Comma-separated template names (e.g., invoice,support). Browse at connic.co/agents",
+    help="Comma-separated template names (e.g., invoice,support). Browse at connic.co/marketplace/agent-templates",
 )
 @click.option(
     "--skill",

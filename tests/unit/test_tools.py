@@ -46,6 +46,7 @@ async def _expect_stub(coro):
         (tools.web_browser_dialog, ("accept",), {}),
         (tools.web_browser_eval, ("document.title",), {}),
         (tools.web_browser_console, (), {}),
+        (tools.web_browser_network, ("start",), {}),
         (tools.web_browser_pdf, (True,), {}),
         (tools.web_browser_upload, ("e2", "download-123"), {}),
         (tools.web_browser_download, ("e1", True), {}),

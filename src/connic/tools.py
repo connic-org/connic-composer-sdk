@@ -525,8 +525,13 @@ async def web_browser_dialog(
     )
 
 
-async def web_browser_eval(script: str, include_snapshot: bool = False) -> Dict[str, Any]:
-    """Run JavaScript in the current page and return its result.
+async def web_browser_eval(
+    script: Optional[str] = None,
+    include_snapshot: bool = False,
+    script_path: Optional[str] = None,
+    save_to: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Run JavaScript in the current page and return its result. Pass exactly one of script or script_path.
 
     Args:
         script: JavaScript expression of up to 16384 characters, evaluated in the
@@ -535,17 +540,76 @@ async def web_browser_eval(script: str, include_snapshot: bool = False) -> Dict[
             function, such as (async () => { ... })().
         include_snapshot: Wait for the page to settle and return a fresh
             snapshot as well. Leave false when only the result is needed.
+        script_path: Path of a JavaScript file in project files, up to 1 MiB,
+            evaluated like script. Use it for longer scripts.
+        save_to: Store the full result, up to 100 MiB, in project files at this
+            path instead of returning it. Strings are saved as text, other values
+            as JSON. A path ending in "/" is a folder and keeps the name
+            result.txt or result.json.
 
     Returns:
         status, result and url, plus a snapshot when include_snapshot is true.
         result is the expression's value as JSON, so return plain data rather
         than DOM nodes. Results over 32000 characters set result_truncated and
-        are cut off, with non-string values returned as JSON text. Script
-        errors return error_code script_error with the error message.
+        are cut off, with non-string values returned as JSON text; use save_to
+        to keep them whole. With save_to, saved_path and size replace result.
+        Script errors return error_code script_error with the error message.
     """
 
     raise RuntimeError(
         "web_browser_eval will be auto-injected when running via connic CLI or after deployment. "
+        "Run 'connic test' to test your agents with predefined tools."
+    )
+
+
+async def web_browser_network(
+    action: Literal["start", "list", "get", "stop"],
+    filter: Optional[str] = None,
+    request_id: Optional[str] = None,
+    save_to: Optional[str] = None,
+    include_credentials: bool = False,
+) -> Dict[str, Any]:
+    """Record the browser's network traffic and read the requests the page makes and their responses.
+
+    Start recording before the page loads the data you need, such as before
+    navigating or clicking. Recording continues across tool calls until stop
+    or until the browser closes. Authorization, Cookie, Set-Cookie and
+    Proxy-Authorization header values are replaced with [redacted] in
+    everything returned or saved, unless include_credentials is set.
+    Request and response bodies are not redacted.
+
+    Args:
+        action: start, list, get or stop. start begins recording and clears
+            earlier requests. list returns recorded requests. get returns one
+            request with its response body. stop ends recording.
+        filter: URL substring that limits list, such as /api/.
+        request_id: Request id from list, required for get.
+        save_to: For get, store the full response body in project files at this
+            path. For stop, store the recording as a HAR file. A path ending in
+            "/" is a folder and keeps the name response.json (or the matching
+            extension) or network.har.
+        include_credentials: For get without save_to, return Authorization,
+            Cookie, Set-Cookie and Proxy-Authorization values unredacted. For
+            custom code that must send its own authenticated requests. Never
+            return these values to the model or store them; connic does not
+            redact them in this mode.
+
+    Returns:
+        status and url, plus:
+        list: requests with id, method, url, status, type and size (from
+        Content-Length when sent), newest last, and request_count.
+        requests_truncated means only the most recent requests that fit in
+        32000 characters are listed; narrow them with filter.
+        get: request with method, url, status, mime_type, request_headers,
+        response_headers, post_data and body. Bodies over 32000 characters are
+        cut off and set body_truncated. body is null when the browser no longer
+        holds it, such as after navigating away, or for binary responses.
+        stop: request_count. The HAR keeps text response bodies up to 2 MB each.
+        With save_to, saved_path and size are returned instead of the body.
+    """
+
+    raise RuntimeError(
+        "web_browser_network will be auto-injected when running via connic CLI or after deployment. "
         "Run 'connic test' to test your agents with predefined tools."
     )
 
@@ -1014,17 +1078,17 @@ async def file_read(path: str) -> Dict[str, Any]:
 
 async def file_write(
     path: str,
-    content: str,
+    content: Union[str, bytes],
     mime_type: Optional[str] = None,
     metadata: Optional[Dict[str, Any]] = None,
     overwrite: bool = False,
 ) -> Dict[str, Any]:
     """
-    Write a text file to project files. Missing folders are created.
+    Write a file to project files. Missing folders are created.
 
     Args:
         path: File path such as "reports/2026/summary.md".
-        content: Text content of the file.
+        content: Text content, or bytes for binary files such as PDFs or images.
         mime_type: Content type. Guessed from the file name if omitted.
         metadata: Custom fields to filter on later, e.g. {"status": "pending"}.
                   Keys must not start with "_".
@@ -1110,6 +1174,7 @@ __all__ = [
     "web_browser_dialog",
     "web_browser_eval",
     "web_browser_console",
+    "web_browser_network",
     "web_browser_upload",
     "web_browser_download",
     "web_browser_pdf",

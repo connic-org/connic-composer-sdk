@@ -30,6 +30,7 @@ DOCUMENTED_PREDEFINED_TOOLS = [
     "web_browser_dialog",
     "web_browser_eval",
     "web_browser_console",
+    "web_browser_network",
     "web_browser_upload",
     "web_browser_download",
     "web_browser_pdf",
@@ -82,6 +83,7 @@ def test_documented_predefined_tools_can_be_referenced_from_agent_yaml(tmp_path)
           - web_browser_dialog
           - web_browser_eval
           - web_browser_console
+          - web_browser_network
           - web_browser_upload
           - web_browser_download
           - web_browser_pdf
@@ -2112,8 +2114,8 @@ def test_browser_wildcard_loads_concrete_predefined_tools(tmp_path, validation_o
     assert {tool.name for tool in browser_tools} == {
         "web_browser_open", "web_browser_observe", "web_browser_read", "web_browser_act", "web_browser_close",
         "web_browser_screenshot", "web_browser_mouse",
-        "web_browser_tabs", "web_browser_dialog", "web_browser_eval", "web_browser_console", "web_browser_upload",
-        "web_browser_download", "web_browser_pdf",
+        "web_browser_tabs", "web_browser_dialog", "web_browser_eval", "web_browser_console", "web_browser_network",
+        "web_browser_upload", "web_browser_download", "web_browser_pdf",
     }
     assert all(tool.is_predefined and tool.ref == tool.name for tool in browser_tools)
     assert not loader._load_errors
@@ -2121,7 +2123,7 @@ def test_browser_wildcard_loads_concrete_predefined_tools(tmp_path, validation_o
         assert {tool.name for tool in agent.tools} == {"search_tools", "use_tool"}
 
 
-@pytest.mark.parametrize("pattern,count", [("web_browser_*", 14), ("db_*", 7), ("*_delete", 3)])
+@pytest.mark.parametrize("pattern,count", [("web_browser_*", 15), ("db_*", 7), ("*_delete", 3)])
 def test_predefined_wildcard_applies_condition_to_each_tool(tmp_path, pattern, count):
     write_file(
         tmp_path / "agents" / "browser.yaml",
@@ -2604,6 +2606,26 @@ def test_load_middleware_ignores_non_callable_hook_attributes(tmp_path):
     assert loader.discover_middlewares() == {"support": ["after"]}
 
 
+@pytest.mark.parametrize("validation_only", [False, True])
+def test_load_middleware_with_only_cleanup(tmp_path, validation_only):
+    write_file(
+        tmp_path / "middleware" / "support.py",
+        """
+        async def cleanup(run, context):
+            context["cleaned_up"] = run["status"]
+        """,
+    )
+
+    loader = ProjectLoader(str(tmp_path), validation_only=validation_only)
+    middleware = loader.load_middleware("support")
+
+    assert middleware is not None
+    assert middleware.before is None
+    assert middleware.after is None
+    assert middleware.cleanup is not None
+    assert loader.discover_middlewares() == {"support": ["cleanup"]}
+
+
 def test_load_middleware_import_failure_returns_none_and_logs_warning(tmp_path, capsys):
     write_file(
         tmp_path / "middleware" / "support.py",
@@ -2742,6 +2764,107 @@ def test_discover_tool_hooks(tmp_path):
 def test_discover_tool_hooks_empty(tmp_path):
     loader = ProjectLoader(str(tmp_path))
     assert loader.discover_tool_hooks() == {}
+
+
+def test_middleware_hooks_and_guardrails_import_project_helpers_without_tools(tmp_path, capsys):
+    write_file(
+        tmp_path / "agents" / "assistant.yaml",
+        """
+        version: "1.0"
+        name: assistant
+        type: llm
+        model: openai/gpt-5.2
+        description: "Answers support questions without Python tools."
+        system_prompt: "Answer the customer."
+        """,
+    )
+    write_file(tmp_path / "hooks" / "_shared.py", '''REDACTED = "[redacted]"''')
+    write_file(tmp_path / "middleware" / "_common.py", '''GREETING = "Hello"''')
+    write_file(tmp_path / "tools" / "_helpers.py", '''SIGNATURE = "-- support"''')
+    write_file(
+        tmp_path / "middleware" / "assistant.py",
+        """
+        from hooks._shared import REDACTED
+        from middleware._common import GREETING
+        from tools._helpers import SIGNATURE
+
+
+        def after(response, context):
+            return f"{GREETING} {response} {REDACTED} {SIGNATURE}"
+        """,
+    )
+    write_file(
+        tmp_path / "hooks" / "assistant.py",
+        """
+        from hooks._shared import REDACTED
+        from middleware._common import GREETING
+        from tools._helpers import SIGNATURE
+
+
+        def after(tool_name, params, result, context):
+            return [GREETING, REDACTED, SIGNATURE]
+        """,
+    )
+    write_file(
+        tmp_path / "guardrails" / "policy.py",
+        """
+        from hooks._shared import REDACTED
+
+
+        def check(content: str, context: dict) -> bool:
+            return REDACTED not in content
+        """,
+    )
+
+    loader = ProjectLoader(str(tmp_path))
+    loader.load_agents()
+    middleware = loader.load_middleware("assistant")
+    hook = loader.load_tool_hooks("assistant")
+    guardrail = loader.load_guardrail("policy")
+
+    assert "Warning" not in capsys.readouterr().out
+    assert middleware.after("hi", {}) == "Hello hi [redacted] -- support"
+    assert hook.after("lookup", {}, None, {}) == ["Hello", "[redacted]", "-- support"]
+    assert guardrail.check("[redacted]", {}) is False
+
+
+def test_middleware_and_hook_helpers_stay_isolated_between_projects(tmp_path):
+    loaders = {}
+    for project_name in ("first", "second"):
+        project_root = tmp_path / f"{project_name}-project"
+        write_file(project_root / "middleware" / "_common.py", f'''PROJECT_NAME = "{project_name}"''')
+        write_file(project_root / "hooks" / "_shared.py", f'''PROJECT_NAME = "{project_name}"''')
+        write_file(
+            project_root / "middleware" / "assistant.py",
+            """
+            from middleware._common import PROJECT_NAME
+
+
+            def after(response, context):
+                return PROJECT_NAME
+            """,
+        )
+        write_file(
+            project_root / "hooks" / "assistant.py",
+            """
+            from hooks._shared import PROJECT_NAME
+
+
+            def after(tool_name, params, result, context):
+                return PROJECT_NAME
+            """,
+        )
+        loaders[project_name] = ProjectLoader(str(project_root))
+
+    first_middleware = loaders["first"].load_middleware("assistant")
+    second_middleware = loaders["second"].load_middleware("assistant")
+    second_hook = loaders["second"].load_tool_hooks("assistant")
+    first_hook = loaders["first"].load_tool_hooks("assistant")
+
+    assert first_middleware.after("", {}) == "first"
+    assert second_middleware.after("", {}) == "second"
+    assert second_hook.after("lookup", {}, None, {}) == "second"
+    assert first_hook.after("lookup", {}, None, {}) == "first"
 
 
 # ---------------------------------------------------------------------------
@@ -3721,8 +3844,9 @@ def test_browser_file_and_tab_schema_exposes_only_agent_inputs(tmp_path):
     for name, required in (
         ("tabs", []),
         ("dialog", ["action"]),
-        ("eval", ["script"]),
+        ("eval", []),
         ("console", []),
+        ("network", ["action"]),
         ("pdf", ["include_content"]),
         ("upload", ["target"]),
         ("download", ["target", "include_content"]),

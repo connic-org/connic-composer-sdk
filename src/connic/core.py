@@ -134,7 +134,12 @@ class Middleware(BaseModel):
     (run_id, agent_name, connector_id, timestamp) and you can add your own
     values. Values set on context are available in prompts via {var} syntax
     and in tools that declare a ``context`` parameter.
-    
+
+    The 'cleanup' middleware runs last, once the run has ended, whether it
+    completed, failed, timed out or was cancelled. It receives a ``run`` dict
+    with ``status`` ("completed", "failed" or "cancelled"), ``error`` and
+    ``output``. Its errors are logged and never change the run's status.
+
     Example middleware file:
         async def before(content: dict, context: dict) -> dict:
             # content = {"role": "user", "parts": [...]}
@@ -151,9 +156,14 @@ class Middleware(BaseModel):
             # context contains everything: system fields, your values from before(),
             # any values set by tools, plus token_usage and duration_ms
             return response
+
+        async def cleanup(run: dict, context: dict) -> None:
+            if run["status"] != "completed":
+                print(f"Run ended with {run['status']}: {run['error']}")
     """
     before: Optional[Callable[..., Any]] = None
     after: Optional[Callable[..., Any]] = None
+    cleanup: Optional[Callable[..., Any]] = None
 
     class Config:
         arbitrary_types_allowed = True

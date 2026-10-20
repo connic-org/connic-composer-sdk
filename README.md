@@ -10,7 +10,7 @@ Define agents in YAML, extend them with Python, test them with hot reload agains
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-[Documentation](https://connic.co/docs/v1/build/project-structure) • [Quickstart](https://connic.co/docs/v1/quickstart) • [Coding Agent Setup](https://connic.co/docs/v1/ai-agent-setup) • [Agent Templates](https://connic.co/agents) • [Dashboard](https://connic.co/projects)
+[Documentation](https://connic.co/docs/v1/build/project-structure) • [Quickstart](https://connic.co/docs/v1/quickstart) • [Coding Agent Setup](https://connic.co/docs/v1/ai-agent-setup) • [Agent Templates](https://connic.co/marketplace/agent-templates) • [Dashboard](https://connic.co/projects)
 
 </div>
 
@@ -64,7 +64,7 @@ The default scaffold is intentionally minimal. If you want a starter project wit
 connic init my-agents --templates=invoice,customer-support --skill
 ```
 
-Browse available templates at [connic.co/agents](https://connic.co/agents).
+Browse available templates at [connic.co/marketplace/agent-templates](https://connic.co/marketplace/agent-templates).
 
 The optional `--skill` flag installs the connic AI coding-agent skill into both `.agents/skills/connic` and `.claude/skills/connic` so supported coding agents can use the connic project layout, YAML fields, CLI flags, connector patterns, and best practices while editing your repo. For an existing project, run:
 
@@ -216,11 +216,11 @@ tools:
   - web_browser_*
 ```
 
-This includes `web_browser_open`, `web_browser_observe`, `web_browser_read`, `web_browser_act`, `web_browser_screenshot`, `web_browser_mouse`, `web_browser_tabs`, `web_browser_dialog`, `web_browser_eval`, `web_browser_console`, `web_browser_upload`, `web_browser_download`, `web_browser_pdf`, and `web_browser_close`. Individual tool names are also supported.
+This includes `web_browser_open`, `web_browser_observe`, `web_browser_read`, `web_browser_act`, `web_browser_screenshot`, `web_browser_mouse`, `web_browser_tabs`, `web_browser_dialog`, `web_browser_eval`, `web_browser_console`, `web_browser_network`, `web_browser_upload`, `web_browser_download`, `web_browser_pdf`, and `web_browser_close`. Individual tool names are also supported.
 
 Each run uses one browser, selected automatically for every browser tool call. Calling `web_browser_open` again returns "Browser already open"; use `web_browser_tabs` for additional pages. The browser closes when its run ends. Runs attached to the same connic session reuse saved cookies and local storage when `session.browser` is enabled.
 
-The agent can type into the focused field, hold and release keys, double-click, hover, check boxes, wait for text, URLs or elements, switch tabs and popups, and handle browser dialogs. `web_browser_observe` can limit the snapshot to interactive elements or a CSS selector. `web_browser_read()` returns the current page as Markdown. `web_browser_eval(script)` runs JavaScript in the current page and returns its JSON result. `web_browser_console()` returns recent console messages and JavaScript errors. Screenshots are sent as images to vision-capable text and voice models.
+The agent can type into the focused field, hold and release keys, double-click, hover, check boxes, wait for text, URLs or elements, switch tabs and popups, and handle browser dialogs. `web_browser_observe` can limit the snapshot to interactive elements or a CSS selector. `web_browser_read()` returns the current page as Markdown. `web_browser_eval(script)` runs JavaScript in the current page and returns its JSON result; `script_path` runs a script of up to 1 MiB from project files and `save_to` stores the full result there. `web_browser_console()` returns recent console messages and JavaScript errors. `web_browser_network(action)` records the requests the page makes and returns their response bodies, or saves a body or a HAR file to project files, with `Authorization`, `Cookie`, `Set-Cookie`, and `Proxy-Authorization` header values redacted. Screenshots are sent as images to vision-capable text and voice models.
 
 `web_browser_download(target, include_content=..., save_to=None)` keeps the downloaded file in the browser session and returns `download_id`, `name`, and `mime_type`. Set `include_content=True` to also return the file as an attachment, or `False` for metadata only. `web_browser_pdf(include_content=..., save_to=None)` saves the current page as a PDF the same way. Downloads and PDFs are limited to 25 MiB, or 100 MiB with `save_to`. Set `save_to` to also store the file in project files; the result includes `saved_path`. A path ending in `/` keeps the downloaded filename in that folder. Files over 25 MiB are saved without an attachment. Files remain available in the browser until the session closes.
 

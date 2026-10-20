@@ -85,8 +85,9 @@ Example::
       # Each is called as mock(tool_name, params, context) and its return
       # value replaces the real tool result. Calls are recorded for
       # expected_tool_calls assertions.
-      # The same module can replace middleware_before/middleware_after; tool
-      # hooks such as mock_data_customer_add_customer_hook_before (falling
+      # The same module can replace middleware_before/middleware_after/
+      # middleware_cleanup; tool hooks such as
+      # mock_data_customer_add_customer_hook_before (falling
       # back by tool prefix to mock_hook_before, with an equivalent after
       # ladder); and custom guardrails such as guardrail_input_domain_check
       # (then guardrail_input, then guardrail). A matching function replaces
@@ -464,8 +465,9 @@ class TestCase(BaseModel):
             "is substituted for the real tool result. Mocked calls are "
             "validated against the real tool's signature (required args, types, "
             "unknown args), so a malformed call fails the case. Middleware uses "
-            "``middleware_before(content, context)`` and "
-            "``middleware_after(response, context)``. Tool hooks append "
+            "``middleware_before(content, context)``, "
+            "``middleware_after(response, context)`` and "
+            "``middleware_cleanup(run, context)``. Tool hooks append "
             "``_hook_before`` or ``_hook_after`` to the tool hierarchy and fall "
             "back to ``mock_hook_before`` or ``mock_hook_after``; non-alphanumeric "
             "runs in each tool-ref segment normalize to ``_``. Hooks use the real "

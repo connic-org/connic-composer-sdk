@@ -58,6 +58,7 @@ PREDEFINED_TOOL_NAMES = {
     "web_browser_dialog",
     "web_browser_eval",
     "web_browser_console",
+    "web_browser_network",
     "web_browser_upload",
     "web_browser_download",
     "web_browser_pdf",
@@ -86,6 +87,7 @@ PREDEFINED_TOOL_ALIASES = {
 
 _TOOL_IMPORT_LOCK = RLock()
 _ACTIVE_TOOL_PROJECT_PATH: Optional[str] = None
+_PROJECT_PACKAGES = ("tools", "middleware", "hooks", "guardrails")
 
 
 def is_predefined_tool_name(name: str) -> bool:
@@ -1261,7 +1263,7 @@ class ProjectLoader:
         sys.path.insert(0, project_path)
 
         for name in list(sys.modules):
-            if name == "tools" or name.startswith("tools."):
+            if name.split(".", 1)[0] in _PROJECT_PACKAGES:
                 del sys.modules[name]
 
         importlib.invalidate_caches()
@@ -1313,15 +1315,18 @@ class ProjectLoader:
         self._remember_runtime_tool_modules()
 
     def _remember_runtime_tool_modules(self) -> None:
-        tools_root = self.tools_dir.resolve()
+        package_roots = {
+            package: (self.project_root / package).resolve() for package in _PROJECT_PACKAGES
+        }
         for name, module in list(sys.modules.items()):
-            if name != "tools" and not name.startswith("tools."):
+            package_root = package_roots.get(name.split(".", 1)[0])
+            if package_root is None:
                 continue
             module_paths = []
             if getattr(module, "__file__", None):
                 module_paths.append(module.__file__)
             module_paths.extend(getattr(module, "__path__", []))
-            if any(Path(path).resolve().is_relative_to(tools_root) for path in module_paths):
+            if any(Path(path).resolve().is_relative_to(package_root) for path in module_paths):
                 self._runtime_tool_modules[name] = module
 
     def _load_module_from_ast(self, import_name: str, file_path: Path):
@@ -1561,7 +1566,7 @@ class ProjectLoader:
             agent_name: Name of the agent (matches YAML filename without extension)
             
         Returns:
-            Middleware object with before/after functions, or None if no middleware exists
+            Middleware object with before/after/cleanup functions, or None if no middleware exists
         """
         # Check cache first
         if agent_name in self._loaded_middlewares:
@@ -1577,33 +1582,39 @@ class ProjectLoader:
             if self._validation_only:
                 module = self._load_module_from_ast(f"middleware.{agent_name}", middleware_file)
             else:
-                spec = importlib.util.spec_from_file_location(
-                    f"middleware.{agent_name}", middleware_file
-                )
-                if not spec or not spec.loader:
-                    self._loaded_middlewares[agent_name] = None
-                    return None
+                with _TOOL_IMPORT_LOCK:
+                    self._activate_tool_imports()
+                    spec = importlib.util.spec_from_file_location(
+                        f"middleware.{agent_name}", middleware_file
+                    )
+                    if not spec or not spec.loader:
+                        self._loaded_middlewares[agent_name] = None
+                        return None
 
-                module = importlib.util.module_from_spec(spec)
-                sys.modules[f"middleware.{agent_name}"] = module
-                spec.loader.exec_module(module)
+                    module = importlib.util.module_from_spec(spec)
+                    sys.modules[f"middleware.{agent_name}"] = module
+                    spec.loader.exec_module(module)
+                    self._remember_runtime_tool_modules()
             
-            # Extract before and after functions
+            # Extract before, after and cleanup functions
             before_func = getattr(module, 'before', None)
             after_func = getattr(module, 'after', None)
-            
+            cleanup_func = getattr(module, 'cleanup', None)
+
             # Validate they're callable if present
             if before_func is not None and not callable(before_func):
                 before_func = None
             if after_func is not None and not callable(after_func):
                 after_func = None
-            
-            # If neither exists, return None
-            if before_func is None and after_func is None:
+            if cleanup_func is not None and not callable(cleanup_func):
+                cleanup_func = None
+
+            # If none exists, return None
+            if before_func is None and after_func is None and cleanup_func is None:
                 self._loaded_middlewares[agent_name] = None
                 return None
-            
-            middleware = Middleware(before=before_func, after=after_func)
+
+            middleware = Middleware(before=before_func, after=after_func, cleanup=cleanup_func)
             self._loaded_middlewares[agent_name] = middleware
             return middleware
             
@@ -1617,7 +1628,7 @@ class ProjectLoader:
         Discover all middleware files and their available hooks.
         
         Returns:
-            Dict mapping agent names to lists of available hooks ('before', 'after')
+            Dict mapping agent names to lists of available hooks ('before', 'after', 'cleanup')
         """
         if not self.middleware_dir.exists():
             return {}
@@ -1636,6 +1647,8 @@ class ProjectLoader:
                         hooks.append("before")
                     if mw.after is not None:
                         hooks.append("after")
+                    if mw.cleanup is not None:
+                        hooks.append("cleanup")
                     if hooks:
                         middlewares[agent_name] = hooks
             except Exception as e:
@@ -1668,16 +1681,19 @@ class ProjectLoader:
             if self._validation_only:
                 module = self._load_module_from_ast(f"hooks.{agent_name}", hook_file)
             else:
-                spec = importlib.util.spec_from_file_location(
-                    f"hooks.{agent_name}", hook_file
-                )
-                if not spec or not spec.loader:
-                    self._loaded_tool_hooks[agent_name] = None
-                    return None
+                with _TOOL_IMPORT_LOCK:
+                    self._activate_tool_imports()
+                    spec = importlib.util.spec_from_file_location(
+                        f"hooks.{agent_name}", hook_file
+                    )
+                    if not spec or not spec.loader:
+                        self._loaded_tool_hooks[agent_name] = None
+                        return None
 
-                module = importlib.util.module_from_spec(spec)
-                sys.modules[f"hooks.{agent_name}"] = module
-                spec.loader.exec_module(module)
+                    module = importlib.util.module_from_spec(spec)
+                    sys.modules[f"hooks.{agent_name}"] = module
+                    spec.loader.exec_module(module)
+                    self._remember_runtime_tool_modules()
 
             before_func = getattr(module, 'before', None)
             after_func = getattr(module, 'after', None)
@@ -1772,16 +1788,19 @@ class ProjectLoader:
                 self._loaded_guardrails[name] = None
                 return None
 
-            spec = importlib.util.spec_from_file_location(
-                f"guardrails.{name}", guardrail_file
-            )
-            if not spec or not spec.loader:
-                self._loaded_guardrails[name] = None
-                return None
-            
-            module = importlib.util.module_from_spec(spec)
-            sys.modules[f"guardrails.{name}"] = module
-            spec.loader.exec_module(module)
+            with _TOOL_IMPORT_LOCK:
+                self._activate_tool_imports()
+                spec = importlib.util.spec_from_file_location(
+                    f"guardrails.{name}", guardrail_file
+                )
+                if not spec or not spec.loader:
+                    self._loaded_guardrails[name] = None
+                    return None
+
+                module = importlib.util.module_from_spec(spec)
+                sys.modules[f"guardrails.{name}"] = module
+                spec.loader.exec_module(module)
+                self._remember_runtime_tool_modules()
             
             check_func = getattr(module, 'check', None)
             

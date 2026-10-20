@@ -25,6 +25,10 @@ Middleware:
     
     async def after(response: str, context: dict) -> str:
         return response
+
+    async def cleanup(run: dict, context: dict) -> None:
+        # Runs once the run has ended: completed, failed, timed out or cancelled
+        pass
 """
 
 # Predefined tools module - for use in custom tools
@@ -52,7 +56,7 @@ from .core import (
 )
 from .loader import ProjectLoader
 
-__version__ = "0.1.53"
+__version__ = "0.1.54"
 
 __all__ = [
     "AbortTool",
