@@ -220,7 +220,7 @@ This includes `web_browser_open`, `web_browser_observe`, `web_browser_read`, `we
 
 Each run uses one browser, selected automatically for every browser tool call. Calling `web_browser_open` again returns "Browser already open"; use `web_browser_tabs` for additional pages. The browser closes when its run ends. Runs attached to the same connic session reuse saved cookies and local storage when `session.browser` is enabled.
 
-The agent can type into the focused field, hold and release keys, double-click, hover, check boxes, wait for text, URLs or elements, switch tabs and popups, and handle browser dialogs. `web_browser_observe` can limit the snapshot to interactive elements or a CSS selector. `web_browser_read()` returns the current page as Markdown. `web_browser_eval(script)` runs JavaScript in the current page and returns its JSON result; `script_path` runs a script of up to 1 MiB from project files and `save_to` stores the full result there. `web_browser_console()` returns recent console messages and JavaScript errors. `web_browser_network(action)` records the requests the page makes and returns their response bodies, or saves a body or a HAR file to project files, with `Authorization`, `Cookie`, `Set-Cookie`, and `Proxy-Authorization` header values redacted. Screenshots are sent as images to vision-capable text and voice models.
+The agent can type into the focused field, hold and release keys, double-click, hover, check boxes, wait for text, URLs or elements, switch tabs and popups, and handle browser dialogs. `web_browser_observe` can limit the snapshot to interactive elements or a CSS selector. `web_browser_read()` returns the current page as Markdown. `web_browser_eval(script)` runs JavaScript in the current page and returns its JSON result; `script_path` runs a script of up to 8 MiB from project files and `save_to` stores the full result there. `web_browser_console()` returns recent console messages and JavaScript errors. `web_browser_network(action)` records the requests the page makes and returns their response bodies, or saves a body or a HAR file to project files, with `Authorization`, `Cookie`, `Set-Cookie`, and `Proxy-Authorization` header values redacted. Screenshots are sent as images to vision-capable text and voice models.
 
 `web_browser_download(target, include_content=..., save_to=None)` keeps the downloaded file in the browser session and returns `download_id`, `name`, and `mime_type`. Set `include_content=True` to also return the file as an attachment, or `False` for metadata only. `web_browser_pdf(include_content=..., save_to=None)` saves the current page as a PDF the same way. Downloads and PDFs are limited to 25 MiB, or 100 MiB with `save_to`. Set `save_to` to also store the file in project files; the result includes `saved_path`. A path ending in `/` keeps the downloaded filename in that folder. Files over 25 MiB are saved without an attachment. Files remain available in the browser until the session closes.
 
@@ -324,6 +324,7 @@ Run `connic <command> --help` for flags and examples.
 - unresolved tool references
 - duplicate agent names
 - schema and middleware loading problems
+- test suites in `tests/` that fail the suite schema or target an agent that doesn't exist
 
 ### Hot-Reload Testing
 

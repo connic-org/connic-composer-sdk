@@ -1388,6 +1388,17 @@ def _run_lint(verbose: bool = False, quiet: bool = False, project_root: str = ".
         elif not loader.connectors_dir.exists():
             _info("No connectors/ directory found")
 
+    # Check test suites
+    if not quiet:
+        _step("Checking test suites...")
+    suite_count, suite_errors = _test_suite_errors(loader.project_root, loaded_agent_names)
+    errors.extend(suite_errors)
+    if not quiet:
+        if suite_count:
+            _ok(f"{suite_count} test suite(s) found")
+        else:
+            _info("No test suites found in tests/ directory")
+
     if quiet:
         if errors:
             for err in errors:
@@ -1701,6 +1712,71 @@ def _render_failed_runs(detail: dict | None) -> None:
         _info(f"  … and {remaining} more failed run(s) not shown")
 
 
+def _discover_test_suites(project_root: Path) -> list[tuple[str, str, "TestFile | None", str | None]]:
+    """Parse every uploaded ``tests/**/*.yaml`` suite like the test container does.
+
+    Returns ``(path, agent_name, parsed, error)`` per suite. Raises
+    ``ValueError`` when ``tests/`` itself is a symlink.
+    """
+    import yaml as _yaml
+
+    from .test_schema import TestFile
+
+    tests_dir = project_root / "tests"
+    if tests_dir.is_symlink():
+        raise ValueError(f"Symbolic links are not allowed: {tests_dir}")
+    suites: list[tuple[str, str, TestFile | None, str | None]] = []
+    if not tests_dir.is_dir():
+        return suites
+    for path in sorted(tests_dir.rglob("*")):
+        rel = path.relative_to(project_root)
+        # Hidden files are never uploaded; empty suites are skipped by the runner.
+        if any(part.startswith(".") for part in rel.parts):
+            continue
+        if not path.is_file() or path.suffix.lower() != ".yaml":
+            continue
+        agent_name = path.stem
+        try:
+            with open(contained_source(path, tests_dir)) as f:
+                doc = _yaml.safe_load(f)
+            if doc is None:
+                continue
+            if isinstance(doc, dict) and isinstance(doc.get("agent"), str):
+                agent_name = doc["agent"]
+            parsed = TestFile(**doc)
+            error = None
+        except Exception as e:
+            parsed = None
+            error = f"{rel}: {e}"
+        suites.append((rel.as_posix(), agent_name, parsed, error))
+    return suites
+
+
+def _test_suite_errors(project_root: Path, agent_names: set[str]) -> tuple[int, list[str]]:
+    """Check every test suite parses and targets a loaded agent. Returns ``(suite_count, errors)``."""
+    import difflib
+
+    try:
+        suites = _discover_test_suites(project_root)
+    except ValueError as e:
+        return 0, [str(e)]
+    errors: list[str] = []
+    for path, agent_name, parsed, error in suites:
+        if error is not None:
+            errors.append(error)
+            continue
+        if agent_name in agent_names:
+            continue
+        message = f"{path}: unknown agent '{agent_name}'"
+        if parsed.agent is None:
+            message += " (from the file name; set `agent:` to target another agent)"
+        matches = difflib.get_close_matches(agent_name, sorted(agent_names), n=3)
+        if matches:
+            message += f". Did you mean {', '.join(repr(m) for m in matches)}?"
+        errors.append(message)
+    return len(suites), errors
+
+
 def _compute_local_coverage(project_root: Path) -> dict:
     """Static, offline test-coverage report.
 
@@ -1713,8 +1789,6 @@ def _compute_local_coverage(project_root: Path) -> dict:
     Auto-injected discovery markers (`search_tools`, `use_tool`) are excluded
     so users don't get penalised for plumbing they didn't author.
     """
-    import yaml as _yaml
-
     from .core import AgentType
     from .test_schema import TestFile
 
@@ -1725,28 +1799,15 @@ def _compute_local_coverage(project_root: Path) -> dict:
         return {"agents": [], "overall": 0.0, "error": str(e)}
     load_error = "; ".join(loader._load_errors) or None
 
-    tests_dir = project_root / "tests"
-    if tests_dir.is_symlink():
-        return {"agents": [], "overall": 0.0, "error": f"Symbolic links are not allowed: {tests_dir}"}
+    try:
+        discovered = _discover_test_suites(project_root)
+    except ValueError as e:
+        return {"agents": [], "overall": 0.0, "error": str(e)}
     DISCOVERY_MARKERS = {"search_tools", "use_tool"}
 
     test_suites: dict[str, list[tuple[TestFile | None, str | None]]] = {}
-    if tests_dir.is_dir():
-        for path in sorted(tests_dir.rglob("*")):
-            if not path.is_file() or path.suffix.lower() != ".yaml":
-                continue
-            agent_name = path.stem
-            try:
-                with open(contained_source(path, tests_dir)) as f:
-                    doc = _yaml.safe_load(f) or {}
-                if isinstance(doc, dict) and isinstance(doc.get("agent"), str):
-                    agent_name = doc["agent"]
-                parsed = TestFile(**doc)
-                error = None
-            except Exception as e:
-                parsed = None
-                error = f"{path.relative_to(project_root)}: {e}"
-            test_suites.setdefault(agent_name, []).append((parsed, error))
+    for _, agent_name, parsed, error in discovered:
+        test_suites.setdefault(agent_name, []).append((parsed, error))
 
     rows: list[dict] = []
     for agent in agents:
@@ -2572,6 +2633,19 @@ def test(env: str | None, filter_name: str | None, coverage: bool, as_json: bool
 
     if not as_json:
         _h1("Test")
+        _step("Checking test suites...")
+    loader = ProjectLoader(".", validation_only=True)
+    try:
+        agent_names = {a.config.name for a in loader.load_agents()}
+    except FileNotFoundError:
+        agent_names = set()
+    suite_count, suite_errors = _test_suite_errors(Path("."), agent_names)
+    if suite_errors:
+        for error in suite_errors:
+            _err(error)
+        _fail_and_exit("Fix the test suites above before running tests. `connic lint` checks the whole project.")
+    if not as_json and suite_count:
+        _ok(f"{suite_count} test suite(s) found")
 
     try:
         tar_data, _, n_tests = _package_project_for_tests(quiet=as_json)

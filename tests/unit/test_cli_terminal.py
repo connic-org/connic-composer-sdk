@@ -53,8 +53,17 @@ def test_project_terminal_output_escapes_controls(tmp_path, monkeypatch, command
 @pytest.mark.parametrize("as_json", [False, True])
 def test_api_test_output_escapes_controls_and_preserves_json(tmp_path, monkeypatch, as_json):
     monkeypatch.chdir(tmp_path)
+    (tmp_path / "agents").mkdir()
+    (tmp_path / "agents" / "support.yaml").write_text(
+        'version: "1.0"\n'
+        "name: support\n"
+        "type: llm\n"
+        "model: openai/gpt-4o\n"
+        "system_prompt: Help customers.\n"
+        "description: Support agent\n"
+    )
     (tmp_path / "tests").mkdir()
-    (tmp_path / "tests" / "support.yaml").write_text("tests: []\n")
+    (tmp_path / "tests" / "support.yaml").write_text("tests:\n  - name: refund\n    payload: Refund my order\n")
     case = {
         "agent_name": "support" + CONTROL_TEXT,
         "test_name": "refund" + CONTROL_TEXT,

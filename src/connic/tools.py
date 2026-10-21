@@ -540,7 +540,7 @@ async def web_browser_eval(
             function, such as (async () => { ... })().
         include_snapshot: Wait for the page to settle and return a fresh
             snapshot as well. Leave false when only the result is needed.
-        script_path: Path of a JavaScript file in project files, up to 1 MiB,
+        script_path: Path of a JavaScript file in project files, up to 8 MiB,
             evaluated like script. Use it for longer scripts.
         save_to: Store the full result, up to 100 MiB, in project files at this
             path instead of returning it. Strings are saved as text, other values
@@ -637,7 +637,7 @@ async def web_browser_tabs(
         "Run 'connic test' to test your agents with predefined tools."
     )
 
-async def web_browser_open(url: str, country: str = "DE") -> Dict[str, Any]:
+async def web_browser_open(url: str, country: str = "EU", timezone: Optional[str] = None) -> Dict[str, Any]:
     """Open the current run's browser and navigate to a URL.
 
     If the browser is already open, return "Browser already open" without navigating.
@@ -650,12 +650,20 @@ async def web_browser_open(url: str, country: str = "DE") -> Dict[str, Any]:
     Args:
         url: Public HTTP or HTTPS URL to open.
         country: ISO 3166-1 alpha-2 country code the browser browses from,
-            such as DE, AT or US. Applies when the browser opens.
+            such as DE or US, or EU for a location in the EU. Applies when the
+            browser opens. If no page loads from that country, the browser
+            reopens from the EU, then without a location.
+        timezone: IANA timezone that pages use for dates and times, such as
+            Europe/Berlin or America/Chicago. Defaults to the main timezone of
+            country, and to Europe/Berlin for EU. Applies to every page and tab
+            until the browser closes.
 
     Returns:
-        status, url and a snapshot containing page text and element
-        references, plus profile_mode (write or read_only) when a saved
-        profile is used. Further browser tools use this browser automatically.
+        status, url, the country the browser browses from (null without a
+        location), the timezone pages use (null if it could not be set) and a
+        snapshot containing page text and element references, plus
+        profile_mode (write or read_only) when a saved profile is used.
+        Further browser tools use this browser automatically.
         An already open browser returns only status and a message.
     """
 
