@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import re
 from typing import Any, Dict, List, Optional
+from urllib.parse import urlsplit
 
 _VARIABLE = re.compile(r"\$\{[A-Za-z_][A-Za-z0-9_]*\}")
 _INTEGER = re.compile(r"-?[0-9]+")
@@ -60,7 +61,7 @@ CONFIG_FIELDS: Dict[str, Dict[str, Dict[str, Any]]] = {
     },
     "websocket": {
         "streaming": {"type": "boolean", "default": True},
-        "progress_events": {"type": "boolean", "default": False},
+        "progress_events": {"type": "boolean", "default": False, "show_when": {"streaming": [True]}},
         "require_auth": {"type": "boolean", "default": True},
         "session_timeout": {"type": "number", "default": 3600, "min": 60, "max": 86400},
         "max_messages_per_session": {"type": "number", "default": 100, "min": 1, "max": 10000},
@@ -163,6 +164,11 @@ DEPRECATED_CONFIG_FIELDS: Dict[str, frozenset[str]] = {"s3": frozenset({"endpoin
 # Modes that can use a bridge, for types that allow it only in some modes.
 BRIDGE_MODES: Dict[str, tuple[str, ...]] = {"http": ("outbound",)}
 
+# Types whose inbound and sync events can carry files, so their agent links can set files_required.
+FILE_TYPES = frozenset({
+    "http", "mcp", "websocket", "email", "s3", "kafka", "sqs", "telegram", "twilio_messaging", "telnyx_messaging",
+})
+
 _CRON_MACROS = frozenset({"@yearly", "@annually", "@monthly", "@weekly", "@daily", "@midnight", "@hourly"})
 
 
@@ -172,6 +178,31 @@ def check_routes(connector_type: str, mode: str, *, bridge: Optional[str], domai
         raise ValueError(f"{connector_type} connectors use a bridge only in {' or '.join(BRIDGE_MODES[connector_type])} mode")
     if domain is not None and mode == "outbound":
         raise ValueError("outbound connectors have no URL, so they can't use a custom domain")
+
+
+def receives_files(connector_type: str, mode: str) -> bool:
+    return connector_type in FILE_TYPES and mode != "outbound"
+
+
+def check_destination(connector_type: str, mode: str, config: Dict[str, Any], *, bridge: Optional[str]) -> None:
+    """Without a bridge, an outbound HTTP connector sends to an HTTPS URL on port 443.
+
+    Whether its host resolves to a public address is checked when the connector is saved.
+    """
+    url = config.get("outbound_url")
+    if connector_type != "http" or mode != "outbound" or bridge or not isinstance(url, str) or _has_variable(url):
+        return
+    parsed = urlsplit(url.strip())
+    if parsed.scheme.lower() != "https" or not parsed.hostname:
+        raise ValueError("config.outbound_url must be an https:// URL; use a bridge to reach other destinations")
+    if parsed.username is not None or parsed.password is not None:
+        raise ValueError("config.outbound_url must not include credentials")
+    try:
+        port = parsed.port
+    except ValueError:
+        raise ValueError("config.outbound_url has an invalid port") from None
+    if port not in (None, 443):
+        raise ValueError("config.outbound_url must use port 443; use a bridge to reach other ports")
 
 
 def _has_variable(value: Any) -> bool:
@@ -307,4 +338,8 @@ def check_config(
             values[name] = field["default"]
         elif field.get("required"):
             raise ValueError(f"config.{_RATE_LIMIT_LABELS.get(name, name)} is required")
+
+    per_key, key = values.get("rate_limit_per_key_per_minute"), values.get("rate_limit_key")
+    if type(per_key) is int and per_key > 0 and not (isinstance(key, str) and key.strip()):
+        raise ValueError("config.rate_limit.key is required when config.rate_limit.per_key is set")
     return values

@@ -168,6 +168,13 @@ def test_outbound_link_settings():
          "action_name must start with a lowercase letter"),
         ({"type": "cron", "environments": {}}, "environments must list at least one environment"),
         ({"type": "cron", "schedule": "* * * * *"}, "Extra inputs are not permitted"),
+        ({"type": "webhook", "mode": "sync", "name": "x" * 201}, "String should have at most 200 characters"),
+        ({"type": "cron", "config": {"schedule": "0 2 * * *"},
+          "agents": [{"name": "order-processor", "files_required": True}]},
+         "agent 'order-processor': cron connectors don't receive files, so files_required can't be true"),
+        ({"type": "webhook", "mode": "outbound", "config": {"outbound_url": "https://e.com"},
+          "agents": [{"name": "order-processor", "files_required": True}]},
+         "agent 'order-processor': outbound connectors don't receive files"),
     ],
 )
 def test_rejects_invalid_connector(data, message):
@@ -275,6 +282,19 @@ TWILIO_SMS = {"type": "twilio_messaging", "connection": "twilio-main"}
          "config.aws_access_key_id belongs to the connection"),
         ({**SQS, "mode": "inbound", "config": {**SQS["config"], "region": "eu-central-1"}},
          "config.region isn't a sqs connector field"),
+        ({"type": "webhook", "mode": "sync", "config": {"rate_limit": {"per_key": 10}}},
+         "config.rate_limit.key is required when config.rate_limit.per_key is set"),
+        # Without a bridge, outbound webhooks send to a public HTTPS URL on port 443.
+        ({"type": "webhook", "mode": "outbound", "config": {"outbound_url": "http://example.com/r"}},
+         "config.outbound_url must be an https:// URL"),
+        ({"type": "webhook", "mode": "outbound", "config": {"outbound_url": "https://example.com:8443/r"}},
+         "config.outbound_url must use port 443"),
+        ({"type": "webhook", "mode": "outbound", "config": {"outbound_url": "https://user:pw@example.com/r"}},
+         "config.outbound_url must not include credentials"),
+        ({"type": "telegram", "mode": "inbound", "config": {"bot_token": "${BOT_TOKEN}", "allowed_user_ids": "123, alice"}},
+         "config.allowed_user_ids must list numeric Telegram user IDs such as 123456789; 'alice' isn't one"),
+        ({"type": "telegram", "mode": "outbound", "config": {"bot_token": "${BOT_TOKEN}", "chat_id": "@support"}},
+         "config.chat_id must be a numeric Telegram chat ID"),
     ],
 )
 def test_rejects_invalid_config(data, message):
@@ -343,6 +363,31 @@ def test_connector_level_bridge_and_s3_endpoint_are_deprecated_where_the_connect
     # The deploy compares the deprecated endpoint with the connection's, so the config check skips it.
     assert "endpoint_url" not in check_config("s3", "inbound", s3.config)
     assert webhook.deprecations() == []
+
+
+def test_outbound_url_rules_skip_bridges_and_variables():
+    for bridge, url in ((None, "${RESULTS_URL}"), (None, "https://${RESULTS_HOST}:8443/r"), ("vpc", "http://hooks.internal:8080")):
+        hook = connector(type="webhook", mode="outbound", bridge=bridge, config={"outbound_url": url}, agents=["order-processor"])
+        assert hook.for_environment("Production")["config"]["outbound_url"] == url
+
+
+def test_per_key_rate_limit_with_a_key_and_files_on_receiving_connectors_pass():
+    hook = connector(
+        type="webhook",
+        mode="sync",
+        config={"rate_limit": {"key": "X-Customer-Id", "per_key": 10}},
+        agents=[{"name": "order-processor", "files_required": True}],
+    )
+
+    assert hook.for_environment("Production")["agents"][0].files_required is True
+    assert check_config("http", "sync", {"rate_limit": {"per_key": "${PER_KEY}"}})["rate_limit_per_key_per_minute"] == "${PER_KEY}"
+
+
+def test_telegram_ids_accept_numbers_lists_and_variables():
+    inbound = {"bot_token": "${BOT_TOKEN}", "allowed_user_ids": ["123456789", "${SUPPORT_USER_ID}"]}
+    assert connector(type="telegram", mode="inbound", config=inbound, agents=["order-processor"])
+    outbound = {"bot_token": "${BOT_TOKEN}", "chat_id": "-1001234567890"}
+    assert connector(type="telegram", mode="outbound", config=outbound, agents=["order-processor"])
 
 
 def test_telegram_chat_id_may_be_an_unquoted_number():

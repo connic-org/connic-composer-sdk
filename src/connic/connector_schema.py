@@ -35,7 +35,7 @@ from typing import Any, Dict, List, Literal, Optional, Tuple
 
 from pydantic import BaseModel, ConfigDict, Field, StrictBool, field_validator, model_validator
 
-from .connector_fields import DEPRECATED_CONFIG_FIELDS, check_config, check_routes
+from .connector_fields import DEPRECATED_CONFIG_FIELDS, check_config, check_destination, check_routes, receives_files
 
 CONNECTOR_KEY_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,99}$")
 _VARIABLE_PATTERN = re.compile(r"\$\{([^}]*)\}")
@@ -47,6 +47,8 @@ _VOICE_NUMBER_PATTERNS = {
     "telnyx": re.compile(r"^(\+[1-9][0-9]{6,14}|[0-9]+)$"),
 }
 _VOICE_NUMBER_IDS = {"twilio": "Twilio SID starting with PN", "telnyx": "Telnyx ID"}
+_TELEGRAM_USER_ID_PATTERN = re.compile(r"^[1-9][0-9]*$")
+_TELEGRAM_CHAT_ID_PATTERN = re.compile(r"^-?[1-9][0-9]*$")
 
 CONNECTOR_MODES: Dict[str, Tuple[str, ...]] = {
     "http": ("inbound", "outbound", "sync"),
@@ -129,6 +131,23 @@ def _normalize_agent_links(value: Any) -> Any:
     return value
 
 
+def _check_telegram_ids(config: Dict[str, Any]) -> None:
+    """Telegram user and chat IDs are numbers. Values with ${NAME} are checked on deploy."""
+    users = config.get("allowed_user_ids") or []
+    items = users.replace("\n", ",").split(",") if isinstance(users, str) else users if isinstance(users, list) else [users]
+    for item in items:
+        user_id = str(item).strip()
+        if user_id and "${" not in user_id and not _TELEGRAM_USER_ID_PATTERN.fullmatch(user_id):
+            raise ValueError(
+                f"config.allowed_user_ids must list numeric Telegram user IDs such as 123456789; '{user_id}' isn't one"
+            )
+    chat_id = str(config.get("chat_id") or "").strip()
+    if chat_id and "${" not in chat_id and not _TELEGRAM_CHAT_ID_PATTERN.fullmatch(chat_id):
+        raise ValueError(
+            f"config.chat_id must be a numeric Telegram chat ID such as 123456789 or -1001234567890; '{chat_id}' isn't one"
+        )
+
+
 class OutboundLink(BaseModel):
     """How a linked agent uses an outbound connector."""
 
@@ -174,7 +193,7 @@ class ConnectorOverride(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    name: Optional[str] = Field(default=None, min_length=1)
+    name: Optional[str] = Field(default=None, min_length=1, max_length=200)
     connection: Optional[str] = Field(default=None, min_length=1)
     bridge: Optional[str] = Field(default=None, min_length=1)
     domain: Optional[str] = Field(default=None, min_length=1)
@@ -195,7 +214,7 @@ class ConnectorFile(BaseModel):
     key: str = Field(description="Taken from the filename stem.")
     type: str
     mode: Optional[str] = None
-    name: Optional[str] = Field(default=None, min_length=1, description="Defaults to the key.")
+    name: Optional[str] = Field(default=None, min_length=1, max_length=200, description="Defaults to the key.")
     connection: Optional[str] = Field(default=None, min_length=1)
     bridge: Optional[str] = Field(default=None, min_length=1)
     domain: Optional[str] = Field(default=None, min_length=1)
@@ -288,8 +307,11 @@ class ConnectorFile(BaseModel):
             if key.startswith("_"):
                 raise ValueError(f"config.{key} is reserved for connic")
         config = check_config(self.type, self.mode, spec["config"])
+        check_destination(self.type, self.mode, config, bridge=spec["bridge"])
         if self.type == "s3" and config["include_content"] is True and spec["connection"] is None:
             raise ValueError("s3 connectors need a connection to include file content")
+        if self.type == "telegram":
+            _check_telegram_ids(config)
 
         if self.type in VOICE_TYPES:
             phone_number = spec["config"]["phone_number"]
@@ -312,6 +334,9 @@ class ConnectorFile(BaseModel):
             seen.add(link.name)
             if link.outbound is not None and self.mode != "outbound":
                 raise ValueError(f"agent '{link.name}': outbound settings need an outbound connector")
+            if link.files_required and not receives_files(self.type, self.mode):
+                kind = "outbound" if self.mode == "outbound" else self.type
+                raise ValueError(f"agent '{link.name}': {kind} connectors don't receive files, so files_required can't be true")
 
     def deprecations(self) -> List[str]:
         """Deprecated settings the file uses, one warning per setting."""
