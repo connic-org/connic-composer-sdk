@@ -414,10 +414,10 @@ class ContextCompressionConfig(BaseModel):
 class ConcurrencyConfig(BaseModel):
     """
     Key-based concurrency control for agent runs.
-    
+
     Ensures only one run per unique key value is active at a time.
     The key is extracted from the trigger payload using dot-notation.
-    
+
     Example YAML:
         concurrency:
           key: "process_id"

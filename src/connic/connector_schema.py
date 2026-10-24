@@ -8,7 +8,7 @@ Example::
     type: kafka
     mode: inbound
     name: Order events                # optional, defaults to the key
-    connection: orders-kafka-staging  # saved Connection, by name
+    connection: orders-kafka-staging  # saved Connection, by name or ID
     bridge: staging-cluster           # Bridge name or ID
     config:                           # connector fields, same names as the REST API
       topic: ${ORDER_EVENTS_TOPIC}
@@ -36,11 +36,18 @@ from typing import Any, Dict, List, Literal, Optional, Tuple
 
 from pydantic import BaseModel, ConfigDict, Field, StrictBool, field_validator, model_validator
 
+from .connector_fields import check_config, check_routes
+
 CONNECTOR_KEY_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,99}$")
 _VARIABLE_PATTERN = re.compile(r"\$\{([^}]*)\}")
 _VARIABLE_NAME_PATTERN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 _ACTION_NAME_PATTERN = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
-_PHONE_NUMBER_PATTERN = re.compile(r"^\+[1-9][0-9]{6,14}$")
+# A voice number in E.164 format or as the provider's ID.
+_VOICE_NUMBER_PATTERNS = {
+    "twilio": re.compile(r"^(\+[1-9][0-9]{6,14}|PN[0-9a-fA-F]{32})$"),
+    "telnyx": re.compile(r"^(\+[1-9][0-9]{6,14}|[0-9]+)$"),
+}
+_VOICE_NUMBER_IDS = {"twilio": "Twilio SID starting with PN", "telnyx": "Telnyx ID"}
 
 CONNECTOR_MODES: Dict[str, Tuple[str, ...]] = {
     "http": ("inbound", "outbound", "sync"),
@@ -65,7 +72,7 @@ CONNECTION_TYPES = frozenset({
     "kafka", "sqs", "s3", "postgres", "email", "twilio", "twilio_messaging", "telnyx", "telnyx_messaging",
 })
 BRIDGE_TYPES = frozenset({"http", "kafka", "sqs", "s3", "postgres", "email"})
-DOMAIN_TYPES = frozenset({"http", "mcp", "s3", "stripe", "telegram", "websocket"})
+DOMAIN_TYPES = frozenset({"http", "mcp", "s3", "stripe", "websocket"})
 VOICE_TYPES = frozenset({"twilio", "telnyx"})
 
 GENERATED_FIELDS: Dict[str, frozenset[str]] = {
@@ -85,6 +92,7 @@ _RELOCATED_CONFIG_KEYS = {
     "mode": "mode",
     "connection_id": "connection",
     "bridge_id": "bridge",
+    "domain_id": "domain",
     "phone_number_sid": "config.phone_number",
     "phone_number_id": "config.phone_number",
 }
@@ -264,6 +272,7 @@ class ConnectorFile(BaseModel):
             raise ValueError(f"{self.type} connectors don't support a bridge")
         if self.type not in DOMAIN_TYPES and spec["domain"] is not None:
             raise ValueError(f"{self.type} connectors don't support a custom domain")
+        check_routes(self.type, self.mode, bridge=spec["bridge"], domain=spec["domain"])
 
         generated = GENERATED_FIELDS.get(self.type, frozenset())
         for key in spec["config"]:
@@ -273,13 +282,15 @@ class ConnectorFile(BaseModel):
                 raise ValueError(f"config.{key} isn't allowed; use {_RELOCATED_CONFIG_KEYS[key]} instead")
             if key.startswith("_"):
                 raise ValueError(f"config.{key} is reserved for connic")
+        check_config(self.type, self.mode, spec["config"])
 
         if self.type in VOICE_TYPES:
-            phone_number = spec["config"].get("phone_number")
-            if not isinstance(phone_number, str):
-                raise ValueError("config.phone_number is required, in E.164 format such as +4930123456")
-            if "${" not in phone_number and not _PHONE_NUMBER_PATTERN.fullmatch(phone_number):
-                raise ValueError(f"config.phone_number '{phone_number}' must be in E.164 format such as +4930123456")
+            phone_number = spec["config"]["phone_number"]
+            if "${" not in phone_number and not _VOICE_NUMBER_PATTERNS[self.type].fullmatch(phone_number):
+                raise ValueError(
+                    f"config.phone_number '{phone_number}' must be in E.164 format such as +4930123456, "
+                    f"or the number's {_VOICE_NUMBER_IDS[self.type]}"
+                )
 
         agents: List[AgentLink] = spec["agents"]
         if not agents:
@@ -309,14 +320,19 @@ class ConnectorFile(BaseModel):
         return self._merge(override) if override is not None else None
 
     def _merge(self, override: ConnectorOverride) -> Dict[str, Any]:
+        # An override set to null removes the value from the top of the file.
+        def pick(field: str) -> Optional[str]:
+            return getattr(override, field) if field in override.model_fields_set else getattr(self, field)
+
+        config = {**self.config, **override.config}
         return {
             "key": self.key,
             "type": self.type,
             "mode": self.mode,
             "name": override.name or self.name or self.key,
-            "connection": override.connection or self.connection,
-            "bridge": override.bridge or self.bridge,
-            "domain": override.domain or self.domain,
-            "config": {**self.config, **override.config},
+            "connection": pick("connection"),
+            "bridge": pick("bridge"),
+            "domain": pick("domain"),
+            "config": {key: value for key, value in config.items() if value is not None},
             "agents": override.agents if override.agents is not None else self.agents,
         }

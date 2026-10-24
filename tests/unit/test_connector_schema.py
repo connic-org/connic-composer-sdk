@@ -4,6 +4,7 @@ import pytest
 from pydantic import ValidationError
 
 from connic import cli
+from connic.connector_fields import check_config
 from connic.connector_schema import ConnectorFile
 from connic.loader import ProjectLoader
 
@@ -114,7 +115,7 @@ def test_connector_without_environments_deploys_everywhere_with_defaults():
 
     assert webhook.type == "http"
     assert webhook.for_environment("Production")["name"] == "order-events"
-    assert connector(type="cron", agents=["order-processor"]).mode == "inbound"
+    assert connector(type="cron", config={"schedule": "0 2 * * *"}, agents=["order-processor"]).mode == "inbound"
 
 
 def test_outbound_link_settings():
@@ -122,6 +123,7 @@ def test_outbound_link_settings():
         type="kafka",
         mode="outbound",
         connection="orders-kafka",
+        config={"topic": "order-results"},
         agents=[
             {"name": "order-processor", "outbound": {"usage": "middleware", "action_name": "publish_order"}},
             {"name": "audit-logger", "outbound": {"usage": "automatic", "source": ["order-events"]}},
@@ -148,6 +150,8 @@ def test_outbound_link_settings():
         ({"type": "cron", "connection": "orders-kafka"}, "cron connectors don't use a connection"),
         ({"type": "cron", "bridge": "cluster"}, "cron connectors don't support a bridge"),
         ({"type": "cron", "domain": "hooks.example.com"}, "cron connectors don't support a custom domain"),
+        ({"type": "telegram", "mode": "inbound", "domain": "hooks.example.com"},
+         "telegram connectors don't support a custom domain"),
         ({"type": "cron", "config": {"prompt": "${context.user}"}}, "is not a variable reference"),
         ({"type": "cron", "config": {"prompt": "${TOPIC"}}, "unterminated '${' variable reference"),
         ({"type": "cron", "name": "Orders ${ENV}"}, "name can't use ${...}"),
@@ -188,11 +192,144 @@ def test_environment_override_is_validated():
     )
 
 
+KAFKA = {"type": "kafka", "connection": "orders-kafka"}
+SQS = {"type": "sqs", "connection": "orders-sqs", "config": {"queue_url": "https://sqs.eu-central-1.amazonaws.com/1/q"}}
+TWILIO_SMS = {"type": "twilio_messaging", "connection": "twilio-main"}
+
+
+@pytest.mark.parametrize(
+    "data,message",
+    [
+        ({"type": "cron", "config": {"promt": "x"}}, "config.promt isn't a cron connector field"),
+        ({"type": "cron", "config": {}}, "config.schedule is required"),
+        ({**KAFKA, "mode": "inbound", "config": {"topic": "t", "bootstrap_servers": "k:9092"}},
+         "config.bootstrap_servers belongs to the connection"),
+        ({"type": "webhook", "mode": "inbound", "domain": "hooks.example.com", "config": {"domain_id": "d"}},
+         "config.domain_id isn't allowed; use domain instead"),
+        ({"type": "webhook", "mode": "sync", "config": {"webhook_url": "https://x"}},
+         "config.webhook_url isn't a http connector field"),
+        ({"type": "webhook", "mode": "sync", "config": {"rate_limit_per_minute": 60}},
+         "config.rate_limit_per_minute isn't allowed; use config.rate_limit.total instead"),
+        ({"type": "webhook", "mode": "sync", "config": {"rate_limit": {"per_minute": 60}}},
+         "config.rate_limit.per_minute isn't a rate limit field"),
+        # Keys that don't apply to the mode
+        ({"type": "webhook", "mode": "inbound", "config": {"outbound_url": "https://example.com/r"}},
+         "config.outbound_url only applies to outbound connectors"),
+        ({"type": "webhook", "mode": "outbound", "config": {"outbound_url": "https://example.com/r", "require_auth": False}},
+         "config.require_auth only applies to inbound or sync connectors"),
+        ({"type": "webhook", "mode": "outbound", "config": {"outbound_url": "https://e.com", "rate_limit": {"total": 5}}},
+         "config.rate_limit.total only applies to inbound or sync connectors"),
+        ({**KAFKA, "mode": "outbound", "config": {"topic": "t", "group_id": "g"}},
+         "config.group_id only applies to inbound connectors"),
+        ({**KAFKA, "mode": "outbound", "config": {"topic": "t", "auto_offset_reset": "earliest"}},
+         "config.auto_offset_reset only applies to inbound connectors"),
+        ({**SQS, "mode": "outbound", "config": {**SQS["config"], "max_messages": 5}},
+         "config.max_messages only applies to inbound connectors"),
+        ({**SQS, "mode": "inbound", "config": {**SQS["config"], "message_group_id": "g"}},
+         "config.message_group_id only applies to outbound connectors"),
+        ({"type": "email", "mode": "outbound", "connection": "smtp", "config": {"from_address": "a@b.c", "mailbox": "X"}},
+         "config.mailbox only applies to inbound connectors"),
+        ({"type": "email", "mode": "inbound", "connection": "imap", "config": {"default_to": "a@b.c"}},
+         "config.default_to only applies to outbound connectors"),
+        ({"type": "telegram", "mode": "inbound", "config": {"bot_token": "${BOT_TOKEN}", "chat_id": "-100"}},
+         "config.chat_id only applies to outbound connectors"),
+        ({"type": "telegram", "mode": "outbound", "config": {"bot_token": "${BOT_TOKEN}", "allowed_user_ids": "1"}},
+         "config.allowed_user_ids only applies to inbound connectors"),
+        ({**TWILIO_SMS, "mode": "inbound", "config": {"sender": "+4930123456", "to": "+4930654321"}},
+         "config.to only applies to outbound connectors"),
+        ({"type": "telnyx_messaging", "mode": "outbound", "connection": "telnyx",
+          "config": {"sender": "+4930123456", "whatsapp_template": {"name": "hi"}}},
+         "config.whatsapp_template only applies when config.channel is whatsapp"),
+        ({"type": "webhook", "mode": "sync", "bridge": "cluster"}, "http connectors use a bridge only in outbound mode"),
+        ({"type": "webhook", "mode": "outbound", "domain": "hooks.example.com", "config": {"outbound_url": "https://e.com"}},
+         "outbound connectors have no URL, so they can't use a custom domain"),
+        # Values that don't match the field type
+        ({"type": "websocket", "config": {"session_timeout": "soon"}}, "config.session_timeout must be a whole number"),
+        ({"type": "websocket", "config": {"session_timeout": 10}}, "config.session_timeout must be between 60 and 86400"),
+        ({"type": "webhook", "mode": "sync", "config": {"rate_limit": {"total": 5000}}},
+         "config.rate_limit.total must be between 0 and 1000"),
+        ({"type": "webhook", "mode": "sync", "config": {"require_auth": "no"}}, "config.require_auth must be true or false"),
+        ({**KAFKA, "mode": "inbound", "config": {"topic": "t", "auto_offset_reset": "newest"}},
+         "config.auto_offset_reset must be one of latest, earliest"),
+        ({"type": "telegram", "mode": "outbound", "config": {"bot_token": "${BOT_TOKEN}", "chat_id": 1.5}},
+         "config.chat_id must be a string; put values such as phone numbers and IDs in quotes"),
+        ({**TWILIO_SMS, "mode": "inbound", "config": {"sender": 4930123456}}, "config.sender must be a string"),
+        ({"type": "telegram", "mode": "inbound", "config": {"bot_token": "${BOT_TOKEN}", "allowed_user_ids": [123]}},
+         "config.allowed_user_ids[0] must be a string; put it in quotes"),
+        ({"type": "twilio", "connection": "twilio-main", "config": {"phone_number": 4930123456}, "agents": ["phone-agent"]},
+         "config.phone_number must be a string"),
+        ({"type": "stripe", "config": {"webhook_secret": "whsec_literal"}}, "config.webhook_secret is a secret"),
+    ],
+)
+def test_rejects_invalid_config(data, message):
+    data.setdefault("agents", ["order-processor"])
+
+    with pytest.raises(ValidationError) as exc_info:
+        connector(**data)
+
+    assert message in str(exc_info.value)
+
+
+def test_config_accepts_variables_quoted_numbers_and_null_as_unset():
+    websocket = connector(
+        type="websocket",
+        config={"session_timeout": "${SESSION_TIMEOUT}", "max_messages_per_session": "50", "streaming": None},
+        agents=["order-processor"],
+    )
+
+    assert websocket.for_environment("Production")["config"] == {
+        "session_timeout": "${SESSION_TIMEOUT}",
+        "max_messages_per_session": "50",
+    }
+
+
+def test_telegram_chat_id_may_be_an_unquoted_number():
+    bot = connector(
+        type="telegram",
+        mode="outbound",
+        config={"bot_token": "${BOT_TOKEN}", "chat_id": -1001234567890},
+        agents=["order-processor"],
+    )
+
+    config = check_config("telegram", "outbound", {**bot.config, "bot_token": "123:abc"}, resolved=True)
+    assert config["chat_id"] == "-1001234567890"
+
+
+def test_override_null_removes_bridge_domain_and_config_keys():
+    staging_only = connector(
+        type="kafka",
+        mode="inbound",
+        connection="orders-kafka",
+        bridge="vpc",
+        config={"topic": "orders", "group_id": "connic-orders"},
+        agents=["order-processor"],
+        environments={"Production": None, "Staging": {"bridge": None, "config": {"group_id": None}}},
+    )
+    webhook = connector(
+        type="webhook",
+        mode="sync",
+        domain="hooks.example.com",
+        agents=["order-processor"],
+        environments={"Staging": {"domain": None}},
+    )
+
+    production = staging_only.for_environment("Production")
+    assert (production["bridge"], production["config"]) == ("vpc", {"topic": "orders", "group_id": "connic-orders"})
+    staging = staging_only.for_environment("Staging")
+    assert (staging["bridge"], staging["config"]) == (None, {"topic": "orders"})
+    assert webhook.for_environment("Staging")["domain"] is None
+
+    with pytest.raises(ValidationError) as exc_info:
+        connector(**{**KAFKA, "mode": "inbound", "config": {"topic": "t"}, "environments": {"Staging": {"connection": None}}})
+    assert "environment 'Staging': kafka connectors need a connection" in str(exc_info.value)
+
+
 @pytest.mark.parametrize(
     "config,agents,message",
     [
         ({}, ["phone-agent"], "config.phone_number is required"),
         ({"phone_number": "030123456"}, ["phone-agent"], "must be in E.164 format"),
+        ({"phone_number": {"number": "${HOTLINE_NUMBER}"}}, ["phone-agent"], "config.phone_number must be a string"),
         ({"phone_number_sid": "PN123", "phone_number": "+4930123456"}, ["phone-agent"],
          "config.phone_number_sid isn't allowed; use config.phone_number instead"),
         ({"phone_number": "+4930123456"}, ["phone-agent", "order-processor"],
@@ -215,6 +352,42 @@ def test_voice_connector_accepts_number_from_variable():
     )
 
     assert voice.mode == "sync"
+
+
+@pytest.mark.parametrize(
+    "connector_type,phone_number,valid",
+    [
+        ("twilio", "PN" + "a" * 32, True),
+        ("twilio", "PN123", False),
+        ("telnyx", "1293384261075731499", True),
+        ("telnyx", "PN" + "a" * 32, False),
+    ],
+)
+def test_voice_connector_accepts_provider_number_ids(connector_type, phone_number, valid):
+    data = dict(type=connector_type, connection="phones", config={"phone_number": phone_number}, agents=["phone-agent"])
+
+    if valid:
+        assert connector(**data).for_environment("Production")["config"]["phone_number"] == phone_number
+    else:
+        with pytest.raises(ValidationError, match="must be in E.164 format such as"):
+            connector(**data)
+
+
+def test_check_config_lists_ignored_fields_instead_of_failing():
+    ignored = []
+
+    values = check_config(
+        "http",
+        "inbound",
+        {"require_auth": "false", "outbound_url": "https://example.com", "legacy": 1, "rate_limit": {"total": "5"}},
+        resolved=True,
+        ignored=ignored,
+    )
+
+    assert ignored == ["config.legacy", "config.outbound_url"]
+    assert values["require_auth"] is False
+    assert values["rate_limit_per_minute"] == 5
+    assert "outbound_url" not in values
 
 
 def test_project_without_connectors_directory_declares_none(tmp_path):
@@ -273,6 +446,136 @@ def test_loader_checks_links_names_and_file_layout(tmp_path):
     ]
 
 
+def test_loader_checks_outbound_sources_action_names_and_agent_types(tmp_path):
+    write_agents(tmp_path)
+    write_file(
+        tmp_path / "agents" / "pipeline.yaml",
+        """
+        version: "1.0"
+        name: pipeline
+        description: Runs the order processor
+        type: sequential
+        agents:
+          - order-processor
+        """,
+    )
+    write_file(
+        tmp_path / "connectors" / "orders.yaml",
+        """
+        type: webhook
+        mode: inbound
+        agents: [order-processor]
+        environments:
+          Staging: {}
+        """,
+    )
+    write_file(
+        tmp_path / "connectors" / "nightly.yaml",
+        """
+        type: cron
+        config:
+          schedule: "0 2 * * *"
+        agents: [audit-logger]
+        """,
+    )
+    write_file(
+        tmp_path / "connectors" / "results.yaml",
+        """
+        type: webhook
+        mode: outbound
+        config:
+          outbound_url: https://example.com/results
+        agents:
+          - name: order-processor
+            outbound: {usage: automatic, source: [orders, nightly]}
+        environments:
+          Staging: {}
+          Production: {}
+        """,
+    )
+    write_file(
+        tmp_path / "connectors" / "notify.yaml",
+        """
+        type: webhook
+        mode: outbound
+        config:
+          outbound_url: https://example.com/notify
+        agents:
+          - name: order-processor
+            outbound: {usage: agent_tool, action_name: notify}
+          - name: pipeline
+            outbound: {usage: agent_tool, action_name: notify}
+        """,
+    )
+    write_file(
+        tmp_path / "connectors" / "notify-again.yaml",
+        """
+        type: webhook
+        mode: outbound
+        config:
+          outbound_url: https://example.com/notify-again
+        agents:
+          - name: order-processor
+            outbound: {usage: middleware, action_name: notify}
+          - name: audit-logger
+            outbound: {usage: automatic, source: [results]}
+        environments:
+          Production: {}
+        """,
+    )
+
+    _connectors, errors = load(tmp_path)
+
+    assert errors == [
+        "connectors/notify-again.yaml (environment 'Production'): outbound source 'results' must be an inbound or "
+        "sync connector",
+        "connectors/notify-again.yaml (environment 'Production'): outbound source 'results' doesn't link agent "
+        "'audit-logger'",
+        "connectors/notify.yaml: action 'notify' of agent 'order-processor' is also used by "
+        "connectors/notify-again.yaml",
+        "connectors/notify.yaml: agent 'pipeline' is a sequential agent; usage agent_tool needs an llm agent",
+        "connectors/results.yaml (environment 'Staging'): outbound source 'nightly' doesn't link agent "
+        "'order-processor'",
+        "connectors/results.yaml (environment 'Production'): outbound source 'orders' isn't deployed to this "
+        "environment",
+        "connectors/results.yaml (environment 'Production'): outbound source 'nightly' doesn't link agent "
+        "'order-processor'",
+    ]
+
+
+def test_loader_reports_an_outbound_source_that_skips_environments_the_outbound_reaches(tmp_path):
+    write_agents(tmp_path)
+    write_file(
+        tmp_path / "connectors" / "orders.yaml",
+        """
+        type: webhook
+        mode: inbound
+        agents: [order-processor]
+        environments:
+          Staging: {}
+        """,
+    )
+    write_file(
+        tmp_path / "connectors" / "results.yaml",
+        """
+        type: webhook
+        mode: outbound
+        config:
+          outbound_url: https://example.com/results
+        agents:
+          - name: order-processor
+            outbound: {usage: automatic, source: [orders]}
+        """,
+    )
+
+    _connectors, errors = load(tmp_path)
+
+    assert errors == [
+        "connectors/results.yaml: outbound source 'orders' is only deployed to Staging; "
+        "list the same environments in this file",
+    ]
+
+
 def test_connector_names_may_repeat_across_separate_environments(tmp_path):
     write_agents(tmp_path)
     for key, environment in (("orders-staging", "Staging"), ("orders-production", "Production")):
@@ -281,6 +584,8 @@ def test_connector_names_may_repeat_across_separate_environments(tmp_path):
             f"""
             type: cron
             name: Nightly orders
+            config:
+              schedule: "0 2 * * *"
             agents: [order-processor]
             environments:
               {environment}: {{}}
@@ -301,6 +606,8 @@ def test_lint_lists_connectors_and_reports_errors(tmp_path, capsys):
         type: kafka
         mode: inbound
         connection: orders-kafka
+        config:
+          topic: orders
         agents: [order-processor, audit-logger]
         environments:
           Staging: {}
@@ -319,7 +626,7 @@ def test_lint_lists_connectors_and_reports_errors(tmp_path, capsys):
         in capsys.readouterr().out
     )
 
-    write_file(tmp_path / "connectors" / "nightly.yaml", "type: cron\nagents: [missing-agent]")
+    write_file(tmp_path / "connectors" / "nightly.yaml", "type: cron\nconfig: {schedule: '0 2 * * *'}\nagents: [missing-agent]")
 
     assert cli._run_lint(quiet=True, project_root=str(tmp_path)) is False
     assert "connectors/nightly.yaml: agent 'missing-agent' doesn't exist in agents/" in capsys.readouterr().err

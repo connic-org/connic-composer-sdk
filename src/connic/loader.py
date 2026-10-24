@@ -355,6 +355,7 @@ class ProjectLoader:
 
         agents_by_name = {agent.config.name: agent for agent in agents}
         names: List[tuple[Optional[str], str, str]] = []
+        actions: List[tuple[Optional[str], str, str, str]] = []
         for key, connector in connectors.items():
             location = f"connectors/{key}.yaml"
             for environment, spec in connector.specs():
@@ -367,12 +368,54 @@ class ProjectLoader:
                         self._load_errors.append(
                             f"{location}{where}: agent '{link.name}' needs voice_config to answer calls"
                         )
+                    elif link.outbound and link.outbound.usage == "agent_tool" and agent.config.type != AgentType.LLM:
+                        self._load_errors.append(
+                            f"{location}{where}: agent '{link.name}' is a {agent.config.type.value} agent; "
+                            "usage agent_tool needs an llm agent"
+                        )
                     source = link.outbound.source if link.outbound else None
                     for source_key in source or []:
-                        if source_key not in connectors:
+                        source_connector = connectors.get(source_key)
+                        if source_connector is None:
                             self._load_errors.append(
                                 f"{location}{where}: outbound source '{source_key}' isn't a connector in connectors/"
                             )
+                            continue
+                        if source_connector.mode not in ("inbound", "sync"):
+                            self._load_errors.append(
+                                f"{location}{where}: outbound source '{source_key}' must be an inbound or sync connector"
+                            )
+                        source_specs = (
+                            [source_connector.for_environment(environment)]
+                            if environment
+                            else [source_spec for _, source_spec in source_connector.specs()]
+                        )
+                        if environment is None and source_connector.environments is not None:
+                            self._load_errors.append(
+                                f"{location}: outbound source '{source_key}' is only deployed to "
+                                f"{', '.join(source_connector.environments)}; list the same environments in this file"
+                            )
+                        if source_specs == [None]:
+                            self._load_errors.append(
+                                f"{location}{where}: outbound source '{source_key}' isn't deployed to this environment"
+                            )
+                        elif any(link.name not in {item.name for item in source_spec["agents"]} for source_spec in source_specs):
+                            self._load_errors.append(
+                                f"{location}{where}: outbound source '{source_key}' doesn't link agent '{link.name}'"
+                            )
+                    action_name = link.outbound.action_name if link.outbound else None
+                    if action_name:
+                        for other_environment, other_agent, other_action, other_key in actions:
+                            if (
+                                other_key != key
+                                and (other_agent, other_action) == (link.name, action_name)
+                                and (environment is None or other_environment is None or environment == other_environment)
+                            ):
+                                self._load_errors.append(
+                                    f"{location}{where}: action '{action_name}' of agent '{link.name}' is also used by "
+                                    f"connectors/{other_key}.yaml"
+                                )
+                        actions.append((environment, link.name, action_name, key))
                 for other_environment, other_name, other_key in names:
                     if (
                         other_key != key
