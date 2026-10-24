@@ -1378,6 +1378,9 @@ def _run_lint(verbose: bool = False, quiet: bool = False, project_root: str = ".
     connectors = loader.load_connectors(agents)
     errors.extend(loader._load_errors)
     loader._load_errors.clear()
+    for key, connector in connectors.items():
+        for warning in connector.deprecations():
+            _warn(f"connectors/{key}.yaml: {warning}")
     if not quiet:
         if connectors:
             _ok(f"{len(connectors)} connector(s) loaded")

@@ -83,8 +83,8 @@ CONFIG_FIELDS: Dict[str, Dict[str, Dict[str, Any]]] = {
         "suffix": {"type": "text"},
         "event_types": {"type": "select", "default": "created", "options": ["created", "all"]},
         "include_content": {"type": "boolean", "default": False},
+        "region": {"type": "text", "required": True, "show_when": {"include_content": [True]}},
         "max_file_size_mb": {"type": "number", "default": 10, "min": 1, "max": 10},
-        "endpoint_url": {"type": "url"},
     },
     "postgres": {
         "channel": {"type": "text", "required": True},
@@ -135,20 +135,20 @@ CONFIG_FIELDS: Dict[str, Dict[str, Dict[str, Any]]] = {
     },
 }
 
-_AWS = frozenset({"region", "aws_access_key_id", "aws_secret_access_key"})
+_AWS = frozenset({"aws_access_key_id", "aws_secret_access_key", "endpoint_url", "bridge_id"})
 _TWILIO = frozenset({"region", "account_sid", "auth_token"})
 _TELNYX = frozenset({"api_key", "public_key"})
 CONNECTION_FIELDS: Dict[str, frozenset[str]] = {
     "kafka": frozenset({
         "bootstrap_servers", "security_protocol", "sasl_mechanism", "sasl_username", "sasl_password",
-        "ssl_ca_pem", "ssl_cert_pem", "ssl_key_pem", "ssl_password", "ssl_check_hostname",
+        "ssl_ca_pem", "ssl_cert_pem", "ssl_key_pem", "ssl_password", "ssl_check_hostname", "bridge_id",
     }),
     "sqs": _AWS,
     "s3": _AWS,
-    "postgres": frozenset({"host", "port", "database", "username", "password", "ssl_mode"}),
+    "postgres": frozenset({"host", "port", "database", "username", "password", "ssl_mode", "bridge_id"}),
     "email": frozenset({
         "imap_host", "imap_port", "imap_use_ssl", "imap_username", "imap_password",
-        "smtp_host", "smtp_port", "smtp_use_tls", "smtp_username", "smtp_password", "ssl_ca_pem",
+        "smtp_host", "smtp_port", "smtp_use_tls", "smtp_username", "smtp_password", "ssl_ca_pem", "bridge_id",
     }),
     "twilio": _TWILIO,
     "twilio_messaging": _TWILIO,
@@ -156,8 +156,14 @@ CONNECTION_FIELDS: Dict[str, frozenset[str]] = {
     "telnyx_messaging": _TELNYX,
 }
 
+# Settings that moved to the Connection. Until April 30, 2027 a file may keep them when they match the
+# Connection's; the deploy checks that.
+DEPRECATED_CONFIG_FIELDS: Dict[str, frozenset[str]] = {"s3": frozenset({"endpoint_url"})}
+
 # Modes that can use a bridge, for types that allow it only in some modes.
 BRIDGE_MODES: Dict[str, tuple[str, ...]] = {"http": ("outbound",)}
+
+_CRON_MACROS = frozenset({"@yearly", "@annually", "@monthly", "@weekly", "@daily", "@midnight", "@hourly"})
 
 
 def check_routes(connector_type: str, mode: str, *, bridge: Optional[str], domain: Optional[str]) -> None:
@@ -193,6 +199,8 @@ def _flatten(connector_type: str, config: Dict[str, Any], ignored: Optional[List
                     values[RATE_LIMIT_BLOCK[key]] = item
         elif name in _RATE_LIMIT_LABELS and name in fields:
             raise ValueError(f"config.{name} isn't allowed; use config.{_RATE_LIMIT_LABELS[name]} instead")
+        elif name in DEPRECATED_CONFIG_FIELDS.get(connector_type, ()):
+            continue
         elif name in connection:
             raise ValueError(f"config.{name} belongs to the connection; set it on the Connection instead")
         elif name not in fields:
@@ -212,8 +220,15 @@ def _condition_failure(field: Dict[str, Any], mode: str, values: Dict[str, Any],
             continue
         if key == "mode":
             return f"only applies to {' or '.join(expected)} connectors"
-        return f"only applies when config.{key} is {' or '.join(expected)}"
+        allowed = (str(item).lower() if isinstance(item, bool) else item for item in expected)
+        return f"only applies when config.{key} is {' or '.join(allowed)}"
     return None
+
+
+def _is_cron(value: str) -> bool:
+    """Five fields or a macro; a sixth field would be read as seconds at the end, not the start."""
+    value = value.strip()
+    return value in _CRON_MACROS if value.startswith("@") else len(value.split()) == 5
 
 
 def _value(label: str, field: Dict[str, Any], value: Any) -> Any:
@@ -244,6 +259,11 @@ def _value(label: str, field: Dict[str, Any], value: Any) -> Any:
         value = str(value)
     elif not isinstance(value, str):
         raise ValueError(f"{label} must be a string; put values such as phone numbers and IDs in quotes")
+    elif kind == "cron" and not _is_cron(value):
+        raise ValueError(
+            f"{label} must have five fields (minute, hour, day of month, month, day of week) "
+            "or be a macro such as @daily"
+        )
     return value
 
 
