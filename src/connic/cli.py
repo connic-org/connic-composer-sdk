@@ -2749,13 +2749,15 @@ def test(env: str | None, filter_name: str | None, coverage: bool, as_json: bool
 @click.option("--api-key", envvar="CONNIC_API_KEY", help="connic API key")
 @click.option("--project-id", envvar="CONNIC_PROJECT_ID", help="connic project ID")
 @click.option("--base-url", envvar="CONNIC_BASE_URL", default=DEFAULT_BASE_URL, help="connic dashboard URL")
-def login(token: str | None, api_key: str | None, project_id: str | None, base_url: str):
+@click.option("--api-url", envvar="CONNIC_API_URL", default=DEFAULT_API_URL, help="connic API URL")
+def login(token: str | None, api_key: str | None, project_id: str | None, base_url: str, api_url: str):
     """
     Save connic credentials for the current project.
 
     Creates a .connic file with your API key and project ID.
-    Run without options for interactive mode - opens the dashboard
-    to create an API key and gives you a single token to paste.
+    Run without options to approve the login in your browser: the
+    command prints a link, waits for the approval, and needs no input,
+    so coding agents can run it too.
 
     \b
     Example:
@@ -2770,6 +2772,11 @@ def login(token: str | None, api_key: str | None, project_id: str | None, base_u
 
     if token:
         project_id, api_key = _parse_login_token(token)
+
+    if not api_key or not project_id:
+        approved = _browser_login(api_url)
+        if approved is not None:
+            project_id, api_key = approved
 
     if not api_key or not project_id:
         login_url = f"{base_url}/projects?to=/settings/cli?add=1"
@@ -2803,6 +2810,64 @@ def login(token: str | None, api_key: str | None, project_id: str | None, base_u
     _warn("Remember to add .connic to your .gitignore!")
 
     _done("Logged in.")
+
+
+def _browser_login(api_url: str) -> tuple[str, str] | None:
+    """Wait for the login to be approved in the dashboard. None means the API predates browser approval."""
+    import socket
+    import time
+    import webbrowser
+
+    api_url = api_url.rstrip("/")
+    with httpx.Client(timeout=30.0, follow_redirects=True) as client:
+        try:
+            response = client.post(f"{api_url}/cli/login/start", json={"hostname": socket.gethostname()})
+        except httpx.RequestError as e:
+            _err(f"Could not reach connic: {e}")
+            raise SystemExit(1)
+        if response.status_code == 404:
+            return None
+        if response.status_code != 200:
+            _err(f"Could not start the login (HTTP {response.status_code}).")
+            raise SystemExit(1)
+        request = response.json()
+
+        _step("Approve this login in your browser:")
+        click.secho(f"    {request['verification_url']}", fg="cyan", underline=True)
+        _info(f"Confirmation code: {request['user_code']}")
+        try:
+            webbrowser.open(request["verification_url"])
+        except Exception:
+            pass
+        _info("Waiting for approval...")
+
+        deadline = time.monotonic() + request["expires_in"]
+        interval = request["interval"]
+        while time.monotonic() < deadline:
+            time.sleep(interval)
+            try:
+                poll = client.post(f"{api_url}/cli/login/token", json={"device_code": request["device_code"]})
+            except httpx.RequestError:
+                continue
+            if poll.status_code == 200:
+                approved = poll.json()
+                return approved["project_id"], approved["api_key"]
+            if poll.status_code == 429:
+                interval += 2
+                continue
+            error = poll.json().get("error") if poll.status_code == 400 else None
+            if error == "authorization_pending":
+                continue
+            if error == "access_denied":
+                _err("The login was denied in the browser.")
+                raise SystemExit(1)
+            if error != "expired_token":
+                _err(f"Login failed (HTTP {poll.status_code}).")
+                raise SystemExit(1)
+            break
+
+    _err("The login request expired. Run `connic login` again.")
+    raise SystemExit(1)
 
 
 def _parse_login_token(token: str) -> tuple[str, str]:

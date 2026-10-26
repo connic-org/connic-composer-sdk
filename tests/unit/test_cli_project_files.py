@@ -892,9 +892,30 @@ def test_parse_login_token_requires_project_and_api_key():
         cli._parse_login_token("proj_123:")
 
 
-def test_login_command_opens_dashboard_and_saves_interactive_token(tmp_path, monkeypatch):
+def _mock_login_api(monkeypatch, respond):
+    client_class = cli.httpx.Client
+    monkeypatch.setattr(
+        cli.httpx,
+        "Client",
+        lambda **kwargs: client_class(transport=cli.httpx.MockTransport(respond), **kwargs),
+    )
+    monkeypatch.setattr("time.sleep", lambda _seconds: None)
+
+
+def _login_start_response():
+    return cli.httpx.Response(200, json={
+        "device_code": "device-secret",
+        "user_code": "BCDF-GHJK",
+        "verification_url": "https://app.connic.test/cli/authorize?code=BCDF-GHJK",
+        "expires_in": 600,
+        "interval": 3,
+    })
+
+
+def test_login_command_falls_back_to_pasted_token_when_api_predates_browser_approval(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(cli, "print_update_hint", lambda: None)
+    _mock_login_api(monkeypatch, lambda _request: cli.httpx.Response(404, json={"detail": "Not Found"}))
     opened_urls = []
 
     def fake_open(url):
@@ -905,7 +926,7 @@ def test_login_command_opens_dashboard_and_saves_interactive_token(tmp_path, mon
 
     result = CliRunner().invoke(
         cli.main,
-        ["login", "--base-url", "https://app.connic.test"],
+        ["login", "--base-url", "https://app.connic.test", "--api-url", "https://api.connic.test/v1"],
         input="proj_123:cnc_live_secret\n",
     )
 
@@ -918,6 +939,63 @@ def test_login_command_opens_dashboard_and_saves_interactive_token(tmp_path, mon
     assert "Credentials saved to .connic" in result.output
     assert "API key:  cnc_live_sec..." in result.output
     assert "Project:  proj_123" in result.output
+
+
+def test_login_command_waits_for_browser_approval_without_reading_input(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(cli, "print_update_hint", lambda: None)
+    monkeypatch.setattr("socket.gethostname", lambda: "dev-laptop")
+    opened_urls = []
+    monkeypatch.setattr("webbrowser.open", lambda url: opened_urls.append(url) or True)
+    requests = []
+    polls = iter([
+        cli.httpx.Response(400, json={"error": "authorization_pending"}),
+        cli.httpx.Response(429, json={"detail": "Rate limit exceeded."}),
+        cli.httpx.Response(200, json={"project_id": "proj_123", "api_key": "cnc_live_secret"}),
+    ])
+
+    def respond(request):
+        requests.append((request.url.path, json.loads(request.content)))
+        if request.url.path.endswith("/cli/login/start"):
+            return _login_start_response()
+        return next(polls)
+
+    _mock_login_api(monkeypatch, respond)
+
+    result = CliRunner().invoke(cli.main, ["login", "--api-url", "https://api.connic.test/v1/"])
+
+    assert result.exit_code == 0, result.output
+    assert requests[0] == ("/v1/cli/login/start", {"hostname": "dev-laptop"})
+    assert requests[1:] == [("/v1/cli/login/token", {"device_code": "device-secret"})] * 3
+    assert opened_urls == ["https://app.connic.test/cli/authorize?code=BCDF-GHJK"]
+    assert "BCDF-GHJK" in result.output
+    assert json.loads((tmp_path / ".connic").read_text()) == {
+        "api_key": "cnc_live_secret",
+        "project_id": "proj_123",
+    }
+
+
+@pytest.mark.parametrize(
+    ("error", "message"),
+    [("access_denied", "denied in the browser"), ("expired_token", "request expired")],
+)
+def test_login_command_stops_when_browser_approval_is_denied_or_expires(tmp_path, monkeypatch, error, message):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(cli, "print_update_hint", lambda: None)
+    monkeypatch.setattr("webbrowser.open", lambda _url: True)
+
+    def respond(request):
+        if request.url.path.endswith("/cli/login/start"):
+            return _login_start_response()
+        return cli.httpx.Response(400, json={"error": error})
+
+    _mock_login_api(monkeypatch, respond)
+
+    result = CliRunner().invoke(cli.main, ["login", "--api-url", "https://api.connic.test/v1"])
+
+    assert result.exit_code == 1
+    assert message in result.output
+    assert not (tmp_path / ".connic").exists()
 
 
 def test_init_command_creates_documented_minimal_project(tmp_path, monkeypatch):
