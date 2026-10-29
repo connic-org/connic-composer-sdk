@@ -34,6 +34,9 @@ Example::
           read: "'support' in user.groups"
       runs:
         read: run.context.end_user.id == user.id
+      retrieval:                      # Retrieval namespaces visitors may search
+        help:
+          search: true
     environments:                     # omit to deploy to every environment
       Staging:
         auth:
@@ -99,6 +102,7 @@ _RULE_NAMES = {
     "runs": {"read": {"run"}, "cancel": {"run"}},
     "sessions": {"read": {"session"}, "delete": {"session"}},
     "approvals": {"read": {"approval"}, "decide": {"approval"}},
+    "retrieval": {"search": set()},
 }
 # connic's condition grammar (shared/expression_filter.py): comparisons, and/or/not, paths and literals.
 _RULE_NODES = (
@@ -302,6 +306,14 @@ class AppApprovalAccess(BaseModel):
     decide: Optional[Rule] = None
 
 
+class AppRetrievalAccess(BaseModel):
+    """Rules for one Retrieval namespace and the namespaces below it."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    search: Optional[Rule] = None
+
+
 class AppAccess(BaseModel):
     """What the browser may read and change. A missing resource or operation is denied."""
 
@@ -314,6 +326,9 @@ class AppAccess(BaseModel):
     runs: Optional[AppRunAccess] = None
     sessions: Optional[AppSessionAccess] = None
     approvals: Optional[AppApprovalAccess] = None
+    retrieval: Optional[Dict[str, AppRetrievalAccess]] = Field(
+        default=None, description="Namespaces visitors may search; each covers the namespaces below it.",
+    )
 
     @field_validator("files")
     @classmethod
@@ -327,6 +342,7 @@ class AppAccess(BaseModel):
             *((f"access.database.{name}", "database", rules) for name, rules in (self.database or {}).items()),
             *((f"access.files.{folder}", "files", rules) for folder, rules in (self.files or {}).items()),
             *((f"access.{resource}", resource, getattr(self, resource)) for resource in ("runs", "sessions", "approvals")),
+            *((f"access.retrieval.{namespace}", "retrieval", rules) for namespace, rules in (self.retrieval or {}).items()),
         ]
         for path, resource, rules in scopes:
             if rules is None:

@@ -177,6 +177,7 @@ def test_lookups_and_access_produce_the_spec_shape_with_bools_as_rules():
             "runs": {"read": "run.context.end_user.id == user.id", "cancel": "run.status == 'running'"},
             "sessions": {"read": "session.state.owner == user.id", "delete": False},
             "approvals": {"read": True, "decide": "approval.params.amount < 100 and 'finance' in user.groups"},
+            "retrieval": {"help": {"search": True}, "docs.internal": {"search": "member.role == 'agent'"}},
         },
     )
 
@@ -198,6 +199,7 @@ def test_lookups_and_access_produce_the_spec_shape_with_bools_as_rules():
         "runs": {"read": "run.context.end_user.id == user.id", "cancel": "run.status == 'running'"},
         "sessions": {"read": "session.state.owner == user.id", "delete": "false"},
         "approvals": {"read": "true", "decide": "approval.params.amount < 100 and 'finance' in user.groups"},
+        "retrieval": {"help": {"search": "true"}, "docs.internal": {"search": "member.role == 'agent'"}},
     }
 
 
@@ -224,6 +226,7 @@ def test_app_without_lookups_or_access_has_none_in_its_spec():
         ({"runs": {"read": "approval.id"}}, "access.runs.read: 'approval' isn't available here; use run, user"),
         ({"sessions": {"delete": "run.id"}}, "access.sessions.delete: 'run' isn't available here; use session, user"),
         ({"approvals": {"decide": "session.id"}}, "access.approvals.decide: 'session' isn't available here; use approval, user"),
+        ({"retrieval": {"help": {"search": "doc.public"}}}, "access.retrieval.help.search: 'doc' isn't available here; use user"),
         ({"runs": {"read": "context.user_id == user.id"}}, "access.runs.read: unknown name 'context'"),
         ({"database": {"tickets": {"read": "member.role == 'agent'"}}}, "access.database.tickets.read: unknown name 'member'"),
     ],
@@ -279,7 +282,8 @@ def test_rules_must_be_expressions_or_bools(value):
         ({"runs": {"delete": "true"}}, "runs.delete"),
         ({"sessions": {"cancel": "true"}}, "sessions.cancel"),
         ({"approvals": {"update": "true"}}, "approvals.update"),
-        ({"retrieval": {}}, "retrieval"),
+        ({"retrieval": {"help": {"read": "true"}}}, "retrieval.help.read"),
+        ({"search": {}}, "search"),
     ],
 )
 def test_unknown_resources_and_operations_are_rejected(access, message):
