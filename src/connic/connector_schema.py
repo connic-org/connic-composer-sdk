@@ -220,6 +220,9 @@ class ConnectorFile(BaseModel):
     domain: Optional[str] = Field(default=None, min_length=1)
     config: Dict[str, Any] = Field(default_factory=dict)
     agents: List[AgentLink] = Field(default_factory=list)
+    apps_only: StrictBool = Field(
+        default=False, description="Accept requests only from the apps in apps/ that list this connector.",
+    )
     environments: Optional[Dict[str, Optional[ConnectorOverride]]] = Field(
         default=None,
         description="Environment names the connector is deployed to, with optional overrides. Omit for all.",
@@ -262,6 +265,8 @@ class ConnectorFile(BaseModel):
             self.mode = modes[0]
         elif self.mode not in modes:
             raise ValueError(f"{self.type} connectors support mode {', '.join(modes)}, not '{self.mode}'")
+        if self.apps_only and (self.type, self.mode) not in (("http", "sync"), ("websocket", "sync")):
+            raise ValueError("apps_only applies to sync http and websocket connectors only")
 
         if self.environments is not None:
             if not self.environments:
@@ -383,4 +388,5 @@ class ConnectorFile(BaseModel):
             "domain": pick("domain"),
             "config": {key: value for key, value in config.items() if value is not None},
             "agents": override.agents if override.agents is not None else self.agents,
+            "apps_only": self.apps_only,
         }

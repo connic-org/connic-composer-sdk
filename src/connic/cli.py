@@ -8,7 +8,7 @@ import subprocess
 import sys
 import tempfile
 import zipfile
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import BinaryIO, Literal, NamedTuple
 
 import click
@@ -16,6 +16,14 @@ import httpx
 import questionary
 
 from . import __version__
+from .app_schema import (
+    APP_BINARY_EXTENSIONS,
+    APP_BUILD_FOLDERS,
+    APP_TEXT_EXTENSIONS,
+    MAX_APPS_SIZE,
+    AppBuild,
+    is_app_source,
+)
 from .core import RetryOptions
 from .loader import ProjectLoader
 from .migrate import register_migrate_command
@@ -313,6 +321,8 @@ def _fetch_failed_run_details(
 # =============================================================================
 
 PROJECT_DIRECTORIES = ("agents", "tools", "middleware", "schemas", "guardrails", "hooks", "tests", "connectors")
+# Deploys build app sources; dev sessions build apps locally and upload only apps/<key>.yaml.
+APPS_DIRECTORY = "apps"
 
 # Allowed file extensions
 ALLOWED_EXTENSIONS = {
@@ -398,15 +408,72 @@ def _project_files_changed(file_states: dict[Path, tuple[int, ...] | None]) -> b
     return any(_project_file_state(path) != state for path, state in file_states.items())
 
 
+def _validate_app_files(
+    total_size: int,
+    *, sources: bool = True,
+    file_states: dict[Path, tuple[int, ...] | None] | None = None,
+    file_hashes: dict[Path, bytes] | None = None,
+) -> tuple[bool, str, list[Path], int]:
+    """Validate the app files under apps/, or only apps/<key>.yaml without ``sources``. Returns (is_valid, error, files, size)."""
+    apps_dir = Path(APPS_DIRECTORY)
+    if file_states is not None:
+        file_states[apps_dir] = _project_file_state(apps_dir)
+    if apps_dir.is_symlink():
+        return False, f"Symbolic links are not allowed: {apps_dir}", [], 0
+    if not apps_dir.exists():
+        return True, "", [], 0
+
+    files = []
+    apps_size = 0
+    paths = []
+    # Walk instead of rglob so node_modules and build output are never traversed.
+    for root, dirnames, filenames in os.walk(apps_dir):
+        base = Path(root)
+        dirnames[:] = sorted(
+            name for name in dirnames if sources and is_app_source((base / name).relative_to(apps_dir).parts)
+        )
+        paths.extend(base / name for name in dirnames)
+        paths.extend(
+            base / name for name in sorted(filenames)
+            if is_app_source((base / name).relative_to(apps_dir).parts) and (sources or name.endswith(".yaml"))
+        )
+
+    for filepath in paths:
+        if file_states is not None:
+            file_states[filepath] = _project_file_state(filepath)
+        if filepath.is_symlink():
+            return False, f"Symbolic links are not allowed: {filepath}", [], 0
+        if not filepath.is_file():
+            continue
+        ext = filepath.suffix.lower()
+        if ext not in APP_TEXT_EXTENSIONS | APP_BINARY_EXTENSIONS:
+            return False, f"{filepath}: File type '{ext or filepath.name}' not allowed in apps/", [], 0
+        try:
+            limit = min(MAX_UPLOAD_SIZE - total_size - apps_size, MAX_APPS_SIZE - apps_size)
+            size = _bounded_file_size(filepath, limit, file_hashes=file_hashes)
+        except IOError as e:
+            return False, f"Could not read {filepath}: {e}", [], 0
+        apps_size += size
+        if total_size + apps_size > MAX_UPLOAD_SIZE:
+            return False, f"Total file size exceeds {MAX_UPLOAD_SIZE:,} byte limit", [], 0
+        if apps_size > MAX_APPS_SIZE:
+            return False, f"App sources exceed the {MAX_APPS_SIZE:,} byte limit", [], 0
+        files.append(filepath)
+    return True, "", files, apps_size
+
+
 def _validate_project_files(
     *, file_states: dict[Path, tuple[int, ...] | None] | None = None,
     file_hashes: dict[Path, bytes] | None = None,
+    include_apps: bool = False,
+    app_sources: bool = True,
 ) -> tuple[bool, str, list[Path]]:
     """
     Validate all project files before packaging.
 
     Performs basic validation (extension and size checks).
-    Full content validation is done server-side.
+    Full content validation is done server-side. App sources are only
+    part of deploy uploads; dev uploads carry apps/<key>.yaml alone.
 
     Returns:
         Tuple of (is_valid, error_message, list_of_valid_files).
@@ -507,6 +574,14 @@ def _validate_project_files(
         except IOError as e:
             return False, f"Could not read requirements.txt: {e}", []
 
+    if include_apps:
+        is_valid, error, app_files, _ = _validate_app_files(
+            total_size, sources=app_sources, file_states=file_states, file_hashes=file_hashes,
+        )
+        if not is_valid:
+            return False, error, []
+        valid_files.extend(app_files)
+
     for filepath in valid_files:
         try:
             file_stat = filepath.lstat()
@@ -518,7 +593,7 @@ def _validate_project_files(
     return True, "", valid_files
 
 
-def _package_project_files() -> tuple[bytes, list[Path]]:
+def _package_project_files(*, include_apps: bool = False, app_sources: bool = True) -> tuple[bytes, list[Path]]:
     import io
     import tarfile
 
@@ -526,7 +601,9 @@ def _package_project_files() -> tuple[bytes, list[Path]]:
         file_states: dict[Path, tuple[int, ...] | None] = {}
         file_hashes: dict[Path, bytes] = {}
         try:
-            is_valid, error, valid_files = _validate_project_files(file_states=file_states, file_hashes=file_hashes)
+            is_valid, error, valid_files = _validate_project_files(
+                file_states=file_states, file_hashes=file_hashes, include_apps=include_apps, app_sources=app_sources,
+            )
             if _project_files_changed(file_states):
                 continue
             if not is_valid:
@@ -557,7 +634,9 @@ def _package_project_files() -> tuple[bytes, list[Path]]:
                 continue
             current_states: dict[Path, tuple[int, ...] | None] = {}
             current_hashes: dict[Path, bytes] = {}
-            is_valid, _, _ = _validate_project_files(file_states=current_states, file_hashes=current_hashes)
+            is_valid, _, _ = _validate_project_files(
+                file_states=current_states, file_hashes=current_hashes, include_apps=include_apps, app_sources=app_sources,
+            )
             if (
                 not is_valid or current_states != file_states or current_hashes != file_hashes
                 or _project_files_changed(current_states)
@@ -1391,6 +1470,22 @@ def _run_lint(verbose: bool = False, quiet: bool = False, project_root: str = ".
         elif not loader.connectors_dir.exists():
             _info("No connectors/ directory found")
 
+    # Load apps
+    if not quiet:
+        _step("Loading apps...")
+    apps = loader.load_apps(connectors)
+    errors.extend(loader._load_errors)
+    loader._load_errors.clear()
+    if not quiet:
+        if apps:
+            _ok(f"{len(apps)} app(s) loaded")
+            for key, app in apps.items():
+                modes = sorted({spec["auth"].mode if spec["auth"] else "dashboard sign-in" for _, spec in app.specs()})
+                environments = f" [{', '.join(app.environments)}]" if app.environments else ""
+                _info(f"{key}: {'/'.join(modes)} → apps/{key}/{app.build.output}{environments}")
+        elif not loader.apps_dir.exists():
+            _info("No apps/ directory found")
+
     # Check test suites
     if not quiet:
         _step("Checking test suites...")
@@ -1411,7 +1506,8 @@ def _run_lint(verbose: bool = False, quiet: bool = False, project_root: str = ".
             _info(f"{len(api_spec_warnings)} API spec tool ref(s) skipped (validated at deploy time)")
         agent_names = [a.config.name for a in agents]
         connector_summary = f", {len(connectors)} connector(s)" if connectors else ""
-        _ok(f"Lint passed: {len(agents)} agent(s) validated ({', '.join(agent_names)}){connector_summary}")
+        app_summary = f", {len(apps)} app(s)" if apps else ""
+        _ok(f"Lint passed: {len(agents)} agent(s) validated ({', '.join(agent_names)}){connector_summary}{app_summary}")
         return True
 
     # Verbose output: print per-agent boxes
@@ -2053,6 +2149,90 @@ def _choose_dev_environment(client: "httpx.Client", project_id: str, config: dic
     return name
 
 
+def _missing_build_tool(command: str) -> str | None:
+    """The first of node and the build command's program that isn't on PATH, if any."""
+    words = [word for word in command.split() if not re.match(r"[A-Za-z_]\w*=", word)]
+    return next((tool for tool in ("node", *words[:1]) if shutil.which(tool) is None), None)
+
+
+def _app_watch_path(relative: tuple[str, ...], output: str) -> bool:
+    """Whether apps/<relative> is app source a local build reads, not dependencies, hidden files or build output."""
+    inside = relative[1:]
+    output_parts = PurePosixPath(output).parts
+    return is_app_source(relative) and not (
+        inside and (inside[0] in APP_BUILD_FOLDERS or inside[:len(output_parts)] == output_parts)
+    )
+
+
+def _app_source_fingerprint(key: str, output: str) -> str:
+    """Hash of an app's sources. Builds can touch their own files, so rebuilds only run when contents changed."""
+    apps_dir = Path(APPS_DIRECTORY)
+    digest = hashlib.sha256()
+    for root, dirnames, filenames in os.walk(apps_dir / key):
+        base = Path(root)
+        relative = base.relative_to(apps_dir).parts
+        dirnames[:] = sorted(name for name in dirnames if _app_watch_path((*relative, name), output))
+        for name in sorted(filenames):
+            path = base / name
+            if (
+                not _app_watch_path((*relative, name), output)
+                or path.suffix.lower() not in APP_TEXT_EXTENSIONS | APP_BINARY_EXTENSIONS
+            ):
+                continue
+            try:
+                content = path.read_bytes()
+            except OSError:
+                continue
+            digest.update(f"{path.as_posix()}\0".encode() + hashlib.sha256(content).digest())
+    return digest.hexdigest()
+
+
+def _build_app(key: str, build: AppBuild) -> bytes:
+    """Run an app's build command in apps/<key>/ and pack its output folder as a gzip tar.
+
+    Raises ValueError with the command's output when the build fails.
+    """
+    import io
+    import tarfile
+
+    app_dir = Path(APPS_DIRECTORY) / key
+    if not app_dir.is_dir():
+        raise ValueError(f"{app_dir}/ doesn't exist")
+    result = subprocess.run(
+        build.command, shell=True, cwd=app_dir, stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, errors="replace",
+    )
+    if result.returncode != 0:
+        raise ValueError(f"`{build.command}` exited with code {result.returncode}\n{result.stdout.strip()}")
+    output = app_dir / build.output
+    if not output.is_dir() or output.is_symlink():
+        raise ValueError(f"The build didn't create {output}/")
+
+    buffer = io.BytesIO()
+    with tarfile.open(fileobj=buffer, mode="w:gz") as tar:
+        for root, dirnames, filenames in os.walk(output):
+            base = Path(root)
+            dirnames.sort()
+            for name in [*dirnames, *filenames]:
+                if (base / name).is_symlink():
+                    raise ValueError(f"Symbolic links are not allowed: {base / name}")
+            for name in sorted(filenames):
+                tar.add(base / name, arcname=(base / name).relative_to(output).as_posix())
+    return buffer.getvalue()
+
+
+def _upload_app_build(client: "httpx.Client", session_id: str, key: str, content: bytes) -> str:
+    """Upload a local app build to the dev session and return the app's URL."""
+    resp = client.post(
+        f"/test-sessions/{session_id}/apps/{key}",
+        files={"file": (f"{key}.tar.gz", content, "application/gzip")},
+        timeout=120.0,
+    )
+    if resp.status_code != 200:
+        raise ValueError(f"Upload failed: {_response_error_text(resp)}")
+    return resp.json()["url"]
+
+
 @main.command()
 @click.argument("name", required=False, default=None)
 @click.option("--quick", is_flag=True, help="Start an ephemeral test without prompting; deleted on exit.")
@@ -2065,7 +2245,9 @@ def dev(name: str | None, quick: bool, api_url: str, api_key: str, project_id: s
 
     Creates an isolated test environment and syncs your local source files
     for rapid development. Source changes are reflected in 2-5 seconds;
-    requirements.txt changes require recreating the session.
+    requirements.txt changes require recreating the session. Connectors and
+    apps are applied to the test environment like a deploy; apps are built
+    locally and rebuilt when their sources change.
 
     \b
     Examples:
@@ -2136,11 +2318,19 @@ def dev(name: str | None, quick: bool, api_url: str, api_key: str, project_id: s
             sys.exit(1)
         if not agents:
             _fail_and_exit("No agents found. Run `connic init` first.")
+        apps = loader.load_apps(loader.load_connectors(agents))
+        if loader._load_errors:
+            _step(f"Validation failed with {len(loader._load_errors)} error(s):")
+            for error in loader._load_errors:
+                _err(error)
+            sys.exit(1)
         agent_summaries = [
             f"{a.config.name} ({a.config.source_path})" if a.config.source_path else a.config.name
             for a in agents
         ]
         _ok(f"{len(agents)} agent(s): {', '.join(agent_summaries)}")
+        if apps:
+            _ok(f"{len(apps)} app(s): {', '.join(apps)}")
     except Exception as e:
         _fail_and_exit(f"Error loading project: {e}")
 
@@ -2264,7 +2454,7 @@ def dev(name: str | None, quick: bool, api_url: str, api_key: str, project_id: s
         # Create and upload tarball of agent files
         def create_tarball() -> tuple[bytes, str]:
             """Create a tarball of agent files and return (content, hash)."""
-            content, _ = _package_project_files()
+            content, _ = _package_project_files(include_apps=True, app_sources=False)
             content_hash = hashlib.sha256(content).hexdigest()
             return content, content_hash
         
@@ -2320,6 +2510,81 @@ def dev(name: str | None, quick: bool, api_url: str, api_key: str, project_id: s
             current_hash = uploaded.files_hash
             _ok(f"Uploaded {uploaded.size_bytes} bytes (hash: {current_hash[:16]}...)")
 
+        app_urls: dict[str, str] = {}
+        app_fingerprints: dict[str, str] = {}
+        pending_apps: set[str] = set()
+        build_tool_errors: set[str] = set()
+
+        def report_app_failure(key: str, error: str) -> None:
+            message, _, output = error.partition("\n")
+            _err(f"{key}: {message}")
+            for line in output.splitlines():
+                _info(line)
+            if key in app_urls:
+                _info(f"The last good build stays live at {app_urls[key]}")
+
+        def build_apps(keys: set[str], *, stamped: bool) -> None:
+            """Build apps locally and upload their output. A failed build keeps the last uploaded one."""
+            for key in sorted(keys):
+                app = apps.get(key)
+                if app is None:
+                    continue
+                tool = _missing_build_tool(app.build.command)
+                if tool is not None:
+                    error = (
+                        f"Node.js isn't installed or isn't on PATH; install Node.js {app.build.node} to build apps locally"
+                        if tool == "node" else f"apps/{key}: {tool} isn't installed or isn't on PATH"
+                    )
+                    if error not in build_tool_errors:
+                        build_tool_errors.add(error)
+                        _err(error)
+                    continue
+                fingerprint = _app_source_fingerprint(key, app.build.output)
+                if app_fingerprints.get(key) == fingerprint:
+                    continue
+                if stamped:
+                    click.echo(f"  [{time.strftime('%H:%M:%S')}] → Building app {key}...")
+                else:
+                    _step(f"Building app {key}...")
+                try:
+                    content = _build_app(key, app.build)
+                except ValueError as e:
+                    # The same sources fail the same way, and a failing build can touch its own files: wait for a change.
+                    app_fingerprints[key] = fingerprint
+                    report_app_failure(key, str(e))
+                    continue
+                except OSError as e:
+                    report_app_failure(key, f"Could not package the build: {e}")
+                    continue
+                try:
+                    url = _upload_app_build(client, session_id, key, content)
+                except ValueError as e:
+                    report_app_failure(key, str(e))
+                    continue
+                except httpx.HTTPError as e:
+                    report_app_failure(key, f"Upload failed: {str(e) or type(e).__name__}")
+                    continue
+                app_fingerprints[key] = fingerprint
+                app_urls[key] = url
+                _ok(f"{key} → {url}")
+
+        def reload_apps() -> None:
+            """Reload apps/*.yaml and queue builds for new apps and changed build settings."""
+            nonlocal apps
+            app_loader = ProjectLoader(".", validation_only=True)
+            loaded = app_loader.load_apps(app_loader.load_connectors(app_loader.load_agents()))
+            if app_loader._load_errors:
+                for error in app_loader._load_errors:
+                    _err(error)
+                return
+            for key, app in loaded.items():
+                if key not in apps or app.build != apps[key].build:
+                    app_fingerprints.pop(key, None)
+                    pending_apps.add(key)
+            apps = loaded
+
+        build_apps(set(apps), stamped=False)
+
         keys_active = _KEYS_SUPPORTED and sys.stdin.isatty()
 
         _step("Watching for file changes...")
@@ -2328,6 +2593,7 @@ def dev(name: str | None, quick: bool, api_url: str, api_key: str, project_id: s
 
         last_upload_time = time.time()
         pending_upload = False
+        apps_changed = False
         next_upload_label: str | None = None
         DEBOUNCE_SECONDS = 1.0  # Wait for changes to settle
 
@@ -2428,7 +2694,7 @@ def dev(name: str | None, quick: bool, api_url: str, api_key: str, project_id: s
 
         class FileChangeHandler(FileSystemEventHandler):
             def on_any_event(self, event):
-                nonlocal pending_upload, last_upload_time
+                nonlocal pending_upload, last_upload_time, apps_changed
 
                 if event.event_type not in {"created", "modified", "deleted", "moved"}:
                     return
@@ -2436,6 +2702,7 @@ def dev(name: str | None, quick: bool, api_url: str, api_key: str, project_id: s
                     return
 
                 changed_paths = []
+                app_source_paths = []
                 for event_path in (event.src_path, getattr(event, "dest_path", "")):
                     if not event_path:
                         continue
@@ -2449,8 +2716,20 @@ def dev(name: str | None, quick: bool, api_url: str, api_key: str, project_id: s
                         continue
                     if path.parts[0] in PROJECT_DIRECTORIES or (not event.is_directory and path == Path("requirements.txt")):
                         changed_paths.append(path)
+                    elif path.parts[0] == APPS_DIRECTORY:
+                        # apps/<key>.yaml goes into the upload; apps/<key>/ sources trigger a local build.
+                        if len(path.parts) == 1 or (len(path.parts) == 2 and path.suffix == ".yaml" and not event.is_directory):
+                            changed_paths.append(path)
+                            apps_changed = True
+                        elif (
+                            (app := apps.get(path.parts[1])) is not None
+                            and _app_watch_path(path.parts[1:], app.build.output)
+                            and (event.is_directory or path.suffix.lower() in APP_TEXT_EXTENSIONS | APP_BINARY_EXTENSIONS)
+                        ):
+                            app_source_paths.append(path)
+                            pending_apps.add(path.parts[1])
 
-                if not changed_paths:
+                if not changed_paths and not app_source_paths:
                     return
 
                 if event.is_directory:
@@ -2459,14 +2738,15 @@ def dev(name: str | None, quick: bool, api_url: str, api_key: str, project_id: s
                             # Replace stale watches after a directory is moved or recreated.
                             watch_directory(path.name)
 
-                click.echo(f"  [{time.strftime('%H:%M:%S')}] → Detected change: {changed_paths[-1].name}")
-                pending_upload = True
+                click.echo(f"  [{time.strftime('%H:%M:%S')}] → Detected change: {(changed_paths or app_source_paths)[-1].name}")
+                if changed_paths:
+                    pending_upload = True
                 last_upload_time = time.time()
-        
+
         observer = Observer()
         handler = FileChangeHandler()
 
-        for dirname in PROJECT_DIRECTORIES:
+        for dirname in (*PROJECT_DIRECTORIES, APPS_DIRECTORY):
             watch_directory(dirname)
 
         # Watch requirements.txt and supported directories added after startup.
@@ -2495,6 +2775,8 @@ def dev(name: str | None, quick: bool, api_url: str, api_key: str, project_id: s
                         if not pending_upload:
                             next_upload_label = "Manual refresh — uploading"
                         pending_upload = True
+                        app_fingerprints.clear()
+                        pending_apps.update(apps)
                         last_upload_time = time.time() - DEBOUNCE_SECONDS
                     elif intent == "test":
                         _run_tests_in_dev_session(client, project_id, env_id)
@@ -2555,7 +2837,16 @@ def dev(name: str | None, quick: bool, api_url: str, api_key: str, project_id: s
                         click.secho(f"  [{time.strftime('%H:%M:%S')}]     ✓ Uploaded {uploaded.size_bytes} bytes", fg="green")
                     elif uploaded.files_hash == current_hash:
                         click.echo(f"  [{time.strftime('%H:%M:%S')}]     No content changes detected")
-                    
+
+                # Build apps after the upload so new apps/<key>.yaml files are applied first.
+                if (pending_apps or apps_changed) and (time.time() - last_upload_time) >= DEBOUNCE_SECONDS:
+                    if apps_changed:
+                        apps_changed = False
+                        reload_apps()
+                    keys = set(pending_apps)
+                    pending_apps.difference_update(keys)
+                    build_apps(keys, stamped=True)
+
         except KeyboardInterrupt:
             pass
     
@@ -3056,7 +3347,7 @@ def deploy(
     # Package files into tarball
     _step("Packaging upload...")
     try:
-        tar_data, valid_files = _package_project_files()
+        tar_data, valid_files = _package_project_files(include_apps=True)
         files_b64 = base64.b64encode(tar_data).decode('utf-8')
         files_hash = hashlib.sha256(tar_data).hexdigest()[:12]
 

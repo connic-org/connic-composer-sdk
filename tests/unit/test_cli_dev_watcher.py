@@ -4,6 +4,7 @@ import sys
 import tarfile
 from pathlib import Path
 
+import httpx
 import pytest
 from click.testing import CliRunner
 from watchdog.events import (
@@ -85,7 +86,7 @@ def dev_project(tmp_path, monkeypatch):
     return tmp_path
 
 
-def run_dev(monkeypatch, changes=(), observer=None):
+def run_dev(monkeypatch, changes=(), observer=None, app_uploads=None, output=None, app_failures=None):
     uploads = []
     observer = observer or ScheduledObserver()
 
@@ -108,10 +109,22 @@ def run_dev(monkeypatch, changes=(), observer=None):
         def post(self, path, json=None, files=None, timeout=None):
             if path == "/projects/proj_123/test-sessions":
                 return Response({"id": "sess_123", "environment_id": "env_test", "environment_name": "support-dev"})
-            assert path == "/test-sessions/sess_123/files"
             content = files["file"][1]
             with tarfile.open(fileobj=io.BytesIO(content), mode="r:gz") as archive:
-                uploads.append({member.name: archive.extractfile(member).read() for member in archive.getmembers()})
+                members = {member.name: archive.extractfile(member).read() for member in archive.getmembers()}
+            if app_uploads is not None and path.startswith("/test-sessions/sess_123/apps/"):
+                key = path.rsplit("/", 1)[1]
+                failure = app_failures.pop(0) if app_failures else None
+                if isinstance(failure, Exception):
+                    raise failure
+                if failure is not None:
+                    response = Response({"detail": "Service unavailable"})
+                    response.status_code = failure
+                    return response
+                app_uploads.append((key, members))
+                return Response({"url": f"https://{key}-1a2b3c4d.connic.app"})
+            assert path == "/test-sessions/sess_123/files"
+            uploads.append(members)
             return Response({"files_hash": f"hash_{len(uploads)}", "size_bytes": len(content)})
 
         def get(self, path):
@@ -158,6 +171,8 @@ def run_dev(monkeypatch, changes=(), observer=None):
     assert result.exit_code == 0, result.output
     assert observer.started and observer.stopped and observer.joined
     assert Client.deleted and Client.closed
+    if output is not None:
+        output.append(result.output)
     return uploads
 
 
@@ -350,3 +365,275 @@ def test_dev_keeps_replacement_watch_when_directory_is_recreated_before_delete_e
     assert len(uploads) == 3
     assert uploads[1]["tools/helper.py"] == b"VERSION = 2\n"
     assert uploads[2]["tools/helper.py"] == b"VERSION = 3\n"
+
+
+BUILD_SCRIPT = (
+    'if grep -q broken src/main.js; then echo "Build error in src/main.js"; exit 1; fi\n'
+    "mkdir -p dist && cp src/main.js dist/index.html\n"
+)
+
+
+def write_app(project, key="portal", source="v1\n"):
+    app_dir = project / "apps" / key
+    (app_dir / "src").mkdir(parents=True)
+    (app_dir / "package.json").write_text('{"name": "portal"}\n')
+    (app_dir / "package-lock.json").write_text("{}\n")
+    (app_dir / "build.sh").write_text(BUILD_SCRIPT)
+    (app_dir / "src" / "main.js").write_text(source)
+    (project / "apps" / f"{key}.yaml").write_text("build:\n  command: sh build.sh\n  output: dist\n")
+    return app_dir
+
+
+@pytest.fixture
+def app_project(dev_project, monkeypatch):
+    monkeypatch.setattr(cli.shutil, "which", lambda tool: f"/usr/bin/{tool}")
+    write_app(dev_project)
+    return dev_project
+
+
+def test_dev_uploads_app_files_without_sources_and_builds_apps_locally(app_project, monkeypatch):
+    app_uploads = []
+    output = []
+
+    uploads = run_dev(monkeypatch, app_uploads=app_uploads, output=output)
+
+    assert set(uploads[0]) == {"agents/support.yaml", "apps/portal.yaml"}
+    assert app_uploads == [("portal", {"index.html": b"v1\n"})]
+    assert "portal → https://portal-1a2b3c4d.connic.app" in output[0]
+
+
+def test_dev_rebuilds_apps_only_when_their_sources_change(app_project, monkeypatch):
+    app_dir = app_project / "apps" / "portal"
+    source = app_dir / "src" / "main.js"
+
+    def edit_source(observer):
+        source.write_text("v2\n")
+        observer.emit(FileModifiedEvent(str(source)))
+
+    def touch_dependencies_and_output(observer):
+        for path in (app_dir / "node_modules" / "react" / "index.js", app_dir / "dist" / "index.html"):
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text("generated\n")
+            observer.emit(FileModifiedEvent(str(path)))
+
+    def save_without_changes(observer):
+        source.write_text("v2\n")
+        observer.emit(FileModifiedEvent(str(source)))
+
+    app_uploads = []
+    uploads = run_dev(
+        monkeypatch, [edit_source, touch_dependencies_and_output, save_without_changes], app_uploads=app_uploads,
+    )
+
+    assert len(uploads) == 1
+    assert app_uploads == [("portal", {"index.html": b"v1\n"}), ("portal", {"index.html": b"v2\n"})]
+
+
+def test_dev_keeps_the_last_good_build_when_an_app_build_fails(app_project, monkeypatch):
+    source = app_project / "apps" / "portal" / "src" / "main.js"
+
+    def break_build(observer):
+        source.write_text("broken\n")
+        observer.emit(FileModifiedEvent(str(source)))
+
+    def fix_build(observer):
+        source.write_text("v3\n")
+        observer.emit(FileModifiedEvent(str(source)))
+
+    app_uploads = []
+    output = []
+    run_dev(monkeypatch, [break_build, fix_build], app_uploads=app_uploads, output=output)
+
+    assert app_uploads == [("portal", {"index.html": b"v1\n"}), ("portal", {"index.html": b"v3\n"})]
+    assert "portal: `sh build.sh` exited with code 1" in output[0]
+    assert "Build error in src/main.js" in output[0]
+    assert "The last good build stays live at https://portal-1a2b3c4d.connic.app" in output[0]
+
+
+@pytest.mark.parametrize(
+    ("failure", "message"),
+    [
+        (httpx.ReadTimeout("timed out"), "portal: Upload failed: timed out"),
+        (httpx.ConnectError(""), "portal: Upload failed: ConnectError"),
+        (503, "portal: Upload failed: Service unavailable"),
+    ],
+)
+def test_dev_retries_a_failed_app_upload_on_the_next_save(app_project, monkeypatch, failure, message):
+    source = app_project / "apps" / "portal" / "src" / "main.js"
+
+    def save_without_changes(observer):
+        source.write_text("v1\n")
+        observer.emit(FileModifiedEvent(str(source)))
+
+    app_uploads = []
+    output = []
+    uploads = run_dev(
+        monkeypatch, [save_without_changes], app_uploads=app_uploads, output=output, app_failures=[failure],
+    )
+
+    assert len(uploads) == 1
+    assert app_uploads == [("portal", {"index.html": b"v1\n"})]
+    assert message in output[0]
+
+
+def test_dev_keeps_the_session_when_packing_an_app_build_fails(app_project, monkeypatch):
+    build_app = cli._build_app
+    calls = []
+
+    def flaky_build(key, build):
+        calls.append(key)
+        if len(calls) == 2:
+            raise OSError("No space left on device")
+        return build_app(key, build)
+
+    monkeypatch.setattr(cli, "_build_app", flaky_build)
+    source = app_project / "apps" / "portal" / "src" / "main.js"
+
+    def edit_source(observer):
+        source.write_text("v2\n")
+        observer.emit(FileModifiedEvent(str(source)))
+
+    def save_without_changes(observer):
+        observer.emit(FileModifiedEvent(str(source)))
+
+    app_uploads = []
+    output = []
+    run_dev(monkeypatch, [edit_source, save_without_changes], app_uploads=app_uploads, output=output)
+
+    assert app_uploads == [("portal", {"index.html": b"v1\n"}), ("portal", {"index.html": b"v2\n"})]
+    assert "portal: Could not package the build: No space left on device" in output[0]
+    assert "The last good build stays live at https://portal-1a2b3c4d.connic.app" in output[0]
+
+
+def test_dev_waits_for_a_source_change_after_a_failed_build(app_project, monkeypatch):
+    source = app_project / "apps" / "portal" / "src" / "main.js"
+
+    def break_build(observer):
+        source.write_text("broken\n")
+        observer.emit(FileModifiedEvent(str(source)))
+
+    def save_without_changes(observer):
+        observer.emit(FileModifiedEvent(str(source)))
+
+    output = []
+    run_dev(monkeypatch, [break_build, save_without_changes], app_uploads=[], output=output)
+
+    assert output[0].count("`sh build.sh` exited with code 1") == 1
+
+
+def test_dev_builds_apps_added_after_start_once_their_file_is_uploaded(app_project, monkeypatch):
+    def add_app(observer):
+        write_app(app_project, key="admin", source="admin\n")
+        observer.emit(FileCreatedEvent(str(app_project / "apps" / "admin.yaml")))
+
+    app_uploads = []
+    uploads = run_dev(monkeypatch, [add_app], app_uploads=app_uploads)
+
+    assert set(uploads[1]) == {"agents/support.yaml", "apps/portal.yaml", "apps/admin.yaml"}
+    assert app_uploads == [("portal", {"index.html": b"v1\n"}), ("admin", {"index.html": b"admin\n"})]
+
+
+def test_dev_reports_missing_node_once_and_keeps_syncing_agents(app_project, monkeypatch):
+    write_app(app_project, key="admin")
+    monkeypatch.setattr(cli.shutil, "which", lambda tool: None if tool == "node" else f"/usr/bin/{tool}")
+    source = app_project / "apps" / "portal" / "src" / "main.js"
+
+    def edit_source(observer):
+        source.write_text("v2\n")
+        observer.emit(FileModifiedEvent(str(source)))
+
+    app_uploads = []
+    output = []
+    uploads = run_dev(monkeypatch, [edit_source], app_uploads=app_uploads, output=output)
+
+    assert len(uploads) == 1
+    assert app_uploads == []
+    assert output[0].count("Node.js isn't installed or isn't on PATH; install Node.js 24 to build apps locally") == 1
+
+
+def test_dev_stops_before_creating_a_session_when_an_app_file_is_invalid(app_project, monkeypatch):
+    (app_project / "apps" / "portal.yaml").write_text(
+        "build: {command: sh build.sh, output: dist}\naccess: {runs: {read: doc.id == user.id}}\n"
+    )
+
+    result = CliRunner().invoke(cli.main, ["dev", "--quick", "--api-key", "cnc_test_secret", "--project-id", "proj_123"])
+
+    assert result.exit_code == 1
+    assert "access.runs.read: 'doc' isn't available here; use run, user" in result.output
+
+
+@pytest.mark.parametrize(
+    ("command", "available", "missing"),
+    [
+        ("npm run build", {"node", "npm"}, None),
+        ("pnpm build", {"node", "npm"}, "pnpm"),
+        ("NODE_ENV=production npm run build", {"node", "npm"}, None),
+        ("npm run build", {"npm"}, "node"),
+    ],
+)
+def test_missing_build_tool_checks_node_and_the_command(monkeypatch, command, available, missing):
+    monkeypatch.setattr(cli.shutil, "which", lambda tool: f"/usr/bin/{tool}" if tool in available else None)
+
+    assert cli._missing_build_tool(command) == missing
+
+
+@pytest.mark.parametrize(
+    ("relative", "output", "watched"),
+    [
+        (("portal", "src", "App.tsx"), "dist", True),
+        (("portal", "package.json"), "dist", True),
+        (("portal", "dist"), "dist", False),
+        (("portal", "dist", "index.html"), "dist", False),
+        (("portal", "build"), "dist", False),
+        (("portal", "public", "build", "app.js"), "public/build", False),
+        (("portal", "public", "logo.png"), "public/build", True),
+        (("portal", "node_modules", "react", "index.js"), "dist", False),
+        (("portal", ".vite", "deps.js"), "dist", False),
+    ],
+)
+def test_app_watch_path_ignores_dependencies_and_build_output(relative, output, watched):
+    assert cli._app_watch_path(relative, output) is watched
+
+
+def test_upload_app_build_posts_the_archive_and_reports_rejections():
+    class Response:
+        def __init__(self, status_code, payload):
+            self.status_code = status_code
+            self.payload = payload
+            self.text = str(payload)
+
+        def json(self):
+            return self.payload
+
+    class Client:
+        def __init__(self, response):
+            self.response = response
+            self.requests = []
+
+        def post(self, path, files=None, timeout=None):
+            self.requests.append((path, files))
+            return self.response
+
+    client = Client(Response(200, {"url": "https://portal-1a2b3c4d.connic.app"}))
+    assert cli._upload_app_build(client, "sess_123", "portal", b"archive") == "https://portal-1a2b3c4d.connic.app"
+    assert client.requests == [
+        ("/test-sessions/sess_123/apps/portal", {"file": ("portal.tar.gz", b"archive", "application/gzip")}),
+    ]
+
+    client = Client(Response(413, {"detail": "App output exceeds 25 MB"}))
+    with pytest.raises(ValueError, match="Upload failed: App output exceeds 25 MB"):
+        cli._upload_app_build(client, "sess_123", "portal", b"archive")
+
+
+def test_build_app_rejects_missing_output_and_symlinks(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    write_app(tmp_path)
+    build = cli.AppBuild(command="true", output="dist")
+
+    with pytest.raises(ValueError, match="The build didn't create apps/portal/dist/"):
+        cli._build_app("portal", build)
+
+    (tmp_path / "apps" / "portal" / "dist").mkdir()
+    (tmp_path / "apps" / "portal" / "dist" / "secret").symlink_to(tmp_path / "agents" / "support.yaml")
+    with pytest.raises(ValueError, match="Symbolic links are not allowed: apps/portal/dist/secret"):
+        cli._build_app("portal", build)

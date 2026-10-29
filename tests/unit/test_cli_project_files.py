@@ -2521,10 +2521,12 @@ def test_login_command_interactive_flow_opens_dashboard_and_saves_pasted_token(t
         raise RuntimeError("browser unavailable in test")
 
     monkeypatch.setattr("webbrowser.open", record_open)
+    # An API without browser approval falls back to pasting the token.
+    _mock_login_api(monkeypatch, lambda _request: cli.httpx.Response(404, json={"detail": "Not Found"}))
 
     result = CliRunner().invoke(
         cli.main,
-        ["login", "--base-url", "https://connic.test"],
+        ["login", "--base-url", "https://connic.test", "--api-url", "https://api.connic.test/v1"],
         input="proj_interactive:cnc_interactive_secret\n",
     )
 

@@ -12,6 +12,7 @@ from typing import Any, Dict, List, Literal, Optional, Union, get_args, get_orig
 
 import yaml
 
+from .app_schema import APP_CONNECTOR_TYPES, LOCKFILES, AppFile
 from .connector_schema import VOICE_TYPES, ConnectorFile
 from .core import (
     Agent,
@@ -129,6 +130,7 @@ class ProjectLoader:
         self.guardrails_dir = self.project_root / "guardrails"
         self.hooks_dir = self.project_root / "hooks"
         self.connectors_dir = self.project_root / "connectors"
+        self.apps_dir = self.project_root / "apps"
 
         # When True, use AST parsing instead of importing tool, middleware, or hook modules.
         # This avoids executing code and needing external dependencies at validation time.
@@ -429,6 +431,95 @@ class ProjectLoader:
                 names.append((environment, spec["name"], key))
 
         return connectors
+
+    def load_apps(self, connectors: Dict[str, ConnectorFile], check_sources: bool = True) -> Dict[str, AppFile]:
+        """
+        Load the apps declared in apps/*.yaml, keyed by file name.
+
+        Each app builds from the folder apps/<key>/. A project without an
+        apps/ directory declares no apps. Connectors are checked against
+        ``connectors``. Pass ``check_sources=False`` for uploads that carry
+        only apps/*.yaml, such as ``connic dev``.
+        """
+        if self.apps_dir.is_symlink():
+            self._load_errors.append(f"Symbolic links are not allowed: {self.apps_dir}")
+            return {}
+        if not self.apps_dir.is_dir():
+            return {}
+
+        apps: Dict[str, AppFile] = {}
+        folders = set()
+        for path in sorted(self.apps_dir.iterdir()):
+            if path.name.startswith("."):
+                continue
+            relative = path.relative_to(self.project_root).as_posix()
+            if path.is_symlink():
+                self._load_errors.append(f"Symbolic links are not allowed: {relative}")
+                continue
+            if path.is_dir():
+                folders.add(path.name)
+                continue
+            if path.suffix == ".yml":
+                self._load_errors.append(f"{relative}: app files must use the .yaml extension")
+                continue
+            if path.suffix != ".yaml":
+                self._load_errors.append(f"{relative}: only apps/<key>.yaml files and apps/<key>/ folders belong in apps/")
+                continue
+            try:
+                with open(contained_source(path, self.apps_dir), "r") as f:
+                    data = yaml.safe_load(f)
+                if not isinstance(data, dict):
+                    raise ValueError("app file must be a YAML mapping")
+                if "key" in data:
+                    raise ValueError("'key' comes from the file name and can't be set in the file")
+                app = AppFile.model_validate({**data, "key": path.stem})
+            except Exception as e:
+                self._load_errors.append(f"Failed to load app: {relative}: {e}")
+                continue
+            source = self.apps_dir / app.key
+            if check_sources:
+                if not source.is_dir() or source.is_symlink():
+                    self._load_errors.append(f"{relative}: the app's source folder apps/{app.key}/ doesn't exist")
+                elif not (source / "package.json").is_file():
+                    self._load_errors.append(f"{relative}: apps/{app.key}/package.json doesn't exist")
+                elif not any((source / lockfile).is_file() for lockfile in LOCKFILES):
+                    self._load_errors.append(
+                        f"{relative}: apps/{app.key}/ needs a lockfile ({', '.join(LOCKFILES)}) so builds are reproducible"
+                    )
+            apps[app.key] = app
+
+        for folder in sorted(folders - set(apps)):
+            self._load_errors.append(f"apps/{folder}/ has no apps/{folder}.yaml; add one or move the folder out of apps/")
+
+        for key, app in apps.items():
+            location = f"apps/{key}.yaml"
+            for environment, spec in app.specs():
+                where = f" (environment '{environment}')" if environment else ""
+                for connector_key in spec["connectors"]:
+                    connector = connectors.get(connector_key)
+                    if connector is None:
+                        self._load_errors.append(f"{location}{where}: connector '{connector_key}' isn't in connectors/")
+                        continue
+                    if APP_CONNECTOR_TYPES.get(connector.type) != connector.mode:
+                        self._load_errors.append(
+                            f"{location}{where}: connector '{connector_key}' must be a sync http or websocket connector"
+                        )
+                    elif not connector.apps_only:
+                        self._load_errors.append(
+                            f"{location}{where}: connector '{connector_key}' needs apps_only: true in "
+                            f"connectors/{connector_key}.yaml"
+                        )
+                    if environment is None and connector.environments is not None:
+                        self._load_errors.append(
+                            f"{location}: connector '{connector_key}' is only deployed to "
+                            f"{', '.join(connector.environments)}; list the same environments in this file"
+                        )
+                    elif environment is not None and connector.for_environment(environment) is None:
+                        self._load_errors.append(
+                            f"{location}{where}: connector '{connector_key}' isn't deployed to this environment"
+                        )
+
+        return apps
 
     def _parse_tool_entry(self, tool_entry: Any, label: str) -> tuple[str, Optional[str]]:
         if isinstance(tool_entry, str):
