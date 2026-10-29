@@ -559,14 +559,15 @@ def test_loads_mcp_server_with_bridge(tmp_path):
 
 
 @pytest.mark.parametrize("session_yaml,expected", [
-    ("true", {"key": None, "ttl": None, "history": True, "browser": True}),
+    ("true", {"key": None, "ttl": None, "history": True, "files": True, "browser": True}),
     ("false", None),
     ("null", None),
-    ("{}", {"key": None, "ttl": None, "history": True, "browser": True}),
-    ("{history: false}", {"key": None, "ttl": None, "history": False, "browser": True}),
-    ("{browser: false}", {"key": None, "ttl": None, "history": True, "browser": False}),
+    ("{}", {"key": None, "ttl": None, "history": True, "files": True, "browser": True}),
+    ("{history: false}", {"key": None, "ttl": None, "history": False, "files": True, "browser": True}),
+    ("{files: false}", {"key": None, "ttl": None, "history": True, "files": False, "browser": True}),
+    ("{browser: false}", {"key": None, "ttl": None, "history": True, "files": True, "browser": False}),
     ("{key: input.user_id, ttl: 3600, history: false, browser: true}",
-     {"key": "input.user_id", "ttl": 3600, "history": False, "browser": True}),
+     {"key": "input.user_id", "ttl": 3600, "history": False, "files": True, "browser": True}),
 ])
 def test_loads_session_shorthand_and_independent_persistence(tmp_path, session_yaml, expected):
     write_file(

@@ -81,7 +81,7 @@ def test_agent_session_without_key_normalizes_to_shared_persistence(value):
     cfg = AgentConfig(**_llm_agent(session=value))
 
     assert isinstance(cfg.session, SessionConfig)
-    assert cfg.model_dump()["session"] == {"key": None, "ttl": None, "history": True, "browser": True}
+    assert cfg.model_dump()["session"] == {"key": None, "ttl": None, "history": True, "files": True, "browser": True}
     assert AgentConfig.model_validate_json(cfg.model_dump_json()).session == cfg.session
 
 
@@ -108,7 +108,14 @@ def test_session_persistence_switches_are_independent(history, browser):
 def test_keyed_session_keeps_key_and_ttl_with_optional_persistence(key):
     cfg = AgentConfig(**_llm_agent(session={"key": key, "ttl": 86400, "history": False}))
 
-    assert cfg.model_dump()["session"] == {"key": key, "ttl": 86400, "history": False, "browser": True}
+    assert cfg.model_dump()["session"] == {"key": key, "ttl": 86400, "history": False, "files": True, "browser": True}
+
+
+def test_session_files_can_be_left_out_of_history():
+    cfg = AgentConfig(**_llm_agent(session={"key": "context.chat_id", "files": False}))
+
+    assert cfg.session.files is False
+    assert cfg.session.history is True
 
 
 @pytest.mark.parametrize("value", ["true", "false", 0, 1, [], "input.user_id"])

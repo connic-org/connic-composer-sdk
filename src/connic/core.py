@@ -329,6 +329,11 @@ class SessionConfig(BaseModel):
         default=True, strict=True,
         description="Reuse conversation history across runs in this session.",
     )
+    files: bool = Field(
+        default=True, strict=True,
+        description="Include files from earlier runs in the reused history. "
+                    "When false, each earlier file is replaced with a short note.",
+    )
     browser: bool = Field(
         default=True, strict=True,
         description="Reuse browser cookies and local storage across runs in this session.",

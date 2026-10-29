@@ -85,7 +85,7 @@ CONFIG_FIELDS: Dict[str, Dict[str, Dict[str, Any]]] = {
         "event_types": {"type": "select", "default": "created", "options": ["created", "all"]},
         "include_content": {"type": "boolean", "default": False},
         "region": {"type": "text", "required": True, "show_when": {"include_content": [True]}},
-        "max_file_size_mb": {"type": "number", "default": 10, "min": 1, "max": 10},
+        "max_file_size_mb": {"type": "number", "default": 10, "min": 1, "max": 32},
     },
     "postgres": {
         "channel": {"type": "text", "required": True},
