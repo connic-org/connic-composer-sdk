@@ -3030,7 +3030,13 @@ def test(env: str | None, filter_name: str | None, coverage: bool, as_json: bool
         passed_n = sum(1 for c in cases if c["passed"])
         if result.get("deployment_id"):
             _render_dashboard_link(project_id, result["deployment_id"], env)
-        _done(f"{passed_n}/{len(cases)} cases passed.")
+        summary = f"{passed_n}/{len(cases)} cases passed."
+        if result["status"] == "passed":
+            _done(summary)
+        else:
+            click.echo()
+            click.secho(f"  ✗ {summary}", fg="red", bold=True)
+            click.echo()
 
     sys.exit(0 if result["status"] == "passed" else 1)
 

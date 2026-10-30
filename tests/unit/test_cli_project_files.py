@@ -2107,6 +2107,60 @@ def test_test_command_reports_project_load_errors_before_creating_cloud_session(
     assert "No tests/ directory found in project" in result.output
 
 
+@pytest.mark.parametrize(
+    ("status", "second_passed", "exit_code", "summary"),
+    [
+        ("passed", True, 0, "✓ 2/2 cases passed."),
+        ("failed", False, 1, "✗ 1/2 cases passed."),
+    ],
+)
+def test_test_command_summary_matches_run_status(tmp_path, monkeypatch, status, second_passed, exit_code, summary):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(cli, "print_update_hint", lambda: None)
+    (tmp_path / ".connic").write_text(json.dumps({"api_key": "cnc_test_secret", "project_id": "proj_123"}))
+    _write_minimal_support_agent(tmp_path)
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "tests" / "support.yaml").write_text("tests:\n  - name: refund\n    payload: Refund my order\n")
+
+    cases = [
+        {"agent_name": "support", "test_name": name, "passed": passed, "successes": int(passed), "runs": 1, "success_threshold": 100}
+        for name, passed in (("refund", True), ("cancel", second_passed))
+    ]
+
+    class Response:
+        def __init__(self, status_code, payload):
+            self.status_code = status_code
+            self._payload = payload
+
+        def json(self):
+            return self._payload
+
+    class FakeClient:
+        def __init__(self, base_url, headers, timeout):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def post(self, path, json=None):
+            assert path == "/projects/proj_123/test-runs"
+            return Response(202, {"id": "test_123"})
+
+        def get(self, path):
+            assert path == "/projects/proj_123/test-runs/test_123"
+            return Response(200, {"status": status, "cases": cases})
+
+    monkeypatch.setattr(cli.httpx, "Client", FakeClient)
+
+    result = CliRunner().invoke(cli.main, ["test", "--env", "env_test"])
+
+    assert result.exit_code == exit_code, result.output
+    assert summary in result.output
+
+
 def test_kickoff_test_run_reports_api_detail_instead_of_raw_json():
     class Response:
         status_code = 503
