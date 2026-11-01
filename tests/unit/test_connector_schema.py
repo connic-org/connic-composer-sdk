@@ -118,6 +118,32 @@ def test_connector_without_environments_deploys_everywhere_with_defaults():
     assert connector(type="cron", config={"schedule": "0 2 * * *"}, agents=["order-processor"]).mode == "inbound"
 
 
+def test_dev_environments_get_the_dev_overrides_unless_environments_names_them():
+    kafka = connector(
+        type="kafka",
+        mode="inbound",
+        connection="orders-kafka-staging",
+        config={"topic": "orders"},
+        agents=["order-processor"],
+        environments={"Production": {"config": {"group_id": "prod"}}, "Sandbox": {"config": {"group_id": "sandbox"}}},
+        dev={"config": {"group_id": "dev"}},
+    )
+
+    assert kafka.for_environment("test-quick-fox-1a2b", dev=True)["config"] == {"topic": "orders", "group_id": "dev"}
+    assert kafka.for_environment("Sandbox", dev=True)["config"]["group_id"] == "sandbox"
+    assert kafka.for_environment("Staging") is None
+    assert kafka.model_copy(update={"dev": None}).for_environment("test-quick-fox-1a2b", dev=True) is None
+    with pytest.raises(ValidationError, match="dev: config.connection_id isn't allowed; use connection instead"):
+        connector(
+            type="kafka",
+            mode="inbound",
+            connection="orders-kafka",
+            config={"topic": "orders"},
+            agents=["order-processor"],
+            dev={"config": {"connection_id": "abc"}},
+        )
+
+
 def test_outbound_link_settings():
     outbound = connector(
         type="kafka",
@@ -681,6 +707,39 @@ def test_loader_reports_an_outbound_source_that_skips_environments_the_outbound_
         "connectors/results.yaml: outbound source 'orders' is only deployed to Staging; "
         "list the same environments in this file",
     ]
+
+
+def test_loader_reports_an_outbound_source_missing_from_dev_environments(tmp_path):
+    write_agents(tmp_path)
+    write_file(
+        tmp_path / "connectors" / "orders.yaml",
+        """
+        type: webhook
+        mode: inbound
+        agents: [order-processor]
+        environments:
+          Staging: {}
+        """,
+    )
+    write_file(
+        tmp_path / "connectors" / "results.yaml",
+        """
+        type: webhook
+        mode: outbound
+        config:
+          outbound_url: https://example.com/results
+        agents:
+          - name: order-processor
+            outbound: {usage: automatic, source: [orders]}
+        environments:
+          Staging: {}
+        dev: {}
+        """,
+    )
+
+    _connectors, errors = load(tmp_path)
+
+    assert errors == ["connectors/results.yaml (dev): outbound source 'orders' isn't deployed to this environment"]
 
 
 def test_connector_names_may_repeat_across_separate_environments(tmp_path):

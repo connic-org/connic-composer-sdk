@@ -97,6 +97,28 @@ def test_auth_is_optional_and_can_be_set_per_environment():
     assert parsed.for_environment("Production")["auth"] is None
 
 
+def test_dev_environments_get_the_dev_overrides_unless_environments_names_them():
+    parsed = app(
+        environments={"Production": None, "Sandbox": {"name": "Sandbox portal"}},
+        dev={"auth": {"mode": "connic"}, "connectors": []},
+    )
+
+    assert parsed.for_environment("test-quick-fox-1a2b", dev=True)["auth"].mode == "connic"
+    assert parsed.for_environment("Sandbox", dev=True)["name"] == "Sandbox portal"
+    assert parsed.for_environment("Staging") is None
+    assert app(environments={"Production": None}).for_environment("test-quick-fox-1a2b", dev=True) is None
+    unchanged = app(environments={"Production": None}, dev=None)
+    assert unchanged.for_environment("test-quick-fox-1a2b", dev=True)["auth"].mode == "public"
+    everywhere = app(dev={"name": "Dev portal"})
+    assert everywhere.for_environment("Production")["name"] == "portal"
+    assert everywhere.for_environment("test-quick-fox-1a2b", dev=True)["name"] == "Dev portal"
+
+
+def test_dev_overrides_are_checked_like_environment_overrides():
+    with pytest.raises(ValidationError, match="dev: connectors: 'bad key' isn't a connector key"):
+        app(dev={"connectors": ["bad key"]})
+
+
 def test_null_override_removes_domain():
     parsed = app(domain="portal.example.com", environments={"Staging": {"domain": None}})
 
@@ -479,6 +501,29 @@ def test_loader_matches_app_and_connector_environments(tmp_path):
         "apps/admin.yaml (environment 'Production'): connector 'support-chat' isn't deployed to this environment",
         "apps/portal.yaml: connector 'support-chat' is only deployed to Staging; list the same environments in this file",
     ]
+
+
+def test_loader_needs_the_connectors_of_an_app_in_dev_environments(tmp_path):
+    write_agent(tmp_path)
+    write_connector(tmp_path, environments=["Staging"])
+    write_app_source(tmp_path)
+    app_file = """
+        build: {command: npm run build, output: dist}
+        connectors: [support-chat]
+        environments:
+          Staging: {}
+        dev: {}
+        """
+    write_file(tmp_path / "apps" / "portal.yaml", app_file)
+
+    _, errors = load_apps(tmp_path)
+
+    assert errors == ["apps/portal.yaml (dev): connector 'support-chat' isn't deployed to this environment"]
+
+    connector_file = tmp_path / "connectors" / "support-chat.yaml"
+    connector_file.write_text(connector_file.read_text() + "dev: {}\n")
+
+    assert load_apps(tmp_path)[1] == []
 
 
 def test_lint_lists_apps_with_their_sign_in(tmp_path, monkeypatch):

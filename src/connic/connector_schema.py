@@ -21,6 +21,10 @@ Example::
         connection: orders-kafka-prod
         config:
           group_id: connic-orders-prod
+    dev:                              # connic dev environments that environments doesn't name
+      config:
+        topic: orders-dev
+        group_id: connic-orders-dev
 
 ``${VAR}`` references are resolved at deploy time from the target
 environment's variables, in ``config``, ``connection``, ``bridge`` and
@@ -38,6 +42,8 @@ from pydantic import BaseModel, ConfigDict, Field, StrictBool, field_validator, 
 from .connector_fields import DEPRECATED_CONFIG_FIELDS, check_config, check_destination, check_routes, receives_files
 
 CONNECTOR_KEY_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,99}$")
+# Label of the ``dev`` variant in ``specs()``.
+DEV = "connic dev"
 _VARIABLE_PATTERN = re.compile(r"\$\{([^}]*)\}")
 _VARIABLE_NAME_PATTERN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 _ACTION_NAME_PATTERN = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
@@ -227,6 +233,11 @@ class ConnectorFile(BaseModel):
         default=None,
         description="Environment names the connector is deployed to, with optional overrides. Omit for all.",
     )
+    dev: Optional[ConnectorOverride] = Field(
+        default=None,
+        description="Overrides for connic dev environments that environments doesn't name. With environments, "
+        "those get the connector only when dev is set.",
+    )
 
     @field_validator("agents", mode="before")
     @classmethod
@@ -275,9 +286,11 @@ class ConnectorFile(BaseModel):
                 _reject_variables(environment, f"environment '{environment}'")
                 if self.environments[environment] is None:
                     self.environments[environment] = ConnectorOverride()
+        if "dev" in self.model_fields_set and self.dev is None:
+            self.dev = ConnectorOverride()
 
         for environment, spec in self.specs():
-            where = f"environment '{environment}': " if environment else ""
+            where = "dev: " if environment == DEV else f"environment '{environment}': " if environment else ""
             try:
                 self._validate_spec(spec)
             except ValueError as exc:
@@ -360,17 +373,25 @@ class ConnectorFile(BaseModel):
         return warnings
 
     def specs(self) -> List[Tuple[Optional[str], Dict[str, Any]]]:
-        """Every environment variant of the connector. The environment is None when it deploys everywhere."""
+        """Every variant of the connector. The environment is None when it deploys everywhere and DEV for ``dev``."""
         if self.environments is None:
-            return [(None, self._merge(ConnectorOverride()))]
-        return [(environment, self._merge(override)) for environment, override in self.environments.items()]
+            specs = [(None, self._merge(ConnectorOverride()))]
+        else:
+            specs = [(environment, self._merge(override)) for environment, override in self.environments.items()]
+        if self.dev is not None:
+            specs.append((DEV, self._merge(self.dev)))
+        return specs
 
-    def for_environment(self, environment: str) -> Optional[Dict[str, Any]]:
-        """The connector as deployed to ``environment``, or None when it isn't declared there."""
-        if self.environments is None:
-            return self._merge(ConnectorOverride())
-        override = self.environments.get(environment)
-        return self._merge(override) if override is not None else None
+    def for_environment(self, environment: str, dev: bool = False) -> Optional[Dict[str, Any]]:
+        """The connector as deployed to ``environment``, or None when it isn't declared there.
+
+        A connic dev environment (``dev``) that ``environments`` doesn't name gets the ``dev`` overrides.
+        """
+        if self.environments is not None and environment in self.environments:
+            return self._merge(self.environments[environment])
+        if dev and self.dev is not None:
+            return self._merge(self.dev)
+        return self._merge(ConnectorOverride()) if self.environments is None else None
 
     def _merge(self, override: ConnectorOverride) -> Dict[str, Any]:
         # An override set to null removes the value from the top of the file.

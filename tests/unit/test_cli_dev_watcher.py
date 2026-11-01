@@ -533,6 +533,22 @@ def test_dev_builds_apps_added_after_start_once_their_file_is_uploaded(app_proje
     assert app_uploads == [("portal", {"index.html": b"v1\n"}), ("admin", {"index.html": b"admin\n"})]
 
 
+def test_dev_builds_an_app_with_environments_once_its_file_adds_dev(app_project, monkeypatch):
+    app_file = app_project / "apps" / "portal.yaml"
+    app_file.write_text("build: {command: sh build.sh, output: dist}\nenvironments: {Production: {}}\n")
+
+    def add_dev(observer):
+        app_file.write_text(app_file.read_text() + "dev: {}\n")
+        observer.emit(FileModifiedEvent(str(app_file)))
+
+    app_uploads = []
+    output = []
+    run_dev(monkeypatch, [add_dev], app_uploads=app_uploads, output=output)
+
+    assert app_uploads == [("portal", {"index.html": b"v1\n"})]
+    assert "portal: apps/portal.yaml doesn't list support-dev in environments; add dev to serve it in connic dev" in output[0]
+
+
 def test_dev_reports_missing_node_once_and_keeps_syncing_agents(app_project, monkeypatch):
     write_app(app_project, key="admin")
     monkeypatch.setattr(cli.shutil, "which", lambda tool: None if tool == "node" else f"/usr/bin/{tool}")

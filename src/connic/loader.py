@@ -13,7 +13,7 @@ from typing import Any, Dict, List, Literal, Optional, Union, get_args, get_orig
 import yaml
 
 from .app_schema import APP_CONNECTOR_TYPES, LOCKFILES, AppFile
-from .connector_schema import VOICE_TYPES, ConnectorFile
+from .connector_schema import DEV, VOICE_TYPES, ConnectorFile
 from .core import (
     Agent,
     AgentConfig,
@@ -361,7 +361,7 @@ class ProjectLoader:
         for key, connector in connectors.items():
             location = f"connectors/{key}.yaml"
             for environment, spec in connector.specs():
-                where = f" (environment '{environment}')" if environment else ""
+                where = " (dev)" if environment == DEV else f" (environment '{environment}')" if environment else ""
                 for link in spec["agents"]:
                     agent = agents_by_name.get(link.name)
                     if agent is None:
@@ -388,7 +388,7 @@ class ProjectLoader:
                                 f"{location}{where}: outbound source '{source_key}' must be an inbound or sync connector"
                             )
                         source_specs = (
-                            [source_connector.for_environment(environment)]
+                            [source_connector.for_environment(environment, dev=environment == DEV)]
                             if environment
                             else [source_spec for _, source_spec in source_connector.specs()]
                         )
@@ -494,7 +494,7 @@ class ProjectLoader:
         for key, app in apps.items():
             location = f"apps/{key}.yaml"
             for environment, spec in app.specs():
-                where = f" (environment '{environment}')" if environment else ""
+                where = " (dev)" if environment == DEV else f" (environment '{environment}')" if environment else ""
                 for connector_key in spec["connectors"]:
                     connector = connectors.get(connector_key)
                     if connector is None:
@@ -514,7 +514,7 @@ class ProjectLoader:
                             f"{location}: connector '{connector_key}' is only deployed to "
                             f"{', '.join(connector.environments)}; list the same environments in this file"
                         )
-                    elif environment is not None and connector.for_environment(environment) is None:
+                    elif environment is not None and connector.for_environment(environment, dev=environment == DEV) is None:
                         self._load_errors.append(
                             f"{location}{where}: connector '{connector_key}' isn't deployed to this environment"
                         )

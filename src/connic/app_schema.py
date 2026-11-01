@@ -42,6 +42,9 @@ Example::
         auth:
           mode: connic
       Production: {}
+    dev:                              # connic dev environments that environments doesn't name
+      auth:
+        mode: connic
 
 ``${VAR}`` references are resolved at deploy time from the target
 environment's variables, in ``domain`` and the ``issuer``, ``client_id`` and
@@ -58,7 +61,7 @@ from typing import AbstractSet, Annotated, Any, Dict, List, Literal, Optional, T
 
 from pydantic import BaseModel, BeforeValidator, ConfigDict, Field, field_validator, model_validator
 
-from .connector_schema import CONNECTOR_KEY_PATTERN, _check_variables
+from .connector_schema import CONNECTOR_KEY_PATTERN, DEV, _check_variables
 from .core import FilesAccessConfig
 
 APP_KEY_PATTERN = CONNECTOR_KEY_PATTERN
@@ -394,6 +397,11 @@ class AppFile(BaseModel):
         default=None,
         description="Environment names the app is deployed to, with optional overrides. Omit for all.",
     )
+    dev: Optional[AppOverride] = Field(
+        default=None,
+        description="Overrides for connic dev environments that environments doesn't name. With environments, "
+        "those get the app only when dev is set.",
+    )
 
     @field_validator("key")
     @classmethod
@@ -415,9 +423,11 @@ class AppFile(BaseModel):
                     raise ValueError(f"environment '{environment}' can't use ${{...}}")
                 if self.environments[environment] is None:
                     self.environments[environment] = AppOverride()
+        if "dev" in self.model_fields_set and self.dev is None:
+            self.dev = AppOverride()
 
         for environment, spec in self.specs():
-            where = f"environment '{environment}': " if environment else ""
+            where = "dev: " if environment == DEV else f"environment '{environment}': " if environment else ""
             try:
                 self._validate_spec(spec)
             except ValueError as exc:
@@ -449,17 +459,25 @@ class AppFile(BaseModel):
             spec["access"].check_rules(set(lookups))
 
     def specs(self) -> List[Tuple[Optional[str], Dict[str, Any]]]:
-        """Every environment variant of the app. The environment is None when it deploys everywhere."""
+        """Every variant of the app. The environment is None when it deploys everywhere and DEV for ``dev``."""
         if self.environments is None:
-            return [(None, self._merge(AppOverride()))]
-        return [(environment, self._merge(override)) for environment, override in self.environments.items()]
+            specs = [(None, self._merge(AppOverride()))]
+        else:
+            specs = [(environment, self._merge(override)) for environment, override in self.environments.items()]
+        if self.dev is not None:
+            specs.append((DEV, self._merge(self.dev)))
+        return specs
 
-    def for_environment(self, environment: str) -> Optional[Dict[str, Any]]:
-        """The app as deployed to ``environment``, or None when it isn't declared there."""
-        if self.environments is None:
-            return self._merge(AppOverride())
-        override = self.environments.get(environment)
-        return self._merge(override) if override is not None else None
+    def for_environment(self, environment: str, dev: bool = False) -> Optional[Dict[str, Any]]:
+        """The app as deployed to ``environment``, or None when it isn't declared there.
+
+        A connic dev environment (``dev``) that ``environments`` doesn't name gets the ``dev`` overrides.
+        """
+        if self.environments is not None and environment in self.environments:
+            return self._merge(self.environments[environment])
+        if dev and self.dev is not None:
+            return self._merge(self.dev)
+        return self._merge(AppOverride()) if self.environments is None else None
 
     def _merge(self, override: AppOverride) -> Dict[str, Any]:
         # An override set to null removes the value from the top of the file.

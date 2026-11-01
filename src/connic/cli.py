@@ -2502,6 +2502,9 @@ def dev(name: str | None, quick: bool, api_url: str, api_key: str, project_id: s
                 app = apps.get(key)
                 if app is None:
                     continue
+                if app.for_environment(env_name, dev=True) is None:
+                    _warn(f"{key}: apps/{key}.yaml doesn't list {env_name} in environments; add dev to serve it in connic dev")
+                    continue
                 tool = _missing_build_tool(app.build.command)
                 if tool is not None:
                     error = (
@@ -2551,7 +2554,7 @@ def dev(name: str | None, quick: bool, api_url: str, api_key: str, project_id: s
                     _err(error)
                 return
             for key, app in loaded.items():
-                if key not in apps or app.build != apps[key].build:
+                if key not in apps or app.build != apps[key].build or key not in app_fingerprints:
                     app_fingerprints.pop(key, None)
                     pending_apps.add(key)
             apps = loaded
