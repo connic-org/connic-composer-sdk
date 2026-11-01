@@ -247,7 +247,7 @@ approval:
 
 `approval.inputs` generates tools on LLM agents that collect required text and return it to the agent. No Python function or top-level `tools` entry is needed. `prompt` describes the tool to the agent; `label` names the human input field and accepts at most 200 characters. `sensitive` defaults to `false`; enable it to mask the input and protect the response in storage and logs.
 
-Input names such as `get_mfa` are exposed unchanged. They must be unique ASCII identifiers of at most 64 characters, cannot be `search_tools` or `use_tool`, and cannot collide with `tools`, `discoverable_tools`, or `approval.tools`. Generated input tools count toward the 100-tool agent limit.
+Input names such as `get_mfa` are exposed unchanged. They must be unique ASCII identifiers of at most 64 characters, cannot be `search_tools` or `use_tool`, and cannot collide with `tools`, `discoverable_tools`, or `approval.tools`. Generated input tools count toward the 200-tool agent limit.
 
 Optional `params` declares arguments the agent supplies with the request. Supported types are `str`, `int`, `float`, and `bool`; every declared argument is required, and extra arguments are rejected. Omit `params` for a tool with no arguments. Parameter names must be unique ASCII identifiers and cannot be Python keywords; `context` is reserved.
 

@@ -255,7 +255,7 @@ def test_loads_realistic_support_agent_config(tmp_path):
           collections:
             tickets:
               prevent_write: true
-            audit-log: {{}}
+            audit_log: {{}}
         retrieval:
           prevent_delete: true
           namespaces:
@@ -295,7 +295,7 @@ def test_loads_realistic_support_agent_config(tmp_path):
 
     assert agent.config.database.prevent_delete is True
     assert agent.config.database.collections["tickets"].prevent_write is True
-    assert agent.config.database.collections["audit-log"].prevent_write is None
+    assert agent.config.database.collections["audit_log"].prevent_write is None
     assert agent.config.retrieval.prevent_delete is True
     assert sorted(agent.config.retrieval.namespaces) == ["policies", "support.faq"]
 
@@ -3860,3 +3860,113 @@ def test_browser_file_and_tab_schema_exposes_only_agent_inputs(tmp_path):
     assert mouse["properties"]["modifiers"]["items"]["enum"] == ["Alt", "Control", "Meta", "Shift"]
     download = loader._generate_schema(connic_tools.web_browser_download)
     assert download["properties"]["include_content"]["type"] == "boolean"
+
+
+@pytest.mark.parametrize("validation_only", [False, True])
+@pytest.mark.parametrize("function_count", [199, 200])
+def test_tool_limit_counts_module_functions_and_approval_inputs(tmp_path, validation_only, function_count):
+    functions = "\n".join(
+        f"{'async ' if index % 2 else ''}def tool_{index}():\n    return {index}\n"
+        for index in range(function_count)
+    )
+    (tmp_path / "tools").mkdir()
+    (tmp_path / "tools" / "bulk.py").write_text(
+        f"from json import dumps\n\n\ndef _private():\n    return None\n\n\n{functions}"
+    )
+    write_file(
+        tmp_path / "agents" / "assistant.yaml",
+        """
+        version: "1.0"
+        name: assistant
+        model: openai/gpt-5.2
+        description: Uses many tools.
+        system_prompt: Use the tools.
+        tools:
+          - bulk.*
+        approval:
+          inputs:
+            - get_mfa:
+                prompt: Request an MFA code.
+                label: MFA code
+        """,
+    )
+
+    loader = ProjectLoader(str(tmp_path), validation_only=validation_only)
+    loader.load_agents()
+
+    if function_count == 199:
+        assert loader._load_errors == []
+    else:
+        assert loader._load_errors == [
+            "Agent 'assistant' exceeds tools limit: 201 tools configured (max: 200)"
+        ]
+
+
+@pytest.mark.parametrize(
+    ("extra_yaml", "expected_error"),
+    [
+        (
+            "database:\n  collections: [orders, Invoices]\n",
+            "Agent 'assistant' database.collections: invalid collection name 'Invoices'",
+        ),
+        (
+            "database:\n  collections: [" + ", ".join(f"c{index}" for index in range(101)) + "]\n",
+            "Agent 'assistant' database.collections has too many entries: 101 (max: 100)",
+        ),
+        (
+            "retrieval:\n  namespaces: [" + ", ".join(f"n{index}" for index in range(101)) + "]\n",
+            "Agent 'assistant' retrieval.namespaces has too many entries: 101 (max: 100)",
+        ),
+        (
+            "retrieval:\n  namespaces: [faq, ' ']\n",
+            "Agent 'assistant' retrieval.namespaces contains an invalid entry",
+        ),
+    ],
+)
+def test_agent_limits_are_load_errors(tmp_path, extra_yaml, expected_error):
+    (tmp_path / "agents").mkdir()
+    (tmp_path / "agents" / "assistant.yaml").write_text(
+        'version: "1.0"\n'
+        "name: assistant\n"
+        "model: openai/gpt-5.2\n"
+        "description: Checks limits.\n"
+        "system_prompt: Answer.\n"
+        + extra_yaml
+    )
+
+    loader = ProjectLoader(str(tmp_path), validation_only=True)
+    loader.load_agents()
+
+    assert len(loader._load_errors) == 1
+    assert loader._load_errors[0].startswith(expected_error)
+
+
+def test_concurrency_on_sequential_agent_is_a_load_error(tmp_path):
+    write_file(
+        tmp_path / "agents" / "step.yaml",
+        """
+        version: "1.0"
+        name: step
+        model: openai/gpt-5.2
+        description: One step.
+        system_prompt: Answer.
+        """,
+    )
+    write_file(
+        tmp_path / "agents" / "pipeline.yaml",
+        """
+        version: "1.0"
+        name: pipeline
+        type: sequential
+        description: Runs the step.
+        agents:
+          - step
+        concurrency:
+          key: customer_id
+        """,
+    )
+
+    loader = ProjectLoader(str(tmp_path), validation_only=True)
+    loader.load_agents()
+
+    assert loader._load_errors == ["Agent 'pipeline' concurrency rules are not supported on sequential agents"]

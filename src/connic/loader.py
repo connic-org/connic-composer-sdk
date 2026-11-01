@@ -4,6 +4,7 @@ import fnmatch
 import importlib.util
 import inspect
 import json
+import re
 import sys
 import types
 from pathlib import Path
@@ -86,6 +87,12 @@ PREDEFINED_TOOL_ALIASES = {
     "kb_list_namespaces": "retrieval_list_namespaces",
 }
 
+# Platform limits per agent; the backend enforces the same values at build time.
+MAX_TOOLS_PER_AGENT = 200
+MAX_ACCESS_ENTRIES = 100
+_COLLECTION_NAME_RE = re.compile(r"^[a-z][a-z0-9_]{0,49}$")
+_RESERVED_COLLECTION_NAMES = frozenset({"id", "data", "created_at", "updated_at"})
+
 _TOOL_IMPORT_LOCK = RLock()
 _ACTIVE_TOOL_PROJECT_PATH: Optional[str] = None
 _PROJECT_PACKAGES = ("tools", "middleware", "hooks", "guardrails")
@@ -114,6 +121,43 @@ def _tool_agent_signature_error(func) -> Optional[str]:
             f"remove these parameters: {', '.join(extra_params)}"
         )
     return None
+
+
+def _agent_limit_errors(agent: Agent) -> List[str]:
+    config = agent.config
+    name = config.name
+    errors = []
+    tools_count = len(agent.tools) + (len(config.approval.inputs) if config.approval else 0)
+    if tools_count > MAX_TOOLS_PER_AGENT:
+        errors.append(
+            f"Agent '{name}' exceeds tools limit: {tools_count} tools configured (max: {MAX_TOOLS_PER_AGENT})"
+        )
+    if config.concurrency and config.type == AgentType.SEQUENTIAL:
+        errors.append(f"Agent '{name}' concurrency rules are not supported on sequential agents")
+    if config.database and config.database.collections is not None:
+        collections = config.database.collections
+        if len(collections) > MAX_ACCESS_ENTRIES:
+            errors.append(
+                f"Agent '{name}' database.collections has too many entries: {len(collections)} (max: {MAX_ACCESS_ENTRIES})"
+            )
+        for collection in collections:
+            if not _COLLECTION_NAME_RE.fullmatch(collection) or collection in _RESERVED_COLLECTION_NAMES:
+                errors.append(
+                    f"Agent '{name}' database.collections: invalid collection name '{collection}'. Use at most 50 "
+                    "lowercase letters, digits, and underscores, starting with a letter; id, data, created_at, "
+                    "and updated_at are reserved"
+                )
+    if config.retrieval and config.retrieval.namespaces is not None:
+        namespaces = config.retrieval.namespaces
+        if len(namespaces) > MAX_ACCESS_ENTRIES:
+            errors.append(
+                f"Agent '{name}' retrieval.namespaces has too many entries: {len(namespaces)} (max: {MAX_ACCESS_ENTRIES})"
+            )
+        if any(not namespace.strip() for namespace in namespaces):
+            errors.append(
+                f"Agent '{name}' retrieval.namespaces contains an invalid entry: namespace names must be non-empty strings"
+            )
+    return errors
 
 
 class ProjectLoader:
@@ -212,6 +256,7 @@ class ProjectLoader:
 
                 loaded_names[agent.config.name] = agent_file
                 agents.append(agent)
+                self._load_errors.extend(_agent_limit_errors(agent))
             except Exception as e:
                 errors.append(f"{agent_file.relative_to(self.project_root).as_posix()}: {e}")
         
