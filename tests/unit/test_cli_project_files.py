@@ -265,8 +265,8 @@ def test_packaging_restarts_when_file_content_changes(tmp_path, monkeypatch, fil
 @pytest.mark.parametrize(
     ("change", "stage", "error"),
     [
-        ("growth", "during_validation", "Code/config size exceeds"),
-        ("growth", "after_validation", "Code/config size exceeds"),
+        ("growth", "during_validation", "Total file size exceeds"),
+        ("growth", "after_validation", "Total file size exceeds"),
         ("symlink", "after_validation", "Symbolic links are not allowed"),
         ("hardlink", "after_validation", "Hard links are not allowed"),
         ("directory", "after_validation", "File type '.env' not allowed"),
@@ -279,7 +279,7 @@ def test_packaging_revalidates_changed_file(tmp_path, monkeypatch, change, stage
     file.write_bytes(b"# original\n")
     outside = Path("outside.py")
     outside.write_bytes(b"SECRET = 'outside project'\n")
-    monkeypatch.setattr(cli, "MAX_CODE_SIZE", 32)
+    monkeypatch.setattr(cli, "MAX_UPLOAD_SIZE", 32)
     original_size = cli._bounded_file_size
     original_validate = cli._validate_project_files
     changed = False
@@ -433,25 +433,23 @@ def test_validate_project_files_rejects_projects_over_upload_limit(tmp_path, mon
     assert files == []
 
 
-def test_validate_project_files_counts_requirements_toward_code_size_cap(tmp_path, monkeypatch):
+def test_validate_project_files_has_no_separate_code_size_cap(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
-    (tmp_path / "requirements.txt").write_text(
-        "\n".join(["httpx>=0.27"] * (cli.MAX_CODE_SIZE // 11 + 100))
-    )
+    (tmp_path / "tools").mkdir()
+    (tmp_path / "tools" / "large.py").write_bytes(b"#" * (6 * 1024 * 1024))
 
     is_valid, error, files = cli._validate_project_files()
 
-    assert is_valid is False
-    assert "Code/config size exceeds" in error
-    assert "Move large fixtures into tests/files/" in error
-    assert files == []
+    assert is_valid is True
+    assert error == ""
+    assert [path.as_posix() for path in files] == ["tools/large.py"]
 
 
 def test_validate_project_files_allows_binary_fixtures_under_tests_files(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     fixture = tmp_path / "tests" / "files" / "invoice.pdf"
     fixture.parent.mkdir(parents=True)
-    fixture.write_bytes(b"%PDF-1.7\n" + b"x" * cli.MAX_CODE_SIZE)
+    fixture.write_bytes(b"%PDF-1.7\n" + b"\x00\xff" * 1024)
 
     is_valid, error, files = cli._validate_project_files()
 
@@ -470,22 +468,6 @@ def test_validate_project_files_rejects_non_python_builders(tmp_path, monkeypatc
 
     assert is_valid is False
     assert "only .py files are allowed under tests/builders/" in error
-    assert files == []
-
-
-def test_validate_project_files_counts_builders_toward_code_size_cap(tmp_path, monkeypatch):
-    monkeypatch.chdir(tmp_path)
-    builder = tmp_path / "tests" / "builders" / "invoice.py"
-    builder.parent.mkdir(parents=True)
-    builder.write_bytes(
-        b"def build_payload(context):\n    return {}\n#" + b"x" * cli.MAX_CODE_SIZE
-    )
-
-    is_valid, error, files = cli._validate_project_files()
-
-    assert is_valid is False
-    assert f"Code/config size exceeds {cli.MAX_CODE_SIZE:,} byte limit" in error
-    assert "Move large fixtures into tests/files/" in error
     assert files == []
 
 

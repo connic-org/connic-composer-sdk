@@ -10,6 +10,7 @@ from connic.core import (
     AgentType,
     ApprovalConfig,
     ApprovalInput,
+    BrowserConfig,
     ConcurrencyConfig,
     CollectionPermissions,
     DatabaseAccessConfig,
@@ -414,6 +415,24 @@ def test_mcp_server_config_oauth_rejects_authorization_header():
             headers={"authorization": "Bearer ${TOKEN}"},
             oauth={"app": "srv", "user": "context.user_id"},
         )
+
+
+def test_agent_config_browser_passkeys():
+    config = AgentConfig(**_llm_agent(browser={"passkeys": ["insurer", "bank_2"]}))
+    assert isinstance(config.browser, BrowserConfig)
+    assert config.browser.passkeys == ["insurer", "bank_2"]
+    assert AgentConfig(**_llm_agent()).browser is None
+
+
+@pytest.mark.parametrize("browser,error", [
+    ({"passkeys": ["Insurer"]}, "Invalid passkey name 'Insurer'"),
+    ({"passkeys": ["insurer", "insurer"]}, "more than once"),
+    ({"passkeys": [f"p{index}" for index in range(11)]}, "at most 10"),
+    ({"passkeys": ["insurer"], "profile": "x"}, "Extra inputs"),
+])
+def test_agent_config_browser_rejects_invalid_passkeys(browser, error):
+    with pytest.raises(ValueError, match=error):
+        AgentConfig(**_llm_agent(browser=browser))
 
 
 # ---------------------------------------------------------------------------

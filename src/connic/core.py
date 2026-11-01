@@ -973,6 +973,40 @@ class McpServerConfig(BaseModel):
         return self
 
 
+PASSKEY_NAME_PATTERN = r"^[a-z0-9][a-z0-9_-]{0,63}$"
+
+
+class BrowserConfig(BaseModel):
+    """
+    Browser tool configuration.
+
+    Passkeys are created under Settings → OAuth & Passkeys. Each page of the
+    run's browser signs in with them on their domain.
+
+    Example YAML:
+        browser:
+          passkeys:
+            - insurer
+    """
+    model_config = ConfigDict(extra="forbid")
+
+    passkeys: List[str] = Field(
+        default_factory=list,
+        max_length=10,
+        description="Names of the environment's passkeys that the browser signs in with",
+    )
+
+    @field_validator("passkeys")
+    @classmethod
+    def _validate_passkeys(cls, value: List[str]) -> List[str]:
+        for name in value:
+            if not re.fullmatch(PASSKEY_NAME_PATTERN, name):
+                raise ValueError(f"Invalid passkey name '{name}'. Use 1-64 lowercase letters, digits, hyphens, or underscores.")
+        if len(set(value)) != len(value):
+            raise ValueError("browser.passkeys lists a passkey more than once")
+        return value
+
+
 class Tool(BaseModel):
     """
     Represents a tool that an agent can use.
@@ -1076,7 +1110,12 @@ class AgentConfig(BaseModel):
         default_factory=list,
         description="List of MCP servers to connect to for external tools (max: 50 per agent)",
     )
-    
+
+    browser: Optional[BrowserConfig] = Field(
+        default=None,
+        description="Browser tool configuration, such as the passkeys the browser signs in with.",
+    )
+
     # Output schema for structured output (LLM agents only)
     output_schema: Optional[str] = Field(
         default=None, 

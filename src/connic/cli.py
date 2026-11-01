@@ -336,13 +336,11 @@ ALLOWED_EXTENSIONS = {
     ".jsonl",   # JSON Lines data
 }
 
-# Maximum total upload size: 25MB (covers tests/files/ fixtures).
-# Code/config (everything outside tests/files/) is held to a 5MB sub-cap.
-MAX_UPLOAD_SIZE = 25 * 1024 * 1024  # 26,214,400 bytes
-MAX_CODE_SIZE = 5 * 1024 * 1024  # 5MB cap, applied to non-fixture content
+# Maximum total upload size, code and tests/files/ fixtures together.
+MAX_UPLOAD_SIZE = 50 * 1024 * 1024  # 52,428,800 bytes
 
 # Paths under tests/files/ are treated as opaque fixture content: any
-# extension, binary OK, larger size budget. tests/builders/ accepts only .py.
+# extension, binary OK. tests/builders/ accepts only .py.
 TEST_FILES_PREFIX = "tests/files"
 TEST_BUILDERS_PREFIX = "tests/builders"
 
@@ -480,7 +478,6 @@ def _validate_project_files(
     """
     valid_files = []
     total_size = 0
-    code_size = 0
 
     for dirname in PROJECT_DIRECTORIES:
         dirpath = Path(dirname)
@@ -505,10 +502,7 @@ def _validate_project_files(
                 continue
 
             try:
-                limit = MAX_UPLOAD_SIZE - total_size
-                if not _is_under(filepath, TEST_FILES_PREFIX):
-                    limit = min(limit, MAX_CODE_SIZE - code_size)
-                size = _bounded_file_size(filepath, limit, file_hashes=file_hashes)
+                size = _bounded_file_size(filepath, MAX_UPLOAD_SIZE - total_size, file_hashes=file_hashes)
             except IOError as e:
                 return False, f"Could not read {filepath}: {e}", []
 
@@ -528,25 +522,12 @@ def _validate_project_files(
                         f"{filepath}: only .py files are allowed under "
                         f"{TEST_BUILDERS_PREFIX}/"
                     ), []
-                code_size += size
-                if code_size > MAX_CODE_SIZE:
-                    return False, (
-                        f"Code/config size exceeds {MAX_CODE_SIZE:,} byte limit. "
-                        "Move large fixtures into tests/files/."
-                    ), []
                 valid_files.append(filepath)
                 continue
 
             ext = filepath.suffix.lower()
             if ext not in ALLOWED_EXTENSIONS:
                 return False, f"{filepath}: File type '{ext}' not allowed. Allowed: {', '.join(sorted(ALLOWED_EXTENSIONS))}", []
-
-            code_size += size
-            if code_size > MAX_CODE_SIZE:
-                return False, (
-                    f"Code/config size exceeds {MAX_CODE_SIZE:,} byte limit. "
-                    "Move large fixtures into tests/files/."
-                ), []
 
             valid_files.append(filepath)
 
@@ -558,18 +539,10 @@ def _validate_project_files(
         return False, f"Symbolic links are not allowed: {req_file}", []
     if req_file.exists():
         try:
-            size = _bounded_file_size(
-                req_file, min(MAX_UPLOAD_SIZE - total_size, MAX_CODE_SIZE - code_size), file_hashes=file_hashes,
-            )
+            size = _bounded_file_size(req_file, MAX_UPLOAD_SIZE - total_size, file_hashes=file_hashes)
             total_size += size
             if total_size > MAX_UPLOAD_SIZE:
                 return False, f"Total file size exceeds {MAX_UPLOAD_SIZE:,} byte limit", []
-            code_size += size
-            if code_size > MAX_CODE_SIZE:
-                return False, (
-                    f"Code/config size exceeds {MAX_CODE_SIZE:,} byte limit. "
-                    "Move large fixtures into tests/files/."
-                ), []
             valid_files.append(req_file)
         except IOError as e:
             return False, f"Could not read requirements.txt: {e}", []
