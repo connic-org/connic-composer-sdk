@@ -99,6 +99,8 @@ def test_voice_preserves_explicit_transcription_model(provider):
     {"turn_detection": {"mode": "automatic"}},
     {"turn_detection": {"silence_ms": 0}},
     {"interruptions": {}},
+    {"interruptions": {"enabled": True, "min_speech_ms": -1}},
+    {"interruptions": {"enabled": True, "min_speech_ms": 5001}},
     {"idle_timeout_seconds": 0},
     {"idle_timeout_seconds": -1},
     {"twilio_account_sid": "AC123"},

@@ -7,14 +7,14 @@ import json
 import re
 import sys
 import types
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from threading import RLock
 from typing import Any, Dict, List, Literal, Optional, Union, get_args, get_origin, get_type_hints
 
 import yaml
 
 from .app_schema import APP_CONNECTOR_TYPES, LOCKFILES, AppFile
-from .connector_schema import DEV, VOICE_TYPES, ConnectorFile
+from .connector_schema import CALL_TYPES, DEV, ConnectorFile
 from .core import (
     Agent,
     AgentConfig,
@@ -35,7 +35,7 @@ from .core import (
     Tool,
     ToolHook,
 )
-from .project_paths import contained_source
+from .project_paths import AUDIO_EXTENSIONS, PROJECT_DIRECTORIES, contained_source
 from .terminal import escape_terminal_text
 
 # List of predefined tool names - SDK knows names only, not implementations
@@ -362,6 +362,17 @@ class ProjectLoader:
 
         raise FileNotFoundError(f"Agent '{name}' not found under {self.agents_dir}")
 
+    def _project_audio_error(self, path: str) -> Optional[str]:
+        """Why ``path`` isn't an audio file that deploys with the project, or None."""
+        parts = PurePosixPath(path.strip().strip("/")).parts
+        if PurePosixPath(path.strip()).suffix.lower() not in AUDIO_EXTENSIONS:
+            return "must be an MP3 or WAV file"
+        if len(parts) < 2 or parts[0] not in PROJECT_DIRECTORIES or ".." in parts:
+            return f"must be in one of the project folders: {', '.join(PROJECT_DIRECTORIES)}"
+        if not (self.project_root / Path(*parts)).is_file():
+            return f"'{path.strip()}' doesn't exist in the project"
+        return None
+
     def load_connectors(self, agents: List[Agent]) -> Dict[str, ConnectorFile]:
         """
         Load the connectors declared in connectors/*.yaml, keyed by file name.
@@ -407,13 +418,18 @@ class ProjectLoader:
             location = f"connectors/{key}.yaml"
             for environment, spec in connector.specs():
                 where = " (dev)" if environment == DEV else f" (environment '{environment}')" if environment else ""
+                hold_audio = spec["config"].get("hold_audio_path") if connector.type in CALL_TYPES else None
+                if isinstance(hold_audio, str) and hold_audio.strip() and "${" not in hold_audio:
+                    error = self._project_audio_error(hold_audio)
+                    if error:
+                        self._load_errors.append(f"{location}{where}: hold_audio_path {error}")
                 for link in spec["agents"]:
                     agent = agents_by_name.get(link.name)
                     if agent is None:
                         self._load_errors.append(f"{location}{where}: agent '{link.name}' doesn't exist in agents/")
-                    elif connector.type in VOICE_TYPES and agent.config.voice_config is None:
+                    elif connector.type in CALL_TYPES and agent.config.voice_config is None:
                         self._load_errors.append(
-                            f"{location}{where}: agent '{link.name}' needs voice_config to answer calls"
+                            f"{location}{where}: agent '{link.name}' needs voice_config for phone calls"
                         )
                     elif link.outbound and link.outbound.usage == "agent_tool" and agent.config.type != AgentType.LLM:
                         self._load_errors.append(

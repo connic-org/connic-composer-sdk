@@ -68,12 +68,15 @@ CONNECTOR_MODES: Dict[str, Tuple[str, ...]] = {
     "email": ("inbound", "outbound"),
     "stripe": ("inbound",),
     "telegram": ("inbound", "outbound"),
-    "twilio": ("sync",),
+    "twilio": ("sync", "outbound"),
     "twilio_messaging": ("inbound", "outbound"),
-    "telnyx": ("sync",),
+    "telnyx": ("sync", "outbound"),
     "telnyx_messaging": ("inbound", "outbound"),
+    "sip": ("sync", "outbound"),
 }
 _TYPE_ALIASES = {"webhook": "http"}
+# Voice connector files from before outbound calls name no mode; they answer calls.
+_MODE_WHEN_OMITTED = {"twilio": "sync", "telnyx": "sync", "sip": "sync"}
 
 CONNECTION_TYPES = frozenset({
     "kafka", "sqs", "s3", "postgres", "email", "twilio", "twilio_messaging", "telnyx", "telnyx_messaging",
@@ -84,8 +87,11 @@ CONNECTION_BRIDGE_TYPES = frozenset({"kafka", "sqs", "s3", "postgres", "email"})
 DEPRECATION_SUNSET = "April 30, 2027"
 DOMAIN_TYPES = frozenset({"http", "mcp", "s3", "stripe", "websocket"})
 VOICE_TYPES = frozenset({"twilio", "telnyx"})
+# Connectors that answer or place phone calls; each links exactly one voice agent.
+CALL_TYPES = VOICE_TYPES | {"sip"}
 
 GENERATED_FIELDS: Dict[str, frozenset[str]] = {
+    "sip": frozenset({"sip_address", "trunk_username", "trunk_password"}),
     "http": frozenset({"secret", "webhook_secret"}),
     "websocket": frozenset({"secret"}),
     "mcp": frozenset({"secret"}),
@@ -271,9 +277,9 @@ class ConnectorFile(BaseModel):
     def _validate_connector(self) -> "ConnectorFile":
         modes = CONNECTOR_MODES[self.type]
         if self.mode is None:
-            if len(modes) > 1:
+            if len(modes) > 1 and self.type not in _MODE_WHEN_OMITTED:
                 raise ValueError(f"mode is required for {self.type} connectors: {', '.join(modes)}")
-            self.mode = modes[0]
+            self.mode = _MODE_WHEN_OMITTED.get(self.type, modes[0])
         elif self.mode not in modes:
             raise ValueError(f"{self.type} connectors support mode {', '.join(modes)}, not '{self.mode}'")
         if self.apps_only and (self.type, self.mode) not in (("http", "sync"), ("websocket", "sync")):
@@ -342,7 +348,7 @@ class ConnectorFile(BaseModel):
         agents: List[AgentLink] = spec["agents"]
         if not agents:
             raise ValueError("link at least one agent")
-        if self.type in VOICE_TYPES and len(agents) != 1:
+        if self.type in CALL_TYPES and len(agents) != 1:
             raise ValueError(f"{self.type} connectors link exactly one voice agent")
         seen = set()
         for link in agents:

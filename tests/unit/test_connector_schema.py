@@ -488,6 +488,28 @@ def test_voice_connector_accepts_number_from_variable():
 
 
 @pytest.mark.parametrize(
+    "connector_type,config,error",
+    [
+        ("twilio", {"to": "+4915112345678", "ring_seconds": 40}, None),
+        ("twilio", {"ring_seconds": 121}, "ring_seconds"),
+        ("twilio", {"fallback_number": "+4930999"}, "fallback_number"),
+        ("telnyx", {"outbound_voice_profile_id": "1293384261075731499"}, None),
+        ("telnyx", {}, "outbound_voice_profile_id"),
+    ],
+)
+def test_outbound_voice_connector_places_calls_with_its_own_settings(connector_type, config, error):
+    data = dict(
+        type=connector_type, mode="outbound", connection="phones", agents=["phone-agent"],
+        config={"phone_number": "+4930123456", **config},
+    )
+    if error is None:
+        assert connector(**data).mode == "outbound"
+    else:
+        with pytest.raises(ValidationError, match=error):
+            connector(**data)
+
+
+@pytest.mark.parametrize(
     "connector_type,phone_number,valid",
     [
         ("twilio", "PN" + "a" * 32, True),
@@ -570,13 +592,46 @@ def test_loader_checks_links_names_and_file_layout(tmp_path):
         "Failed to load connector: connectors/broken.yaml: 'key' comes from the file name and can't be set in the file",
         "connectors/legacy.yml: connector files must use the .yaml extension",
         "connectors/nested/orders.yaml: connector files must be directly inside connectors/",
-        "connectors/hotline.yaml: agent 'order-processor' needs voice_config to answer calls",
+        "connectors/hotline.yaml: agent 'order-processor' needs voice_config for phone calls",
         "connectors/results.yaml (environment 'Production'): agent 'missing-agent' doesn't exist in agents/",
         "connectors/results.yaml (environment 'Production'): outbound source 'unknown-source' isn't a connector "
         "in connectors/",
         "connectors/results.yaml (environment 'Production'): connector name 'hotline' is also used by "
         "connectors/hotline.yaml",
     ]
+
+
+@pytest.mark.parametrize(
+    ("hold_audio", "error"),
+    [
+        ("assets/hold.mp3", None),
+        ("assets/missing.wav", "'assets/missing.wav' doesn't exist in the project"),
+        ("hold.mp3", "must be in one of the project folders: agents, tools, middleware, schemas, guardrails, hooks, "
+                     "tests, connectors, assets"),
+        ("assets/hold.ogg", "must be an MP3 or WAV file"),
+    ],
+    ids=["project-file", "missing", "outside-project-folders", "not-audio"],
+)
+def test_loader_checks_hold_audio_is_an_audio_file_of_the_project(tmp_path, hold_audio, error):
+    write_agents(tmp_path)
+    (tmp_path / "assets").mkdir()
+    (tmp_path / "assets" / "hold.mp3").write_bytes(b"ID3audio")
+    (tmp_path / "hold.mp3").write_bytes(b"ID3audio")
+    write_file(
+        tmp_path / "connectors" / "hotline.yaml",
+        f"""
+        type: twilio
+        connection: twilio-main
+        config:
+          phone_number: "+4930123456"
+          hold_audio_path: {hold_audio}
+        agents: [phone-agent]
+        """,
+    )
+
+    _, errors = load(tmp_path)
+
+    assert errors == ([f"connectors/hotline.yaml: hold_audio_path {error}"] if error else [])
 
 
 def test_loader_checks_outbound_sources_action_names_and_agent_types(tmp_path):

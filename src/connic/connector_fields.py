@@ -17,6 +17,17 @@ _INTEGER = re.compile(r"-?[0-9]+")
 
 _INBOUND = {"mode": ["inbound"]}
 _OUTBOUND = {"mode": ["outbound"]}
+_SYNC = {"mode": ["sync"]}
+
+# Voice connectors answer calls in sync mode and place them in outbound mode.
+_CALL_FIELDS = {
+    "to": {"type": "text", "show_when": _OUTBOUND},
+    "ring_seconds": {"type": "number", "default": 30, "min": 5, "max": 120, "show_when": _OUTBOUND},
+    "transfer_numbers": {"type": "textarea"},
+    "fallback_number": {"type": "text", "show_when": _SYNC},
+    "max_wait_seconds": {"type": "number", "default": 30, "min": 0, "max": 900, "show_when": _SYNC},
+    "hold_audio_path": {"type": "text", "show_when": _SYNC},
+}
 _RECEIVING = {"mode": ["inbound", "sync"]}
 
 # connectors/*.yaml groups the rate limit fields under one ``rate_limit`` block.
@@ -111,8 +122,7 @@ CONFIG_FIELDS: Dict[str, Dict[str, Dict[str, Any]]] = {
     },
     "twilio": {
         "phone_number": {"type": "text", "required": True},
-        "transfer_numbers": {"type": "textarea"},
-        "fallback_number": {"type": "text"},
+        **_CALL_FIELDS,
     },
     "twilio_messaging": {
         "channel": {"type": "select", "required": True, "default": "sms", "options": ["sms", "whatsapp", "rcs"]},
@@ -124,8 +134,21 @@ CONFIG_FIELDS: Dict[str, Dict[str, Dict[str, Any]]] = {
     },
     "telnyx": {
         "phone_number": {"type": "text", "required": True},
-        "transfer_numbers": {"type": "textarea"},
-        "fallback_number": {"type": "text"},
+        "outbound_voice_profile_id": {"type": "text", "required": True, "show_when": _OUTBOUND},
+        **_CALL_FIELDS,
+    },
+    "sip": {
+        "setup": {"type": "select", "required": True, "default": "register", "options": ["register", "trunk"]},
+        "server": {"type": "text"},
+        "port": {"type": "number", "min": 1, "max": 65535},
+        "transport": {"type": "select", "required": True, "default": "tls", "options": ["tls", "tcp", "udp"]},
+        "username": {"type": "text", "required": True, "show_when": {"setup": ["register"]}},
+        "password": {"type": "password", "required": True, "sensitive": True, "show_when": {"setup": ["register"]}},
+        "auth_username": {"type": "text", "show_when": {"setup": ["register"]}},
+        "caller_id": {"type": "text"},
+        "media_encryption": {"type": "select", "required": True, "default": "srtp", "options": ["srtp", "none"]},
+        "codecs": {"type": "select", "required": True, "default": "g722,alaw,ulaw", "options": ["g722,alaw,ulaw", "alaw,ulaw"]},
+        **_CALL_FIELDS,
     },
     "telnyx_messaging": {
         "channel": {"type": "select", "required": True, "default": "sms", "options": ["sms", "whatsapp", "rcs"]},

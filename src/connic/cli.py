@@ -27,7 +27,7 @@ from .app_schema import (
 from .core import RetryOptions
 from .loader import ProjectLoader
 from .migrate import register_migrate_command
-from .project_paths import contained_source, project_destination
+from .project_paths import AUDIO_EXTENSIONS, PROJECT_DIRECTORIES, contained_source, project_destination
 from .terminal import escape_terminal_text
 from .update_check import (
     CONNIC_PLUGIN_ID,
@@ -320,7 +320,6 @@ def _fetch_failed_run_details(
 # File Validation Constants and Helpers
 # =============================================================================
 
-PROJECT_DIRECTORIES = ("agents", "tools", "middleware", "schemas", "guardrails", "hooks", "tests", "connectors")
 # Deploys build app sources; dev sessions build apps locally and upload only apps/<key>.yaml.
 APPS_DIRECTORY = "apps"
 
@@ -334,6 +333,7 @@ ALLOWED_EXTENSIONS = {
     ".md",      # Markdown (prompts, templates)
     ".toml",    # TOML configuration
     ".jsonl",   # JSON Lines data
+    *AUDIO_EXTENSIONS,  # Audio, such as a voice connector's hold audio
 }
 
 # Maximum total upload size, code and tests/files/ fixtures together.

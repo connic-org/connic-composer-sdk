@@ -83,6 +83,8 @@ def test_validate_project_files_accepts_real_project_tree_and_skips_generated_fi
     (tmp_path / "tools" / ".secret.py").write_text("TOKEN = 'hidden'\n")
     (tmp_path / "schemas").mkdir()
     (tmp_path / "schemas" / "reply.json").write_text('{"type":"object"}\n')
+    (tmp_path / "assets").mkdir()
+    (tmp_path / "assets" / "hold.mp3").write_bytes(b"ID3audio")
     (tmp_path / "requirements.txt").write_text("httpx>=0.25.0\n")
 
     is_valid, error, files = cli._validate_project_files()
@@ -93,6 +95,7 @@ def test_validate_project_files_accepts_real_project_tree_and_skips_generated_fi
         "agents/support/agent.yaml",
         "tools/support.py",
         "schemas/reply.json",
+        "assets/hold.mp3",
         "requirements.txt",
     }
 

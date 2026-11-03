@@ -1,5 +1,9 @@
 from pathlib import Path
 
+PROJECT_DIRECTORIES = ("agents", "tools", "middleware", "schemas", "guardrails", "hooks", "tests", "connectors", "assets")
+# Audio files a project may contain, such as a voice connector's hold audio.
+AUDIO_EXTENSIONS = (".mp3", ".wav")
+
 
 def contained_source(path: Path, root: Path) -> Path:
     resolved = path.resolve()

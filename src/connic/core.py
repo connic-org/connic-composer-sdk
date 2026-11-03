@@ -232,12 +232,12 @@ class RetryOptions(BaseModel):
 
 
 class VoiceTurnDetectionConfig(BaseModel):
-    """Provider-side detection of when the caller has finished speaking."""
+    """Detection of when the caller has finished speaking."""
     model_config = ConfigDict(extra="forbid")
 
     silence_ms: Optional[int] = Field(
         default=None, gt=0,
-        description="Silence duration before ending a speech turn. Omit to use the provider default.",
+        description="Silence duration before ending a speech turn, in milliseconds. Omit for 500 ms.",
     )
 
 
@@ -246,6 +246,10 @@ class VoiceInterruptionConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     enabled: bool
+    min_speech_ms: Optional[int] = Field(
+        default=None, ge=0, le=5000,
+        description="How long the caller must speak while the agent talks before the agent stops, in milliseconds. Omit for 500 ms.",
+    )
 
 
 class VoiceConfig(BaseModel):
