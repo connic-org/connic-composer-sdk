@@ -53,6 +53,7 @@ _VOICE_NUMBER_PATTERNS = {
     "telnyx": re.compile(r"^(\+[1-9][0-9]{6,14}|[0-9]+)$"),
 }
 _VOICE_NUMBER_IDS = {"twilio": "Twilio SID starting with PN", "telnyx": "Telnyx ID"}
+_E164_PATTERN = re.compile(r"^\+[1-9][0-9]{1,14}$")
 _TELEGRAM_USER_ID_PATTERN = re.compile(r"^[1-9][0-9]*$")
 _TELEGRAM_CHAT_ID_PATTERN = re.compile(r"^-?[1-9][0-9]*$")
 
@@ -158,6 +159,16 @@ def _check_telegram_ids(config: Dict[str, Any]) -> None:
         raise ValueError(
             f"config.chat_id must be a numeric Telegram chat ID such as 123456789 or -1001234567890; '{chat_id}' isn't one"
         )
+
+
+def _check_allowed_callers(config: Dict[str, Any]) -> None:
+    """Allowed callers are E.164 numbers. Values with ${NAME} are checked on deploy."""
+    callers = config.get("allowed_callers") or []
+    items = callers.replace("\n", ",").split(",") if isinstance(callers, str) else callers if isinstance(callers, list) else [callers]
+    for item in items:
+        number = str(item).strip()
+        if number and "${" not in number and not _E164_PATTERN.fullmatch(number):
+            raise ValueError(f"config.allowed_callers must list E.164 numbers such as +4930123456; '{number}' isn't one")
 
 
 class OutboundLink(BaseModel):
@@ -336,6 +347,8 @@ class ConnectorFile(BaseModel):
             raise ValueError("s3 connectors need a connection to include file content")
         if self.type == "telegram":
             _check_telegram_ids(config)
+        if self.type in CALL_TYPES:
+            _check_allowed_callers(config)
 
         if self.type in VOICE_TYPES:
             phone_number = spec["config"]["phone_number"]

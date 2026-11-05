@@ -467,6 +467,8 @@ def test_override_null_removes_bridge_domain_and_config_keys():
          "config.phone_number_sid isn't allowed; use config.phone_number instead"),
         ({"phone_number": "+4930123456"}, ["phone-agent", "order-processor"],
          "twilio connectors link exactly one voice agent"),
+        ({"phone_number": "+4930123456", "allowed_callers": "+4930999\n030123"}, ["phone-agent"],
+         "config.allowed_callers must list E.164 numbers such as +4930123456; '030123' isn't one"),
     ],
 )
 def test_rejects_invalid_voice_connector(config, agents, message):
@@ -480,7 +482,7 @@ def test_voice_connector_accepts_number_from_variable():
     voice = connector(
         type="twilio",
         connection="twilio-main",
-        config={"phone_number": "${HOTLINE_NUMBER}"},
+        config={"phone_number": "${HOTLINE_NUMBER}", "allowed_callers": ["+4930999", "${OFFICE_NUMBER}"]},
         agents=["phone-agent"],
     )
 
@@ -493,6 +495,7 @@ def test_voice_connector_accepts_number_from_variable():
         ("twilio", {"to": "+4915112345678", "ring_seconds": 40}, None),
         ("twilio", {"ring_seconds": 121}, "ring_seconds"),
         ("twilio", {"fallback_number": "+4930999"}, "fallback_number"),
+        ("twilio", {"allowed_callers": ["+4930999"]}, "allowed_callers only applies to sync connectors"),
         ("telnyx", {"outbound_voice_profile_id": "1293384261075731499"}, None),
         ("telnyx", {}, "outbound_voice_profile_id"),
     ],

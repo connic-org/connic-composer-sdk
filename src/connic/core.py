@@ -268,6 +268,21 @@ class VoiceConfig(BaseModel):
         description="Play a quiet repeating indicator during tool waits or provider-reported background work. Pauses while the user or agent speaks.",
     )
     hang_up_allowed: bool = Field(default=True, description="Allow the agent to end the call.")
+    press_keys_allowed: bool = Field(
+        default=True,
+        description="Allow the agent to press phone keys with the press_keys tool, such as to choose options in a phone menu.",
+    )
+    wait_on_hold_allowed: bool = Field(
+        default=False,
+        description=(
+            "Allow the agent to wait on hold with the wait_on_hold tool. While it waits, connic listens for a person "
+            "to answer and the voice model gets no audio."
+        ),
+    )
+    max_hold_seconds: Optional[int] = Field(
+        default=None, gt=0, le=3600,
+        description="End the call once the agent has waited on hold this long. Omit to wait until the run's time limit.",
+    )
     turn_detection: Optional[VoiceTurnDetectionConfig] = None
     interruptions: Optional[VoiceInterruptionConfig] = None
     idle_timeout_seconds: Optional[int] = Field(
@@ -289,6 +304,12 @@ class VoiceConfig(BaseModel):
             if invalid:
                 raise ValueError(f"keypad keys must be 0-9, * or #, got: {', '.join(invalid)}")
         return value
+
+    @model_validator(mode="after")
+    def validate_hold(self):
+        if self.max_hold_seconds is not None and not self.wait_on_hold_allowed:
+            raise ValueError("max_hold_seconds requires wait_on_hold_allowed: true")
+        return self
 
 
 def resolve_voice_model(model: str) -> tuple[Literal["connic", "openai", "azure", "gemini", "vertex_ai"], str]:
@@ -387,6 +408,9 @@ class ContextCompressionConfig(BaseModel):
 
     When enabled, the runner recovers from provider context-window errors by
     compressing older history and oversized tool results, then retrying.
+
+    On voice agents, the voice provider drops the oldest part of a long call.
+    Only enabled and max_prompt_tokens apply to them.
 
     Example YAML:
         context_compression:
@@ -1297,9 +1321,13 @@ class AgentConfig(BaseModel):
                     raise ValueError("Input guardrails are not supported for voice agents because audio is streamed immediately")
                 if self.guardrails and self.guardrails.output:
                     raise ValueError("Output guardrails are not supported for voice agents because speech is streamed immediately")
-                for field in ("approval", "output_schema", "output_schema_dict", "fallback_model", "context_compression"):
+                for field in ("approval", "output_schema", "output_schema_dict", "fallback_model"):
                     if getattr(self, field) is not None:
                         raise ValueError(f"{field} is not supported for voice agents")
+                if self.context_compression is not None:
+                    # The voice provider compresses the call itself; only these two settings apply.
+                    for field in self.context_compression.model_fields_set - {"enabled", "max_prompt_tokens"}:
+                        raise ValueError(f"context_compression.{field} is not supported for voice agents")
                 listed = {next(iter(entry), None) if isinstance(entry, dict) else entry for entry in self.tools}
                 for key, tool_ref in (self.voice_config.keypad or {}).items():
                     if tool_ref not in listed:

@@ -24,6 +24,7 @@ _CALL_FIELDS = {
     "to": {"type": "text", "show_when": _OUTBOUND},
     "ring_seconds": {"type": "number", "default": 30, "min": 5, "max": 120, "show_when": _OUTBOUND},
     "transfer_numbers": {"type": "textarea"},
+    "allowed_callers": {"type": "textarea", "show_when": _SYNC},
     "fallback_number": {"type": "text", "show_when": _SYNC},
     "max_wait_seconds": {"type": "number", "default": 30, "min": 0, "max": 900, "show_when": _SYNC},
     "hold_audio_path": {"type": "text", "show_when": _SYNC},

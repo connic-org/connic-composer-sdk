@@ -65,7 +65,9 @@ def test_voice_rejects_unsupported_model_routes(model):
 
 
 def test_empty_voice_config_preserves_provider_defaults():
-    assert voice_agent().voice_config.model_dump(exclude_none=True) == {"thinking_sound": True, "hang_up_allowed": True}
+    assert voice_agent().voice_config.model_dump(exclude_none=True) == {
+        "thinking_sound": True, "hang_up_allowed": True, "press_keys_allowed": True, "wait_on_hold_allowed": False,
+    }
 
 
 def test_voice_thinking_sound_can_be_disabled():
@@ -106,6 +108,9 @@ def test_voice_preserves_explicit_transcription_model(provider):
     {"idle_timeout_seconds": -1},
     {"twilio_account_sid": "AC123"},
     {"turn_detection": {"threshold": 0.5}},
+    {"wait_on_hold_allowed": True, "max_hold_seconds": 0},
+    {"wait_on_hold_allowed": True, "max_hold_seconds": 3601},
+    {"max_hold_seconds": 600},
 ])
 def test_voice_rejects_invalid_or_unknown_options(options):
     with pytest.raises(ValidationError):
@@ -136,11 +141,18 @@ def test_voice_rejects_input_guardrails():
     ("output_schema", "result"),
     ("output_schema_dict", {"type": "object"}),
     ("fallback_model", "openai/gpt-realtime-mini"),
-    ("context_compression", {}),
+    ("context_compression", {"model": "connic/gpt-5.6-luna"}),
+    ("context_compression", {"keep_recent_messages": 4}),
+    ("context_compression", {"session_history": {"interval": 2}}),
 ])
 def test_voice_rejects_unsupported_execution_settings(field, value):
-    with pytest.raises(ValidationError, match=f"{field} is not supported for voice agents"):
+    with pytest.raises(ValidationError, match=f"{field}.* is not supported for voice agents"):
         voice_agent(**{field: value})
+
+
+def test_voice_context_compression_takes_a_switch_and_a_token_budget():
+    agent = voice_agent(context_compression={"enabled": False, "max_prompt_tokens": 20000})
+    assert (agent.context_compression.enabled, agent.context_compression.max_prompt_tokens) == (False, 20000)
 
 
 def test_text_agents_keep_output_guardrails():
