@@ -41,6 +41,7 @@ def voice_agent(**overrides):
     ),
     ("openai/gpt-4o", "openai", "gpt-4o"),
     ("gemini/gemini-2.5-flash", "gemini", "gemini-2.5-flash"),
+    ("connic/gemini-3.8-live", "connic", "gemini-3.8-live"),
 ])
 def test_voice_model_resolution(model, provider, native_model):
     assert resolve_voice_model(model) == (provider, native_model)
@@ -48,7 +49,7 @@ def test_voice_model_resolution(model, provider, native_model):
 
 
 @pytest.mark.parametrize("model", [
-    "connic/gpt-realtime",
+    "connic/",
     "openai/",
     "azure/",
     "gemini/",

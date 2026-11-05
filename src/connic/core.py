@@ -291,15 +291,16 @@ class VoiceConfig(BaseModel):
         return value
 
 
-def resolve_voice_model(model: str) -> tuple[Literal["openai", "azure", "gemini", "vertex_ai"], str]:
-    """Resolve the direct native realtime providers supported by connic voice."""
+def resolve_voice_model(model: str) -> tuple[Literal["connic", "openai", "azure", "gemini", "vertex_ai"], str]:
+    """Resolve the native realtime providers supported by connic voice."""
     provider, _, model_name = model.partition("/")
     if model_name and (
-        provider == "openai" or provider == "azure" or provider == "gemini" or provider == "vertex_ai"
+        provider == "connic" or provider == "openai" or provider == "azure"
+        or provider == "gemini" or provider == "vertex_ai"
     ):
         return provider, model_name
     raise ValueError(
-        "voice_config requires an openai/, azure/, gemini/, or vertex_ai/ provider prefix "
+        "voice_config requires a connic/, openai/, azure/, gemini/, or vertex_ai/ provider prefix "
         "followed by a model or deployment name."
     )
 
