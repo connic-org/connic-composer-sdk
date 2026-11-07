@@ -116,6 +116,7 @@ async def retrieval_query(
     min_score: float = 0.3,
     max_results: int = 3,
     metadata_filter: Optional[Dict[str, Any]] = None,
+    share_links: bool = False,
 ) -> Dict[str, Any]:
     """
     Query managed semantic retrieval for relevant information.
@@ -146,6 +147,8 @@ async def retrieval_query(
                      {"product_id": "X"}
                      {"status": {"$in": ["active", "pending"]}}
                      {"run_id": {"$ne": current_run_id}}
+        share_links: Add file_url, a link anyone can open, to results whose
+                   file is kept in project files, e.g. to cite a source.
 
     Returns:
         A dictionary containing:
@@ -153,6 +156,8 @@ async def retrieval_query(
             - content: The text content of the chunk
             - entry_id: The ID of the source entry
             - namespace: The namespace (if any)
+            - file_path: Path of the entry's file in project files, if it was kept
+            - file_url, file_url_expires_at: Share link to that file, with share_links
             - score: Similarity score (higher is better, max 1.0)
             - metadata: The entry's metadata dict
         - error: Present on timeout; results is then an empty list
@@ -169,27 +174,35 @@ async def retrieval_query(
 
 
 async def retrieval_store(
-    content: str,
+    content: Optional[str] = None,
     entry_id: Optional[str] = None,
     namespace: Optional[str] = None,
     metadata: Optional[Dict[str, Any]] = None,
+    file_path: Optional[str] = None,
+    keep_file: bool = True,
 ) -> Dict[str, Any]:
     """
     Store content for managed semantic retrieval.
-    
+
     Use this tool to save important information, facts, or content that
     should be remembered and searchable later. The content is automatically
-    chunked (if long) and embedded for semantic search.
-    
+    chunked (if long) and embedded for semantic search. Pass either content
+    or file_path.
+
     Args:
         content: The text content to store. This can be any length - long
                  content is automatically split into searchable chunks.
         entry_id: Optional custom identifier for this entry. If not provided,
-                  a random UUID is generated. Use this to update existing entries
-                  by providing the same entry_id within the same namespace.
+                  a random UUID is generated (the file name for file_path).
+                  Use this to update existing entries by providing the same
+                  entry_id within the same namespace.
         namespace: Optional namespace for organization. Use namespaces to
                    categorize content (e.g., "user_preferences", "meeting_notes").
         metadata: Optional dictionary of additional metadata to store.
+        file_path: Path of a file in project files to import instead of content,
+                   such as a file saved with web_browser_download. Up to 100 MiB.
+        keep_file: With file_path, also keep the file under retrieval/ in project
+                   files so search results can link to it (default True).
     
     Returns:
         A dictionary containing:
@@ -1160,6 +1173,29 @@ async def file_delete(path: str, recursive: bool = False) -> Dict[str, Any]:
     )
 
 
+async def file_share_link(paths: List[str]) -> Dict[str, Any]:
+    """
+    Create links anyone can open to download files, e.g. to send a report by email or chat.
+
+    A link works until the environment's share link lifetime ends (30 days unless
+    changed), it is revoked, or the file is replaced or deleted. Sharing the same
+    file again within a day returns the same link.
+
+    Args:
+        paths: Up to 50 file paths such as ["reports/2026/summary.pdf"].
+
+    Returns:
+        {"links": [{"path": ..., "url": ..., "expires_at": ...}]}
+
+    Example:
+        result = await file_share_link(["reports/2026/summary.pdf"])
+    """
+    raise RuntimeError(
+        "file_share_link will be auto-injected when testing using the connic CLI or deploying. "
+        "Run 'connic test' to test your agents with predefined tools."
+    )
+
+
 # All available predefined tools
 __all__ = [
     "trigger_agent",
@@ -1200,4 +1236,5 @@ __all__ = [
     "file_write",
     "file_update",
     "file_delete",
+    "file_share_link",
 ]

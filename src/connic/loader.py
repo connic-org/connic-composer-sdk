@@ -78,6 +78,7 @@ PREDEFINED_TOOL_NAMES = {
     "file_write",           # Write a text file
     "file_update",          # Move or rename a file or folder, or update file metadata
     "file_delete",          # Delete a file or folder
+    "file_share_link",      # Create links anyone can open to download files
 }
 
 PREDEFINED_TOOL_ALIASES = {
