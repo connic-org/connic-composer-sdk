@@ -1414,6 +1414,19 @@ def _run_lint(verbose: bool = False, quiet: bool = False, project_root: str = ".
                 f"{location}: reasoning_budget is deprecated and only works with legacy models; "
                 "use reasoning_effort instead."
             )
+        if config.uses_legacy_access():
+            location = config.source_path or config.name
+            import yaml as _yaml
+
+            # Rules that are always true print as YAML true, as people write them.
+            rules = {
+                resource: {scope: {op: rule == "true" or rule for op, rule in ops.items()} for scope, ops in scopes.items()}
+                for resource, scopes in config.access_rules().items()
+            }
+            replacement = _yaml.safe_dump({"access": rules}, sort_keys=False).rstrip()
+            deprecation_warnings.append(
+                f"{location}: database, retrieval and files are deprecated; replace them with:\n{replacement}"
+            )
 
         if agent_type == "sequential":
             for ref in config.agents:
@@ -1422,7 +1435,10 @@ def _run_lint(verbose: bool = False, quiet: bool = False, project_root: str = ".
                     errors.append(f"Sequential agent '{config.name}'{location} references unknown agent '{ref}'")
 
     for warning in deprecation_warnings:
-        _warn(warning)
+        first, *rest = warning.split("\n")
+        _warn(first)
+        for line in rest:
+            _info(f"  {line}")
 
     # Load connectors
     if not quiet:

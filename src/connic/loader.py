@@ -158,6 +158,43 @@ def _agent_limit_errors(agent: Agent) -> List[str]:
             errors.append(
                 f"Agent '{name}' retrieval.namespaces contains an invalid entry: namespace names must be non-empty strings"
             )
+    return errors + _access_errors(config)
+
+
+def _tool_resource(tool_name: str) -> Optional[str]:
+    """The access resource a built-in tool reads or changes."""
+    tool_name = PREDEFINED_TOOL_ALIASES.get(tool_name, tool_name)
+    if tool_name not in PREDEFINED_TOOL_NAMES:
+        return None
+    if tool_name.startswith("db_"):
+        return "database"
+    if tool_name.startswith("retrieval_"):
+        return "retrieval"
+    if tool_name.startswith("file_") or tool_name in ("web_browser_upload", "web_browser_download"):
+        return "files"
+    return None
+
+
+def _access_errors(config: AgentConfig) -> List[str]:
+    """With access, every resource needs entries: in max size, and for each built-in tool that uses it."""
+    access = config.access
+    if access is None:
+        return []
+    errors = []
+    for resource in ("database", "files", "retrieval"):
+        entries = getattr(access, resource) or {}
+        if len(entries) > MAX_ACCESS_ENTRIES:
+            errors.append(
+                f"Agent '{config.name}' access.{resource} has too many entries: {len(entries)} (max: {MAX_ACCESS_ENTRIES})"
+            )
+    for entry in [*config.tools, *config.discoverable_tools]:
+        ref = next(iter(entry), None) if isinstance(entry, dict) else entry
+        resource = _tool_resource(ref) if isinstance(ref, str) else None
+        if resource and not getattr(access, resource):
+            errors.append(
+                f"Agent '{config.name}' uses {ref}, but access has no {resource} rules, so every call would be denied. "
+                f"Add access.{resource} or remove the tool"
+            )
     return errors
 
 

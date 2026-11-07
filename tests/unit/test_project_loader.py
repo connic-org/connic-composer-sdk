@@ -3921,6 +3921,22 @@ def test_tool_limit_counts_module_functions_and_approval_inputs(tmp_path, valida
             "retrieval:\n  namespaces: [faq, ' ']\n",
             "Agent 'assistant' retrieval.namespaces contains an invalid entry",
         ),
+        (
+            "access:\n  database:\n" + "".join(f"    c{index}: {{read: true}}\n" for index in range(101)),
+            "Agent 'assistant' access.database has too many entries: 101 (max: 100)",
+        ),
+        (
+            "tools: [db_find]\naccess:\n  files:\n    '*': {read: true}\n",
+            "Agent 'assistant' uses db_find, but access has no database rules, so every call would be denied",
+        ),
+        (
+            "tools: [query_knowledge]\naccess:\n  database:\n    '*': {read: true}\n",
+            "Agent 'assistant' uses query_knowledge, but access has no retrieval rules",
+        ),
+        (
+            "tools: [web_browser_download]\naccess:\n  database:\n    '*': {read: true}\n",
+            "Agent 'assistant' uses web_browser_download, but access has no files rules",
+        ),
     ],
 )
 def test_agent_limits_are_load_errors(tmp_path, extra_yaml, expected_error):

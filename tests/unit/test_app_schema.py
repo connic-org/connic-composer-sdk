@@ -1,6 +1,7 @@
 from textwrap import dedent
 
 import pytest
+import yaml
 from click.testing import CliRunner
 from pydantic import ValidationError
 
@@ -205,7 +206,7 @@ def test_lookups_and_access_produce_the_spec_shape_with_bools_as_rules():
 
     spec = parsed.for_environment("Production")
     assert {name: lookup.model_dump() for name, lookup in spec["lookups"].items()} == {
-        "member": {"collection": "members", "where": "doc.email == user.email"},
+        "member": {"collection": "members", "where": "doc.email == user.email", "values": None},
     }
     assert spec["access"].model_dump(exclude_none=True) == {
         "database": {
@@ -223,6 +224,78 @@ def test_lookups_and_access_produce_the_spec_shape_with_bools_as_rules():
         "approvals": {"read": "true", "decide": "approval.params.amount < 100 and 'finance' in user.groups"},
         "retrieval": {"help": {"search": "true"}, "docs.internal": {"search": "member.role == 'agent'"}},
     }
+
+
+def test_set_writes_field_rules_list_lookups_and_wildcards_produce_the_spec_shape():
+    spec = app(
+        lookups={"teams": {"collection": "memberships", "where": "doc.user == user.id", "values": "team"}},
+        access={
+            "database": {
+                "*": {"read": True},
+                "tickets": {
+                    "update": "doc.team in teams",
+                    "set": {"author": "user.id", "updated_by": {"value": "user.id", "writes": ["insert", "update"]}, "seen": {"value": True}},
+                    "fields": {"notes": "doc.author == user.id"},
+                },
+            },
+            "files": {"*": {"read": True}, "uploads": {"write": True, "set": {"owner": "user.id"}}},
+            "retrieval": {"*": {"search": True}},
+        },
+    ).for_environment("Production")
+
+    assert spec["lookups"]["teams"].model_dump() == {
+        "collection": "memberships", "where": "doc.user == user.id", "values": "team",
+    }
+    assert spec["access"].model_dump(exclude_none=True) == {
+        "database": {
+            "*": {"read": "true"},
+            "tickets": {
+                "update": "doc.team in teams",
+                "set": {
+                    "author": "user.id",
+                    "updated_by": {"value": "user.id", "writes": ["insert", "update"]},
+                    "seen": {"value": "true", "writes": ["insert"]},
+                },
+                "fields": {"notes": "doc.author == user.id"},
+            },
+        },
+        "files": {"*": {"read": "true"}, "uploads": {"write": "true", "set": {"owner": "user.id"}}},
+        "retrieval": {"*": {"search": "true"}},
+    }
+
+
+def test_set_entries_read_from_yaml_keep_their_writes():
+    access = yaml.safe_load(
+        "database:\n"
+        "  tickets:\n"
+        "    set:\n"
+        "      updated_by:\n"
+        "        value: user.id\n"
+        "        writes: [insert, update]\n"
+    )
+
+    spec = app(access=access).for_environment("Production")
+
+    assert spec["access"].database["tickets"].set["updated_by"].writes == ["insert", "update"]
+
+
+@pytest.mark.parametrize(
+    "access, message",
+    [
+        ({"database": {"tickets": {"fields": {"notes": "new.author == user.id"}}}}, "access.database.tickets.fields.notes: 'new' isn't available here; use doc, user"),
+        ({"database": {"tickets": {"set": {"by": {"value": "doc.id", "writes": ["update"]}}}}}, "access.database.tickets.set.by: 'doc' isn't available here; use user"),
+        ({"files": {"uploads": {"set": {"owner": "file.size"}}}}, "access.files.uploads.set.owner: 'file' isn't available here; use user"),
+        ({"database": {"tickets": {"set": {"by": {"value": "user.id", "writes": ["delete"]}}}}}, "Input should be 'insert' or 'update'"),
+        ({"database": {"tickets": {"set": {"by": {"value": "user.id", "writes": ["update", "update"]}}}}}, "writes lists insert and update at most once each"),
+        ({"database": {"tickets": {"set": {"by": {"value": "user.id", "writes": []}}}}}, "at least 1 item"),
+        ({"retrieval": {"help": {"store": True}}}, "retrieval.help.store"),
+        ({"database": {"tickets": {"set": {"_owner": "user.id"}}}}, "access.database.tickets.set: '_owner' must be a field name"),
+        ({"database": {"tickets": {"fields": {"a.b": "true"}}}}, "access.database.tickets.fields: 'a.b' must be a field name"),
+    ],
+)
+def test_set_entries_and_field_rules_are_checked(access, message):
+    with pytest.raises(ValidationError, match=message):
+        app(access=access)
 
 
 def test_app_without_lookups_or_access_has_none_in_its_spec():

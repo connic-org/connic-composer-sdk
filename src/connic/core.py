@@ -8,6 +8,8 @@ from typing import Any, Callable, Dict, List, Literal, Optional, Union
 
 from pydantic import AliasChoices, BaseModel, ConfigDict, Field, StrictBool, field_validator, model_validator
 
+from .app_schema import _RESERVED_LOOKUP_NAMES, AGENT_NAMES, WILDCARD, AgentAccess, AppLookup, check_lookups, normalize_folders
+
 
 class AgentType(str, Enum):
     """Agent execution type."""
@@ -620,15 +622,55 @@ class FilesAccessConfig(BaseModel):
     @field_validator("folders")
     @classmethod
     def _normalize_folders(cls, folders: Optional[Dict[str, FolderPermissions]]):
-        if folders is None:
-            return None
-        normalized = {}
-        for name, permissions in folders.items():
-            folder = name.strip("/")
-            if not folder or any(part in {"", ".", ".."} for part in folder.split("/")):
-                raise ValueError(f"Invalid files folder '{name}'")
-            normalized[folder] = permissions
-        return normalized
+        return normalize_folders(folders)
+
+
+def _legacy_database_rules(prevent_delete: bool, prevent_write: bool, _session_only: bool) -> Dict[str, str]:
+    rules = {"read": "true"}
+    if not prevent_write:
+        rules.update(insert="true", update="true")
+    if not prevent_delete:
+        rules["delete"] = "true"
+    return rules
+
+
+def _legacy_retrieval_rules(prevent_delete: bool, prevent_write: bool, _session_only: bool) -> Dict[str, str]:
+    rules = {"search": "true"}
+    if not prevent_write:
+        rules["store"] = "true"
+    if not prevent_delete:
+        rules["delete"] = "true"
+    return rules
+
+
+def _legacy_file_rules(prevent_delete: bool, prevent_write: bool, session_only: bool) -> Dict[str, str]:
+    stored = "file.session_id == session.id" if session_only else "true"
+    rules = {"read": stored}
+    if not prevent_write:
+        rules.update(write="session.id != null" if session_only else "true", update=stored)
+    if not prevent_delete:
+        rules["delete"] = stored
+    return rules
+
+
+_LEGACY_FLAGS = ("prevent_delete", "prevent_write", "session_only")
+
+
+def _legacy_scopes(config: Any, entries_field: str, rules_for: Callable[..., Dict[str, str]]) -> Dict[str, Dict[str, str]]:
+    """The rules of a deprecated database, files or retrieval setting, per entry; "*" when it lists none."""
+    if config is None:
+        return {WILDCARD: rules_for(False, False, False)}
+    defaults = [getattr(config, flag, False) for flag in _LEGACY_FLAGS]
+    entries = getattr(config, entries_field)
+    if entries is None:
+        return {WILDCARD: rules_for(*defaults)}
+    return {
+        name: rules_for(*(
+            default if getattr(overrides, flag, None) is None else getattr(overrides, flag)
+            for flag, default in zip(_LEGACY_FLAGS, defaults)
+        ))
+        for name, overrides in entries.items()
+    }
 
 
 class GuardrailResult(BaseModel):
@@ -1112,25 +1154,30 @@ class AgentConfig(BaseModel):
     # Tool agent fields (required when type=tool)
     tool_name: Optional[str] = Field(default=None, description="Tool to execute for tool-type agents using the exact module path under tools/ (module.function or directory.module.function)")
     
-    # Database access control
-    database: Optional[DatabaseAccessConfig] = Field(
+    access: Optional[AgentAccess] = Field(
         default=None,
-        description="Access control configuration for database tools. "
-                    "If omitted, the agent has unrestricted database access."
+        description="Access rules of the database, file and Retrieval tools, in the format apps use. "
+                    "Anything without a rule is denied. If omitted, these tools have unrestricted access.",
+    )
+    lookups: Optional[Dict[str, AppLookup]] = Field(
+        default=None, description="Documents, or lists of values, resolved for access rules by name.",
     )
 
-    # Retrieval access control
+    # Deprecated: replaced by access, which connic builds from them while they still work.
+    database: Optional[DatabaseAccessConfig] = Field(
+        default=None,
+        description="Deprecated, use access. Access control configuration for database tools. "
+                    "If omitted, the agent has unrestricted database access."
+    )
     retrieval: Optional[RetrievalAccessConfig] = Field(
         default=None,
         validation_alias=AliasChoices("retrieval", "knowledge"),
-        description="Access control configuration for retrieval tools. "
+        description="Deprecated, use access. Access control configuration for retrieval tools. "
                     "If omitted, the agent has unrestricted retrieval access."
     )
-
-    # File access control
     files: Optional[FilesAccessConfig] = Field(
         default=None,
-        description="Access control configuration for file tools. "
+        description="Deprecated, use access. Access control configuration for file tools. "
                     "If omitted, the agent has unrestricted file access."
     )
 
@@ -1302,6 +1349,36 @@ class AgentConfig(BaseModel):
         ):
             raise ValueError("files.session_only requires session to be configured")
         return self
+
+    @model_validator(mode='after')
+    def validate_access(self):
+        if self.access is not None and self.uses_legacy_access():
+            raise ValueError("Use access or the deprecated database, retrieval and files, not both")
+        if self.lookups is not None and self.access is None:
+            raise ValueError("lookups need access")
+        lookups = self.lookups or {}
+        check_lookups(lookups, AGENT_NAMES, _RESERVED_LOOKUP_NAMES | AGENT_NAMES)
+        if self.access is not None:
+            self.access.check_rules(set(lookups))
+        return self
+
+    def uses_legacy_access(self) -> bool:
+        return any(getattr(self, field) is not None for field in ("database", "retrieval", "files"))
+
+    def access_rules(self) -> Optional[Dict[str, Any]]:
+        """The agent's access rules as connic enforces them; None when its tools have unrestricted access.
+
+        The deprecated database, retrieval and files settings become the same rules.
+        """
+        if self.access is not None:
+            return self.access.model_dump(exclude_none=True)
+        if not self.uses_legacy_access():
+            return None
+        return {
+            "database": _legacy_scopes(self.database, "collections", _legacy_database_rules),
+            "files": _legacy_scopes(self.files, "folders", _legacy_file_rules),
+            "retrieval": _legacy_scopes(self.retrieval, "namespaces", _legacy_retrieval_rules),
+        }
 
     @model_validator(mode='after')
     def validate_type_requirements(self):

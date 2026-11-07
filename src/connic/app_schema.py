@@ -57,12 +57,11 @@ import ast
 import keyword
 import re
 from pathlib import PurePosixPath
-from typing import AbstractSet, Annotated, Any, Dict, List, Literal, Optional, Tuple
+from typing import AbstractSet, Annotated, Any, Dict, List, Literal, Optional, Tuple, Union
 
 from pydantic import BaseModel, BeforeValidator, ConfigDict, Field, field_validator, model_validator
 
 from .connector_schema import CONNECTOR_KEY_PATTERN, DEV, _check_variables
-from .core import FilesAccessConfig
 
 APP_KEY_PATTERN = CONNECTOR_KEY_PATTERN
 NODE_VERSIONS = ("22", "24")
@@ -98,15 +97,19 @@ _CONNIC_FIELDS = frozenset({"groups"})
 
 _LITERAL_NAMES = frozenset({"true", "false", "null"})
 _RESERVED_LOOKUP_NAMES = frozenset({"user", "doc", "new", "file", "run", "session", "approval"}) | _LITERAL_NAMES
-# Record names each operation's rule may use, on top of user and the lookups.
+# What agent rules see besides lookups and records: the app visitor a run acts for, the run context and its session.
+AGENT_NAMES = frozenset({"user", "context", "session"})
+# Record names each operation's rule may use, on top of user (and the other agent names) and the lookups.
 _RULE_NAMES = {
     "database": {"read": {"doc"}, "insert": {"new"}, "update": {"doc", "new"}, "delete": {"doc"}},
     "files": {"read": {"file"}, "write": {"new"}, "update": {"file", "new"}, "delete": {"file"}},
     "runs": {"read": {"run"}, "cancel": {"run"}},
     "sessions": {"read": {"session"}, "delete": {"session"}},
     "approvals": {"read": {"approval"}, "decide": {"approval"}},
-    "retrieval": {"search": set()},
+    "retrieval": {"search": set(), "store": set(), "delete": set()},
 }
+WILDCARD = "*"
+MAX_LOOKUP_VALUES = 1000
 # connic's condition grammar (shared/expression_filter.py): comparisons, and/or/not, paths and literals.
 _RULE_NODES = (
     ast.Expression, ast.BoolOp, ast.And, ast.Or, ast.UnaryOp, ast.Not, ast.Compare, ast.Name, ast.Load,
@@ -248,6 +251,19 @@ class AppAuth(BaseModel):
         return self
 
 
+def normalize_folders(folders: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    """Folder keys without leading and trailing slashes."""
+    if folders is None:
+        return None
+    normalized = {}
+    for name, permissions in folders.items():
+        folder = name.strip("/")
+        if not folder or any(part in {"", ".", ".."} for part in folder.split("/")):
+            raise ValueError(f"Invalid files folder '{name}'")
+        normalized[folder] = permissions
+    return normalized
+
+
 class AppLookup(BaseModel):
     """A database document resolved once per request, available to rules under the lookup's name."""
 
@@ -255,6 +271,34 @@ class AppLookup(BaseModel):
 
     collection: str = Field(min_length=1)
     where: Rule = Field(description="Matches the document; may use doc and user. The first match wins.")
+    values: Optional[str] = Field(
+        default=None,
+        min_length=1,
+        description=f"A field: the lookup is then the list of its values in every matching document, at most {MAX_LOOKUP_VALUES}.",
+    )
+
+
+class SetField(BaseModel):
+    """A field ``set`` writes, and the writes it applies to."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    value: Rule
+    writes: List[Literal["insert", "update"]] = Field(default_factory=lambda: ["insert"], min_length=1)
+
+    @field_validator("writes")
+    @classmethod
+    def _unique(cls, v: List[str]) -> List[str]:
+        if len(set(v)) != len(v):
+            raise ValueError("writes lists insert and update at most once each")
+        return v
+
+
+SetRule = Union[SetField, Rule]
+
+
+def _set_rule(entry: SetRule) -> str:
+    return entry.value if isinstance(entry, SetField) else entry
 
 
 class AppCollectionAccess(BaseModel):
@@ -266,8 +310,12 @@ class AppCollectionAccess(BaseModel):
     insert: Optional[Rule] = None
     update: Optional[Rule] = None
     delete: Optional[Rule] = None
-    set: Optional[Dict[str, Rule]] = Field(
-        default=None, description="Fields connic writes on insert and keeps unchanged on update; may use user and lookups.",
+    set: Optional[Dict[str, SetRule]] = Field(
+        default=None,
+        description="Fields connic writes, on insert unless writes says otherwise; writes can't send them. May use user and lookups.",
+    )
+    fields: Optional[Dict[str, Rule]] = Field(
+        default=None, description="Rules per field: a field is read and changed only where its rule holds for doc.",
     )
 
 
@@ -280,6 +328,9 @@ class AppFolderAccess(BaseModel):
     write: Optional[Rule] = None
     update: Optional[Rule] = None
     delete: Optional[Rule] = None
+    set: Optional[Dict[str, SetRule]] = Field(
+        default=None, description="Metadata fields connic writes, on upload unless writes says otherwise.",
+    )
 
 
 class AppRunAccess(BaseModel):
@@ -317,46 +368,110 @@ class AppRetrievalAccess(BaseModel):
     search: Optional[Rule] = None
 
 
+def _check_access(access: BaseModel, lookups: AbstractSet[str], names: AbstractSet[str]) -> None:
+    """Check every rule's syntax and names; ``lookups`` are the lookup names declared next to it."""
+    allowed = {*names, *lookups}
+    scopes = [
+        *((f"access.database.{name}", "database", rules) for name, rules in (access.database or {}).items()),
+        *((f"access.files.{folder}", "files", rules) for folder, rules in (access.files or {}).items()),
+        *((f"access.{resource}", resource, getattr(access, resource, None)) for resource in ("runs", "sessions", "approvals")),
+        *((f"access.retrieval.{namespace}", "retrieval", rules) for namespace, rules in (access.retrieval or {}).items()),
+    ]
+    for path, resource, rules in scopes:
+        if rules is None:
+            continue
+        for operation, record_names in _RULE_NAMES[resource].items():
+            rule = getattr(rules, operation, None)
+            if rule is not None:
+                _check_rule(rule, f"{path}.{operation}", allowed | record_names)
+    for resource in ("database", "files"):
+        for name, rules in (getattr(access, resource) or {}).items():
+            for field, entry in (rules.set or {}).items():
+                _check_field_name(field, f"access.{resource}.{name}.set")
+                _check_rule(_set_rule(entry), f"access.{resource}.{name}.set.{field}", allowed)
+            for field, rule in (getattr(rules, "fields", None) or {}).items():
+                _check_field_name(field, f"access.{resource}.{name}.fields")
+                _check_rule(rule, f"access.{resource}.{name}.fields.{field}", allowed | {"doc"})
+
+
+def _check_field_name(name: str, path: str) -> None:
+    if not name or "." in name or name.startswith(("_", "$")):
+        raise ValueError(f"{path}: '{name}' must be a field name without dots that doesn't start with _ or $")
+
+
 class AppAccess(BaseModel):
     """What the browser may read and change. A missing resource or operation is denied."""
 
     model_config = ConfigDict(extra="forbid")
 
-    database: Optional[Dict[str, AppCollectionAccess]] = None
+    database: Optional[Dict[str, AppCollectionAccess]] = Field(
+        default=None, description='Collections, and "*" for every collection without an entry of its own.',
+    )
     files: Optional[Dict[str, AppFolderAccess]] = Field(
-        default=None, description="Folders cover everything below them; the most specific folder wins.",
+        default=None, description='Folders cover everything below them; the most specific folder wins and "*" covers all.',
     )
     runs: Optional[AppRunAccess] = None
     sessions: Optional[AppSessionAccess] = None
     approvals: Optional[AppApprovalAccess] = None
     retrieval: Optional[Dict[str, AppRetrievalAccess]] = Field(
-        default=None, description="Namespaces visitors may search; each covers the namespaces below it.",
+        default=None, description='Namespaces visitors may search; each covers the namespaces below it, "*" all of them.',
     )
 
     @field_validator("files")
     @classmethod
     def _normalize_folders(cls, folders: Optional[Dict[str, AppFolderAccess]]) -> Optional[Dict[str, AppFolderAccess]]:
-        return FilesAccessConfig._normalize_folders(folders)
+        return normalize_folders(folders)
 
     def check_rules(self, lookups: AbstractSet[str]) -> None:
-        """Check every rule's syntax and names; ``lookups`` are the lookup names declared next to it."""
-        allowed = {"user", *lookups}
-        scopes = [
-            *((f"access.database.{name}", "database", rules) for name, rules in (self.database or {}).items()),
-            *((f"access.files.{folder}", "files", rules) for folder, rules in (self.files or {}).items()),
-            *((f"access.{resource}", resource, getattr(self, resource)) for resource in ("runs", "sessions", "approvals")),
-            *((f"access.retrieval.{namespace}", "retrieval", rules) for namespace, rules in (self.retrieval or {}).items()),
-        ]
-        for path, resource, rules in scopes:
-            if rules is None:
-                continue
-            for operation, names in _RULE_NAMES[resource].items():
-                rule = getattr(rules, operation)
-                if rule is not None:
-                    _check_rule(rule, f"{path}.{operation}", allowed | names)
-        for name, rules in (self.database or {}).items():
-            for field, rule in (rules.set or {}).items():
-                _check_rule(rule, f"access.database.{name}.set.{field}", allowed)
+        _check_access(self, lookups, {"user"})
+
+
+class AgentRetrievalAccess(BaseModel):
+    """Rules for one Retrieval namespace and the namespaces below it."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    search: Optional[Rule] = None
+    store: Optional[Rule] = None
+    delete: Optional[Rule] = None
+
+
+class AgentAccess(BaseModel):
+    """What an agent's database, file and Retrieval tools may read and change. A missing resource or operation is denied."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    database: Optional[Dict[str, AppCollectionAccess]] = Field(
+        default=None, description='Collections, and "*" for every collection without an entry of its own.',
+    )
+    files: Optional[Dict[str, AppFolderAccess]] = Field(
+        default=None, description='Folders cover everything below them; the most specific folder wins and "*" covers all.',
+    )
+    retrieval: Optional[Dict[str, AgentRetrievalAccess]] = Field(
+        default=None,
+        description='Namespaces; the most specific one wins, "*" covers all, and a search covers the namespaces below it.',
+    )
+
+    @field_validator("files")
+    @classmethod
+    def _normalize_folders(cls, folders: Optional[Dict[str, AppFolderAccess]]) -> Optional[Dict[str, AppFolderAccess]]:
+        return normalize_folders(folders)
+
+    def check_rules(self, lookups: AbstractSet[str]) -> None:
+        _check_access(self, lookups, AGENT_NAMES)
+
+
+def check_lookups(lookups: Dict[str, AppLookup], names: AbstractSet[str], reserved: AbstractSet[str]) -> None:
+    """Check lookup names and where rules; ``names`` are what a where may use besides doc."""
+    for name, lookup in lookups.items():
+        if not (name.isascii() and name.isidentifier()) or keyword.iskeyword(name):
+            raise ValueError(f"lookups: '{name}' must be a name such as member")
+        if name in reserved:
+            raise ValueError(f"lookups: '{name}' is reserved; choose another name")
+        _check_rule(lookup.where, f"lookups.{name}.where", {"doc", *names}, reserved | set(lookups))
+        if lookup.values is not None:
+            for part in lookup.values.split("."):
+                _check_field_name(part, f"lookups.{name}.values")
 
 
 class AppOverride(BaseModel):
@@ -449,12 +564,7 @@ class AppFile(BaseModel):
             seen.add(key)
 
         lookups = spec["lookups"] or {}
-        for name, lookup in lookups.items():
-            if not (name.isascii() and name.isidentifier()) or keyword.iskeyword(name):
-                raise ValueError(f"lookups: '{name}' must be a name such as member")
-            if name in _RESERVED_LOOKUP_NAMES:
-                raise ValueError(f"lookups: '{name}' is reserved; choose another name")
-            _check_rule(lookup.where, f"lookups.{name}.where", {"doc", "user"}, _RESERVED_LOOKUP_NAMES | set(lookups))
+        check_lookups(lookups, {"user"}, _RESERVED_LOOKUP_NAMES)
         if spec["access"] is not None:
             spec["access"].check_rules(set(lookups))
 

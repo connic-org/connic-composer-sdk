@@ -1808,6 +1808,22 @@ def test_lint_command_warns_for_deprecated_reasoning_budget(tmp_path, monkeypatc
     ) in result.output
 
 
+def test_lint_command_prints_access_rules_for_deprecated_access_settings(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(cli, "print_update_hint", lambda: None)
+    _write_minimal_support_agent(tmp_path)
+    agent_path = tmp_path / "agents" / "support.yaml"
+    agent_path.write_text(agent_path.read_text() + "database:\n  prevent_write: true\n")
+
+    result = CliRunner().invoke(cli.main, ["lint"])
+
+    assert result.exit_code == 0, result.output
+    assert "agents/support.yaml: database, retrieval and files are deprecated; replace them with:" in result.output
+    lines = [line.strip() for line in result.output.splitlines()]
+    start = lines.index("access:")
+    assert lines[start:start + 7] == ["access:", "database:", "'*':", "read: true", "delete: true", "files:", "'*':"]
+
+
 def test_lint_command_reports_unknown_sequential_agent_reference(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(cli, "print_update_hint", lambda: None)

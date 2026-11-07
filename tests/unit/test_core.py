@@ -743,3 +743,91 @@ def test_retrieval_access_config_defaults():
     assert cfg.prevent_delete is False
     assert cfg.prevent_write is False
     assert cfg.namespaces is None
+
+
+def test_agent_access_rules_see_user_context_session_and_lookups():
+    cfg = AgentConfig(**_llm_agent(
+        access={
+            "database": {
+                "*": {"read": True},
+                "notes": {
+                    "read": "doc.team in teams and context.role == 'admin'",
+                    "update": "doc.session == session.id",
+                    "set": {"by": {"value": "user.id", "writes": ["update"]}},
+                    "fields": {"internal": "doc.author == user.id"},
+                },
+            },
+            "retrieval": {"help": {"search": True, "store": "session.id != null", "delete": False}},
+        },
+        lookups={"teams": {"collection": "memberships", "where": "doc.user == user.id and doc.org == context.org", "values": "team"}},
+    ))
+
+    assert cfg.access_rules() == {
+        "database": {
+            "*": {"read": "true"},
+            "notes": {
+                "read": "doc.team in teams and context.role == 'admin'",
+                "update": "doc.session == session.id",
+                "set": {"by": {"value": "user.id", "writes": ["update"]}},
+                "fields": {"internal": "doc.author == user.id"},
+            },
+        },
+        "retrieval": {"help": {"search": "true", "store": "session.id != null", "delete": "false"}},
+    }
+    assert AgentConfig(**_llm_agent()).access_rules() is None
+
+
+@pytest.mark.parametrize(
+    ("changes", "message"),
+    [
+        ({"access": {"runs": {"read": True}}}, "Extra inputs are not permitted"),
+        ({"access": {"database": {"notes": {"read": "member.role == 'x'"}}}}, "access.database.notes.read: unknown name 'member'"),
+        ({"access": {"files": {"uploads": {"write": "file.size < 1"}}}}, "access.files.uploads.write: 'file' isn't available here"),
+        ({"access": {"database": {}}, "database": {"prevent_write": True}}, "Use access or the deprecated database, retrieval and files, not both"),
+        ({"lookups": {"teams": {"collection": "memberships", "where": "doc.user == user.id"}}}, "lookups need access"),
+        ({"access": {}, "lookups": {"context": {"collection": "members", "where": "true"}}}, "lookups: 'context' is reserved"),
+        ({"access": {}, "lookups": {"teams": {"collection": "members", "where": "doc.user == visitor.id"}}}, "lookups.teams.where: unknown name 'visitor'"),
+    ],
+)
+def test_agent_access_rules_are_checked(changes, message):
+    with pytest.raises(ValueError, match=message):
+        AgentConfig(**_llm_agent(**changes))
+
+
+SESSION_FILE = "file.session_id == session.id"
+EVERYTHING = {
+    "database": {"*": {"read": "true", "insert": "true", "update": "true", "delete": "true"}},
+    "files": {"*": {"read": "true", "write": "true", "update": "true", "delete": "true"}},
+    "retrieval": {"*": {"search": "true", "store": "true", "delete": "true"}},
+}
+
+
+@pytest.mark.parametrize(
+    ("legacy", "rules"),
+    [
+        (
+            {
+                "session": True,
+                "database": {"prevent_delete": True, "collections": {"orders": {"prevent_write": True}, "logs": {}}},
+                "knowledge": {"namespaces": {"faq": {"prevent_delete": True}}},
+                "files": {"session_only": True, "folders": {"uploads": {}, "templates": {"session_only": False, "prevent_write": True}}},
+            },
+            {
+                "database": {"orders": {"read": "true"}, "logs": {"read": "true", "insert": "true", "update": "true"}},
+                "files": {
+                    "uploads": {"read": SESSION_FILE, "write": "session.id != null", "update": SESSION_FILE, "delete": SESSION_FILE},
+                    "templates": {"read": "true", "delete": "true"},
+                },
+                "retrieval": {"faq": {"search": "true", "store": "true"}},
+            },
+        ),
+        (
+            {"database": {"prevent_write": True}, "retrieval": {"prevent_write": True, "prevent_delete": True}},
+            {**EVERYTHING, "database": {"*": {"read": "true", "delete": "true"}}, "retrieval": {"*": {"search": "true"}}},
+        ),
+        ({"database": {"collections": {}}}, {**EVERYTHING, "database": {}}),
+    ],
+    ids=["entries-and-overrides", "flags-without-entries", "no-collections"],
+)
+def test_deprecated_access_settings_become_the_same_access_rules(legacy, rules):
+    assert AgentConfig(**_llm_agent(**legacy)).access_rules() == rules
