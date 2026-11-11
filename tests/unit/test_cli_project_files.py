@@ -9,6 +9,7 @@ import tarfile
 import threading
 import time
 import zipfile
+from contextlib import contextmanager
 from pathlib import Path
 
 import pytest
@@ -172,23 +173,21 @@ def test_validate_project_files_reports_file_removed_during_hard_link_check(tmp_
     tool = Path("tools/lookup.py")
     tool.parent.mkdir()
     tool.write_text("def lookup():\n    return {'status': 'ok'}\n")
-    original_lstat = Path.lstat
-    tool_lstat_calls = 0
+    original_open = Path.open
 
-    def lstat(path):
-        nonlocal tool_lstat_calls
+    @contextmanager
+    def open_file(path, *args, **kwargs):
+        with original_open(path, *args, **kwargs) as stream:
+            yield stream
         if path == tool:
-            tool_lstat_calls += 1
-            if tool_lstat_calls == 2:
-                raise OSError("file was removed")
-        return original_lstat(path)
+            path.unlink()
 
-    monkeypatch.setattr(Path, "lstat", lstat)
+    monkeypatch.setattr(Path, "open", open_file)
 
     is_valid, error, files = cli._validate_project_files()
 
     assert is_valid is False
-    assert error == "Could not inspect tools/lookup.py: file was removed"
+    assert str(tool) in error
     assert files == []
 
 

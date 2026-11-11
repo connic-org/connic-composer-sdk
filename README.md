@@ -7,7 +7,7 @@ Build connic agents in code.
 Define agents in YAML, extend them with Python, test them with hot reload against connic cloud, and deploy them to connic-managed environments.
 
 [![PyPI version](https://img.shields.io/pypi/v/connic-composer-sdk.svg)](https://pypi.org/project/connic-composer-sdk/)
-[![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
+[![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
 [Documentation](https://connic.co/docs/v1/build/project-structure) • [Quickstart](https://connic.co/docs/v1/quickstart) • [Coding Agent Setup](https://connic.co/docs/v1/ai-agent-setup) • [Agent Templates](https://connic.co/marketplace/agent-templates) • [Dashboard](https://connic.co/projects)
@@ -36,7 +36,7 @@ Use it to:
 pip install connic-composer-sdk
 ```
 
-Requires Python 3.10 or newer.
+Requires Python 3.11 or newer.
 
 ## Quick Start
 
