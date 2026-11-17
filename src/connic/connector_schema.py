@@ -39,7 +39,14 @@ from typing import Any, Dict, List, Literal, Optional, Tuple
 
 from pydantic import BaseModel, ConfigDict, Field, StrictBool, field_validator, model_validator
 
-from .connector_fields import DEPRECATED_CONFIG_FIELDS, check_config, check_destination, check_routes, receives_files
+from .connector_fields import (
+    CONFIG_FIELDS,
+    DEPRECATED_CONFIG_FIELDS,
+    check_config,
+    check_destination,
+    check_routes,
+    receives_files,
+)
 
 CONNECTOR_KEY_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,99}$")
 # Label of the ``dev`` variant in ``specs()``.
@@ -69,22 +76,41 @@ CONNECTOR_MODES: Dict[str, Tuple[str, ...]] = {
     "email": ("inbound", "outbound"),
     "stripe": ("inbound",),
     "telegram": ("inbound", "outbound"),
+    "slack": ("inbound", "outbound"),
+    "github": ("inbound", "outbound"),
     "twilio": ("sync", "outbound"),
     "twilio_messaging": ("inbound", "outbound"),
     "telnyx": ("sync", "outbound"),
     "telnyx_messaging": ("inbound", "outbound"),
     "sip": ("sync", "outbound"),
+    "outlook": ("inbound", "outbound"),
+    "rabbitmq": ("inbound", "outbound"),
+    "mqtt": ("inbound", "outbound"),
+    "azure_service_bus": ("inbound", "outbound"),
+    "jira": ("inbound", "outbound"),
+    "linear": ("inbound", "outbound"),
+    "notion": ("inbound", "outbound"),
+    "gitlab": ("inbound", "outbound"),
+    "shopify": ("inbound", "outbound"),
+    "pipedrive": ("inbound", "outbound"),
+    "teams": ("inbound", "outbound"),
+    "gmail": ("inbound", "outbound"),
+    "google_sheets": ("inbound", "outbound"),
+    "google_pubsub": ("inbound", "outbound"),
+    "whatsapp": ("inbound", "outbound"),
 }
 _TYPE_ALIASES = {"webhook": "http"}
 # Voice connector files from before outbound calls name no mode; they answer calls.
 _MODE_WHEN_OMITTED = {"twilio": "sync", "telnyx": "sync", "sip": "sync"}
 
 CONNECTION_TYPES = frozenset({
-    "kafka", "sqs", "s3", "postgres", "email", "twilio", "twilio_messaging", "telnyx", "telnyx_messaging",
+    "kafka", "sqs", "s3", "postgres", "email", "twilio", "twilio_messaging", "telnyx", "telnyx_messaging", "slack", "github",
+    "outlook", "rabbitmq", "mqtt", "azure_service_bus", "jira", "linear", "shopify", "pipedrive", "teams", "gmail", "google_sheets",
+    "google_pubsub", "gitlab", "whatsapp", "notion",
 })
-BRIDGE_TYPES = frozenset({"http", "kafka", "sqs", "s3", "postgres", "email"})
+BRIDGE_TYPES = frozenset({"http", "kafka", "sqs", "s3", "postgres", "email", "rabbitmq", "mqtt"})
 # Types whose Bridge belongs to their Connection; a connector-level bridge is deprecated until April 30, 2027.
-CONNECTION_BRIDGE_TYPES = frozenset({"kafka", "sqs", "s3", "postgres", "email"})
+CONNECTION_BRIDGE_TYPES = frozenset({"kafka", "sqs", "s3", "postgres", "email", "rabbitmq", "mqtt"})
 DEPRECATION_SUNSET = "April 30, 2027"
 DOMAIN_TYPES = frozenset({"http", "mcp", "s3", "stripe", "websocket"})
 VOICE_TYPES = frozenset({"twilio", "telnyx"})
@@ -102,6 +128,14 @@ GENERATED_FIELDS: Dict[str, frozenset[str]] = {
     "twilio_messaging": frozenset({"webhook_url", "sender_sid"}),
     "telnyx": frozenset({"webhook_url", "application_id", "application_name"}),
     "telnyx_messaging": frozenset({"webhook_url", "sender_id", "messaging_profile_id", "setup_mode"}),
+    "jira": frozenset({"webhook_secret", "webhook_id", "account_id"}),
+    "linear": frozenset({"webhook_id", "webhook_secret", "team_id"}),
+    "notion": frozenset({"data_source_id", "data_source_name", "title_property"}),
+    "gitlab": frozenset({"webhook_secret", "signing_token", "webhook_id", "project_id", "signed"}),
+    "shopify": frozenset({"subscription_ids"}),
+    "pipedrive": frozenset({"webhook_id", "webhook_password"}),
+    "google_pubsub": frozenset({"push_endpoint"}),
+    "whatsapp": frozenset({"webhook_url", "display_phone_number"}),
 }
 
 # Config keys that have a dedicated place in the file.
@@ -277,8 +311,6 @@ class ConnectorFile(BaseModel):
         if not isinstance(v, str):
             return v
         v = _TYPE_ALIASES.get(v, v)
-        if v == "slack":
-            raise ValueError("Slack connectors can't be declared in code; create them in the dashboard")
         if v not in CONNECTOR_MODES:
             known = sorted({*CONNECTOR_MODES, *_TYPE_ALIASES} - {"http"})
             raise ValueError(f"unknown connector type '{v}'. Known types: {', '.join(known)}")
@@ -321,7 +353,9 @@ class ConnectorFile(BaseModel):
         _check_variables(spec["config"], "config")
 
         # S3 connectors only need credentials to download file content; that's checked with the config.
-        if self.type in CONNECTION_TYPES and self.type != "s3" and spec["connection"] is None:
+        # Pub/Sub push requests carry Google's token, so only publishing needs a connection.
+        optional = self.type == "s3" or (self.type, self.mode) == ("google_pubsub", "inbound")
+        if self.type in CONNECTION_TYPES and not optional and spec["connection"] is None:
             raise ValueError(f"{self.type} connectors need a connection")
         if self.type not in CONNECTION_TYPES and spec["connection"] is not None:
             raise ValueError(f"{self.type} connectors don't use a connection")
@@ -337,7 +371,8 @@ class ConnectorFile(BaseModel):
                 raise ValueError(f"config.{key} is generated by connic; remove it from the file")
             if key == "bridge_id" and self.type in CONNECTION_BRIDGE_TYPES:
                 raise ValueError("config.bridge_id isn't allowed; set the Bridge on the connection instead")
-            if key in _RELOCATED_CONFIG_KEYS:
+            # A type's own setting may share a name with another type's relocated key, like WhatsApp's phone_number_id.
+            if key in _RELOCATED_CONFIG_KEYS and key not in CONFIG_FIELDS.get(self.type, {}):
                 raise ValueError(f"config.{key} isn't allowed; use {_RELOCATED_CONFIG_KEYS[key]} instead")
             if key.startswith("_"):
                 raise ValueError(f"config.{key} is reserved for connic")

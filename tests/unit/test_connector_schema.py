@@ -164,7 +164,7 @@ def test_outbound_link_settings():
 @pytest.mark.parametrize(
     "data,message",
     [
-        ({"type": "slack", "mode": "inbound"}, "Slack connectors can't be declared in code"),
+        ({"type": "github", "mode": "inbound", "config": {"repository": "acme/api"}}, "github connectors need a connection"),
         ({"type": "discord"}, "unknown connector type 'discord'"),
         ({"type": "kafka", "connection": "orders-kafka"}, "mode is required for kafka connectors"),
         ({"type": "cron", "mode": "outbound"}, "cron connectors support mode inbound, not 'outbound'"),
@@ -362,6 +362,30 @@ def test_s3_connectors_need_a_connection_and_region_only_for_file_content():
     assert events_only.for_environment("Production")["connection"] is None
     assert with_content.for_environment("Production")["config"]["region"] == "eu-central-1"
     assert events_only.deprecations() == with_content.deprecations() == []
+
+
+def test_google_pubsub_connectors_need_a_connection_only_to_publish():
+    push = connector(
+        type="google_pubsub", mode="inbound",
+        config={"push_service_account": "push@acme.iam.gserviceaccount.com"}, agents=["order-processor"],
+    )
+    assert push.for_environment("Production")["connection"] is None
+
+    with pytest.raises(ValidationError, match="google_pubsub connectors need a connection"):
+        connector(
+            type="google_pubsub", mode="outbound", config={"topic": "projects/acme/topics/orders"},
+            agents=["order-processor"],
+        )
+
+
+def test_whatsapp_names_its_number_by_phone_number_id():
+    # Telnyx files name the number as phone_number instead; WhatsApp's own setting must not be relocated.
+    whatsapp = connector(
+        type="whatsapp", mode="inbound", connection="whatsapp-main", config={"phone_number_id": "106540352242922"},
+        agents=["order-processor"],
+    )
+
+    assert whatsapp.for_environment("Production")["config"]["phone_number_id"] == "106540352242922"
 
 
 def test_connector_level_bridge_and_s3_endpoint_are_deprecated_where_the_connection_holds_them():

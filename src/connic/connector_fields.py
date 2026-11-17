@@ -121,6 +121,13 @@ CONFIG_FIELDS: Dict[str, Dict[str, Dict[str, Any]]] = {
         "allowed_user_ids": {"type": "textarea", "show_when": _INBOUND},
         "chat_id": {"type": "text", "accepts_integer": True, "show_when": _OUTBOUND},
     },
+    "slack": {
+        "channel_id": {"type": "text", "show_when": _OUTBOUND},
+    },
+    "github": {
+        "repository": {"type": "text", "required": True},
+        "events": {"type": "textarea", "required": True, "default": "issues.opened", "show_when": _INBOUND},
+    },
     "twilio": {
         "phone_number": {"type": "text", "required": True},
         **_CALL_FIELDS,
@@ -158,9 +165,89 @@ CONFIG_FIELDS: Dict[str, Dict[str, Dict[str, Any]]] = {
         "to": {"type": "text", "show_when": _OUTBOUND},
         "whatsapp_template": {"type": "textarea", "show_when": {"mode": ["outbound"], "channel": ["whatsapp"]}},
     },
+    "outlook": {
+        "mailbox": {"type": "text", "required": True},
+        "folder": {"type": "text", "default": "Inbox", "show_when": _INBOUND},
+        "mark_as_read": {"type": "boolean", "default": True, "show_when": _INBOUND},
+        "default_to": {"type": "text", "show_when": _OUTBOUND},
+    },
+    "rabbitmq": {
+        "queue": {"type": "text", "required": True, "show_when": _INBOUND},
+        "prefetch": {"type": "number", "default": 10, "min": 1, "max": 1000, "show_when": _INBOUND},
+        "exchange": {"type": "text", "show_when": _OUTBOUND},
+        "routing_key": {"type": "text", "show_when": _OUTBOUND},
+    },
+    "mqtt": {
+        "topic_filter": {"type": "text", "required": True, "show_when": _INBOUND},
+        "topic": {"type": "text", "required": True, "show_when": _OUTBOUND},
+        "qos": {"type": "number", "default": 1, "min": 0, "max": 1},
+        "retain": {"type": "boolean", "default": False, "show_when": _OUTBOUND},
+        "client_id": {"type": "text"},
+        "message_id_field": {"type": "text", "show_when": _INBOUND},
+    },
+    "azure_service_bus": {
+        "entity_type": {"type": "select", "default": "queue", "options": ["queue", "topic"]},
+        "queue": {"type": "text", "required": True, "show_when": {"entity_type": ["queue"]}},
+        "topic": {"type": "text", "required": True, "show_when": {"entity_type": ["topic"]}},
+        "subscription": {"type": "text", "required": True, "show_when": {"mode": ["inbound"], "entity_type": ["topic"]}},
+    },
+    "jira": {
+        "events": {"type": "textarea", "required": True, "default": "jira:issue_created", "show_when": _INBOUND},
+        "jql": {"type": "text", "required": True, "show_when": _INBOUND},
+        "project_key": {"type": "text", "required": True, "show_when": _OUTBOUND},
+        "issue_type": {"type": "text", "required": True, "default": "Task", "show_when": _OUTBOUND},
+    },
+    "linear": {
+        "team": {"type": "text", "required": True},
+        "events": {"type": "textarea", "required": True, "default": "Issue.create\nComment.create", "show_when": _INBOUND},
+    },
+    "notion": {
+        "events": {"type": "textarea", "required": True, "default": "page.created\ncomment.created", "show_when": _INBOUND},
+        "data_source": {"type": "text"},
+    },
+    "gitlab": {
+        "project": {"type": "text", "required": True, "show_when": _INBOUND},
+        "events": {"type": "textarea", "required": True, "default": "issues.open\nnotes.create", "show_when": _INBOUND},
+    },
+    "shopify": {
+        "topics": {"type": "textarea", "required": True, "default": "ORDERS_CREATE\nORDERS_PAID", "show_when": _INBOUND},
+    },
+    "pipedrive": {
+        "record_type": {
+            "type": "select", "required": True, "default": "deal",
+            "options": ["deal", "lead", "person", "organization", "activity", "note"], "show_when": _INBOUND,
+        },
+        "action": {
+            "type": "select", "required": True, "default": "create", "options": ["create", "change", "delete", "any"],
+            "show_when": _INBOUND,
+        },
+        "ignore_api_changes": {"type": "boolean", "default": True, "show_when": _INBOUND},
+    },
+    "teams": {
+        "channel": {"type": "text", "show_when": _OUTBOUND},
+    },
+    "gmail": {
+        "mailbox": {"type": "text", "required": True},
+        "label": {"type": "text", "default": "INBOX", "show_when": _INBOUND},
+        "mark_as_read": {"type": "boolean", "default": True, "show_when": _INBOUND},
+        "default_to": {"type": "text", "show_when": _OUTBOUND},
+    },
+    "google_sheets": {
+        "spreadsheet": {"type": "text", "required": True},
+        "sheet": {"type": "text"},
+    },
+    "google_pubsub": {
+        "push_service_account": {"type": "text", "required": True, "show_when": _INBOUND},
+        "audience": {"type": "text", "show_when": _INBOUND},
+        "topic": {"type": "text", "required": True, "show_when": _OUTBOUND},
+    },
+    "whatsapp": {
+        "phone_number_id": {"type": "text", "required": True},
+        "to": {"type": "text", "show_when": _OUTBOUND},
+    },
 }
 
-_AWS = frozenset({"aws_access_key_id", "aws_secret_access_key", "endpoint_url", "bridge_id"})
+_AWS =frozenset({"aws_access_key_id", "aws_secret_access_key", "endpoint_url", "bridge_id"})
 _TWILIO = frozenset({"region", "account_sid", "auth_token"})
 _TELNYX = frozenset({"api_key", "public_key"})
 CONNECTION_FIELDS: Dict[str, frozenset[str]] = {
@@ -179,6 +266,42 @@ CONNECTION_FIELDS: Dict[str, frozenset[str]] = {
     "twilio_messaging": _TWILIO,
     "telnyx": _TELNYX,
     "telnyx_messaging": _TELNYX,
+    # Slack and GitHub Connections are set up in the dashboard; these are the values that setup stores.
+    "slack": frozenset({
+        "app_name", "signing_secret", "bot_token", "bot_handle", "setup_status", "request_url_verified",
+        "manifest_version", "credential_generation", "bot_token_validated_at", "uninstalled_at", "webhook_url",
+        "manifest_json", "manifest_url", "bot_token_validated", "team_id", "team_name", "workspace_url", "bot_user_id",
+        "bot_user_name", "bot_id", "app_id", "enterprise_id", "is_enterprise_install", "granted_scopes",
+    }),
+    "github": frozenset({
+        "app_name", "organization", "private_key", "webhook_secret", "setup_status", "manifest_state", "manifest_json",
+        "manifest_url", "webhook_url", "app_id", "app_slug", "client_id", "app_html_url", "owner_login",
+    }),
+    "outlook": frozenset({"tenant_id", "client_id", "client_secret"}),
+    "rabbitmq": frozenset({"host", "port", "vhost", "username", "password", "use_tls", "ssl_ca_pem", "bridge_id"}),
+    "mqtt": frozenset({
+        "host", "port", "username", "password", "use_tls", "ssl_ca_pem", "ssl_cert_pem", "ssl_key_pem", "bridge_id",
+    }),
+    "azure_service_bus": frozenset({
+        "namespace", "auth_method", "sas_key_name", "sas_key", "tenant_id", "client_id", "client_secret",
+    }),
+    "jira": frozenset({"site_url", "email", "api_token"}),
+    "linear": frozenset({"api_key", "user_id", "workspace_name"}),
+    "notion": frozenset({
+        "integration_token", "accept_verification_token", "webhook_url", "verification_token", "subscription_verified",
+        "bot_id", "workspace_name",
+    }),
+    "gitlab": frozenset({"base_url", "access_token", "user_id", "username"}),
+    "shopify": frozenset({"shop_domain", "client_id", "client_secret"}),
+    "pipedrive": frozenset({"company_domain", "api_token"}),
+    "teams": frozenset({
+        "app_name", "app_id", "tenant_id", "client_secret", "receive_all_channel_messages", "messaging_endpoint",
+        "package_version", "service_url", "teams",
+    }),
+    "gmail": frozenset({"service_account_key"}),
+    "google_sheets": frozenset({"service_account_key"}),
+    "google_pubsub": frozenset({"service_account_key"}),
+    "whatsapp": frozenset({"app_id", "app_secret", "access_token", "waba_id", "verify_token"}),
 }
 
 # Settings that moved to the Connection. Until April 30, 2027 a file may keep them when they match the
@@ -191,6 +314,7 @@ BRIDGE_MODES: Dict[str, tuple[str, ...]] = {"http": ("outbound",)}
 # Types whose inbound and sync events can carry files, so their agent links can set files_required.
 FILE_TYPES = frozenset({
     "http", "mcp", "websocket", "email", "s3", "kafka", "sqs", "telegram", "twilio_messaging", "telnyx_messaging",
+    "outlook", "rabbitmq", "mqtt", "azure_service_bus", "gmail", "whatsapp",
 })
 
 _CRON_MACROS = frozenset({"@yearly", "@annually", "@monthly", "@weekly", "@daily", "@midnight", "@hourly"})
