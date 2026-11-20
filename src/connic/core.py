@@ -8,7 +8,16 @@ from typing import Any, Callable, Dict, List, Literal, Optional, Union
 
 from pydantic import AliasChoices, BaseModel, ConfigDict, Field, StrictBool, field_validator, model_validator
 
-from .app_schema import _RESERVED_LOOKUP_NAMES, AGENT_NAMES, WILDCARD, AgentAccess, AppLookup, check_lookups, normalize_folders
+from .app_schema import (
+    _RESERVED_LOOKUP_NAMES,
+    AGENT_NAMES,
+    APP_KEY_PATTERN,
+    WILDCARD,
+    AgentAccess,
+    AppLookup,
+    check_lookups,
+    normalize_folders,
+)
 
 
 class AgentType(str, Enum):
@@ -1044,6 +1053,68 @@ class McpServerConfig(BaseModel):
         return self
 
 
+class AgentAppConfig(BaseModel):
+    """
+    An app in apps/ the agent publishes instances of with the app_publish tool.
+
+    Example YAML:
+        apps:
+          - app: reports
+            condition: context.user.role != null
+            max_age_days: 90
+            user: context.user
+    """
+    model_config = ConfigDict(extra="forbid")
+
+    app: str = Field(..., description="Key of the app, the name of its apps/<key>.yaml file")
+    condition: Optional[str] = Field(
+        default=None,
+        description=(
+            "Optional expression evaluated per run with the same grammar as conditional tools. "
+            "app_publish only offers the app when it evaluates to true."
+        ),
+    )
+    max_age_days: Optional[int] = Field(
+        default=None,
+        ge=1,
+        description="Days after which the instances this agent publishes are deleted. Omit to keep them until deleted.",
+    )
+    user: Optional[str] = Field(
+        default=None,
+        description=(
+            "context.<path> holding the end user: an ID, or an object with id and optionally email, name and groups. "
+            "app_publish then also returns an embed link signed in as that user."
+        ),
+    )
+
+    @field_validator("app")
+    @classmethod
+    def _validate_app(cls, value: str) -> str:
+        if not APP_KEY_PATTERN.fullmatch(value):
+            raise ValueError(f"apps: '{value}' isn't an app key")
+        return value
+
+    @field_validator("condition")
+    @classmethod
+    def _validate_condition(cls, condition: Optional[str]) -> Optional[str]:
+        if condition is not None:
+            try:
+                ast.parse(condition, mode="eval")
+            except SyntaxError as e:
+                raise ValueError(f"Invalid condition syntax '{condition}': {e}") from e
+        return condition
+
+    @field_validator("user")
+    @classmethod
+    def _validate_user(cls, value: Optional[str]) -> Optional[str]:
+        if value is None:
+            return value
+        path = value.removeprefix("context.")
+        if path == value or any(not part or part.startswith("_") for part in path.split(".")):
+            raise ValueError("apps[].user must be a context.<path> expression such as context.user")
+        return value
+
+
 PASSKEY_NAME_PATTERN = r"^[a-z0-9][a-z0-9_-]{0,63}$"
 
 
@@ -1190,6 +1261,11 @@ class AgentConfig(BaseModel):
     browser: Optional[BrowserConfig] = Field(
         default=None,
         description="Browser tool configuration, such as the passkeys the browser signs in with.",
+    )
+
+    apps: List[AgentAppConfig] = Field(
+        default_factory=list,
+        description="Apps in apps/ the agent publishes instances of. Adds the app_publish tool when one applies to the run.",
     )
 
     # Output schema for structured output (LLM agents only)
@@ -1341,6 +1417,16 @@ class AgentConfig(BaseModel):
         self.reasoning = None
         return self
 
+    @field_validator('apps')
+    @classmethod
+    def validate_apps(cls, v: List[AgentAppConfig]) -> List[AgentAppConfig]:
+        seen = set()
+        for entry in v:
+            if entry.app in seen:
+                raise ValueError(f"apps: app '{entry.app}' is listed twice")
+            seen.add(entry.app)
+        return v
+
     @model_validator(mode='after')
     def validate_files_session_only(self):
         files = self.files
@@ -1387,6 +1473,8 @@ class AgentConfig(BaseModel):
             raise ValueError("approval.inputs is only supported for LLM agents")
         if self.voice_config is not None and self.type != AgentType.LLM:
             raise ValueError("voice_config is only supported for LLM agents")
+        if self.apps and self.type != AgentType.LLM:
+            raise ValueError("apps is only supported for LLM agents")
         if self.type == AgentType.LLM:
             if not self.model:
                 raise ValueError("LLM agents require 'model' to be specified")

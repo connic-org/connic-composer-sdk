@@ -1196,6 +1196,61 @@ async def file_share_link(paths: List[str]) -> Dict[str, Any]:
     )
 
 
+async def app_publish(app: str, folder: str, instance: Optional[str] = None) -> Dict[str, Any]:
+    """
+    Publish a folder of static files as an instance of an app, or update an instance.
+
+    The folder needs an index.html at its top. Agents get this as the app_publish tool
+    when their YAML lists the app under apps; custom code may call it for those apps too.
+
+    Args:
+        app: Key of an app listed under apps in the agent's YAML.
+        folder: Folder in Files with the instance's files, such as "drafts/q3-report".
+        instance: ID of an instance of the same app to replace with the folder's files. Its URL stays the same.
+
+    Returns:
+        {"instance": ..., "url": ..., "version": ..., "expires_at": ...}, plus "embed_url" when the
+        app's entry sets user and the run's context holds one.
+
+    Example:
+        result = await app_publish("reports", "drafts/q3-report")
+    """
+    raise RuntimeError(
+        "app_publish will be auto-injected when testing using the connic CLI or deploying. "
+        "Run 'connic test' to test your agents with predefined tools."
+    )
+
+
+async def app_embed_link(
+    app: str,
+    user: Union[str, Dict[str, Any]],
+    instance: Optional[str] = None,
+    expires_in_days: Optional[int] = None,
+) -> Dict[str, Any]:
+    """
+    Create a link that opens an app, or one of its instances, signed in as ``user``, also inside an iframe.
+
+    Works for apps listed under apps in the agent's YAML. Links to an instance last as long as the
+    instance, links to the whole app 30 days, unless ``expires_in_days`` says otherwise.
+
+    Args:
+        app: Key of an app listed under apps in the agent's YAML.
+        user: The end user's ID, or {"id": ..., "email": ..., "name": ..., "groups": [...]}.
+        instance: ID of one of the app's instances; the link then opens only that instance.
+        expires_in_days: Days the link works.
+
+    Returns:
+        {"url": ..., "expires_at": ...}
+
+    Example:
+        link = await app_embed_link("reports", {"id": "u_42", "email": "ana@example.com"}, instance=result["instance"])
+    """
+    raise RuntimeError(
+        "app_embed_link will be auto-injected when testing using the connic CLI or deploying. "
+        "Run 'connic test' to test your agents with predefined tools."
+    )
+
+
 # All available predefined tools
 __all__ = [
     "trigger_agent",
@@ -1237,4 +1292,7 @@ __all__ = [
     "file_update",
     "file_delete",
     "file_share_link",
+    # App tools
+    "app_publish",
+    "app_embed_link",
 ]

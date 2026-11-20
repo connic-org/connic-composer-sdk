@@ -171,6 +171,34 @@ def test_build_settings_are_checked(build, message):
         app(build=build)
 
 
+def test_instances_only_apps_need_no_build_and_embed_origins_are_normalized():
+    parsed = AppFile.model_validate({
+        "key": "reports",
+        "instances_only": True,
+        "embed": {"origins": ["https://App.example.com/", "https://*.example.com", "http://localhost:5173"]},
+    })
+
+    spec = parsed.for_environment("Production")
+    assert parsed.build is None
+    assert spec["instances_only"] is True
+    assert spec["embed"].origins == ["https://app.example.com", "https://*.example.com", "http://localhost:5173"]
+
+
+@pytest.mark.parametrize(
+    "data, message",
+    [
+        ({"key": "reports"}, "build is required unless instances_only is true"),
+        ({"key": "reports", "instances_only": True, "embed": {"origins": ["http://example.com"]}}, "must be an origin"),
+        ({"key": "reports", "instances_only": True, "embed": {"origins": ["https://example.com/app"]}}, "must be an origin"),
+        ({"key": "reports", "instances_only": True, "embed": {"origins": ["*"]}}, "must be an origin"),
+        ({"key": "reports", "instances_only": True, "embed": {"origins": []}}, "origins"),
+    ],
+)
+def test_instances_only_and_embed_origins_are_checked(data, message):
+    with pytest.raises(ValidationError, match=message):
+        AppFile.model_validate(data)
+
+
 def test_node_version_accepts_numbers_and_output_is_normalized():
     parsed = app(build={"command": "npm run build", "output": "./build/client/", "node": 22})
 
@@ -520,6 +548,33 @@ def test_loader_skips_source_checks_for_uploads_without_app_sources(tmp_path):
 
     assert list(apps) == ["portal"]
     assert errors == []
+
+
+def test_loader_checks_instance_only_apps_and_the_apps_agents_publish(tmp_path):
+    write_file(
+        tmp_path / "agents" / "assistant.yaml",
+        """
+        version: "1.0"
+        name: assistant
+        description: Answers questions
+        model: openai/gpt-4o
+        system_prompt: Help the user.
+        apps:
+          - app: reports
+          - app: missing
+        """,
+    )
+    write_file(tmp_path / "apps" / "reports.yaml", "instances_only: true\nauth: {mode: public}")
+    write_file(tmp_path / "apps" / "charts.yaml", "instances_only: true")
+    write_file(tmp_path / "apps" / "charts" / "index.html", "<p>stray</p>")
+
+    apps, errors = load_apps(tmp_path, agents=ProjectLoader(str(tmp_path), validation_only=True).load_agents())
+
+    assert set(apps) == {"reports", "charts"}
+    assert errors == [
+        "apps/charts.yaml: apps/charts/ is only built with build; add build or remove the folder",
+        "agents/assistant.yaml: apps: app 'missing' isn't in apps/",
+    ]
 
 
 def test_loader_reports_invalid_rules_with_the_file(tmp_path):

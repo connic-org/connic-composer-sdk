@@ -531,14 +531,20 @@ class ProjectLoader:
 
         return connectors
 
-    def load_apps(self, connectors: Dict[str, ConnectorFile], check_sources: bool = True) -> Dict[str, AppFile]:
+    def load_apps(
+        self,
+        connectors: Dict[str, ConnectorFile],
+        check_sources: bool = True,
+        agents: Optional[List[Agent]] = None,
+    ) -> Dict[str, AppFile]:
         """
         Load the apps declared in apps/*.yaml, keyed by file name.
 
         Each app builds from the folder apps/<key>/. A project without an
         apps/ directory declares no apps. Connectors are checked against
-        ``connectors``. Pass ``check_sources=False`` for uploads that carry
-        only apps/*.yaml, such as ``connic dev``.
+        ``connectors`` and the ``apps`` of ``agents`` against the apps found.
+        Pass ``check_sources=False`` for uploads that carry only apps/*.yaml,
+        such as ``connic dev``.
         """
         if self.apps_dir.is_symlink():
             self._load_errors.append(f"Symbolic links are not allowed: {self.apps_dir}")
@@ -576,7 +582,10 @@ class ProjectLoader:
                 self._load_errors.append(f"Failed to load app: {relative}: {e}")
                 continue
             source = self.apps_dir / app.key
-            if check_sources:
+            if app.build is None:
+                if source.exists():
+                    self._load_errors.append(f"{relative}: apps/{app.key}/ is only built with build; add build or remove the folder")
+            elif check_sources:
                 if not source.is_dir() or source.is_symlink():
                     self._load_errors.append(f"{relative}: the app's source folder apps/{app.key}/ doesn't exist")
                 elif not (source / "package.json").is_file():
@@ -617,6 +626,13 @@ class ProjectLoader:
                         self._load_errors.append(
                             f"{location}{where}: connector '{connector_key}' isn't deployed to this environment"
                         )
+
+        for agent in agents or []:
+            for entry in agent.config.apps:
+                if entry.app not in apps:
+                    self._load_errors.append(
+                        f"agents/{agent.config.name}.yaml: apps: app '{entry.app}' isn't in apps/"
+                    )
 
         return apps
 

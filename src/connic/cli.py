@@ -1462,7 +1462,7 @@ def _run_lint(verbose: bool = False, quiet: bool = False, project_root: str = ".
     # Load apps
     if not quiet:
         _step("Loading apps...")
-    apps = loader.load_apps(connectors)
+    apps = loader.load_apps(connectors, agents=agents)
     errors.extend(loader._load_errors)
     loader._load_errors.clear()
     if not quiet:
@@ -1471,7 +1471,8 @@ def _run_lint(verbose: bool = False, quiet: bool = False, project_root: str = ".
             for key, app in apps.items():
                 modes = sorted({spec["auth"].mode if spec["auth"] else "dashboard sign-in" for _, spec in app.specs()})
                 environments = f" [{', '.join(app.environments)}]" if app.environments else ""
-                _info(f"{key}: {'/'.join(modes)} → apps/{key}/{app.build.output}{environments}")
+                served = f"apps/{key}/{app.build.output}" if app.build else "instances only"
+                _info(f"{key}: {'/'.join(modes)} → {served}{environments}")
         elif not loader.apps_dir.exists():
             _info("No apps/ directory found")
 
@@ -2307,7 +2308,7 @@ def dev(name: str | None, quick: bool, api_url: str, api_key: str, project_id: s
             sys.exit(1)
         if not agents:
             _fail_and_exit("No agents found. Run `connic init` first.")
-        apps = loader.load_apps(loader.load_connectors(agents))
+        apps = loader.load_apps(loader.load_connectors(agents), agents=agents)
         if loader._load_errors:
             _step(f"Validation failed with {len(loader._load_errors)} error(s):")
             for error in loader._load_errors:
@@ -2516,7 +2517,7 @@ def dev(name: str | None, quick: bool, api_url: str, api_key: str, project_id: s
             """Build apps locally and upload their output. A failed build keeps the last uploaded one."""
             for key in sorted(keys):
                 app = apps.get(key)
-                if app is None:
+                if app is None or app.build is None:
                     continue
                 if app.for_environment(env_name, dev=True) is None:
                     _warn(f"{key}: apps/{key}.yaml doesn't list {env_name} in environments; add dev to serve it in connic dev")
@@ -2564,7 +2565,8 @@ def dev(name: str | None, quick: bool, api_url: str, api_key: str, project_id: s
             """Reload apps/*.yaml and queue builds for new apps and changed build settings."""
             nonlocal apps
             app_loader = ProjectLoader(".", validation_only=True)
-            loaded = app_loader.load_apps(app_loader.load_connectors(app_loader.load_agents()))
+            app_agents = app_loader.load_agents()
+            loaded = app_loader.load_apps(app_loader.load_connectors(app_agents), agents=app_agents)
             if app_loader._load_errors:
                 for error in app_loader._load_errors:
                     _err(error)
@@ -2715,6 +2717,7 @@ def dev(name: str | None, quick: bool, api_url: str, api_key: str, project_id: s
                             apps_changed = True
                         elif (
                             (app := apps.get(path.parts[1])) is not None
+                            and app.build is not None
                             and _app_watch_path(path.parts[1:], app.build.output)
                             and (event.is_directory or path.suffix.lower() in APP_TEXT_EXTENSIONS | APP_BINARY_EXTENSIONS)
                         ):

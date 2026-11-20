@@ -18,6 +18,8 @@ Example::
       allowed_domains: [example.com]
     connectors:                       # apps_only connectors the app may call
       - support-chat
+    embed:                            # sites that may show the app in an iframe
+      origins: [https://app.example.com]
     lookups:                          # documents resolved once per request
       member:
         collection: members
@@ -45,6 +47,10 @@ Example::
     dev:                              # connic dev environments that environments doesn't name
       auth:
         mode: connic
+
+Agents publish instances of an app with the app_publish tool when their
+agents/<name>.yaml lists it under ``apps``. With ``instances_only: true`` the
+app serves only those instances and ``build`` is optional.
 
 ``${VAR}`` references are resolved at deploy time from the target
 environment's variables, in ``domain`` and the ``issuer``, ``client_id`` and
@@ -92,6 +98,12 @@ def is_app_source(relative_parts: Tuple[str, ...]) -> bool:
     return not (len(relative_parts) > 2 and relative_parts[1] in APP_BUILD_FOLDERS)
 
 _OUTPUT_PATTERN = re.compile(r"^\.?/?[A-Za-z0-9_.-]+(/[A-Za-z0-9_.-]+)*/?$")
+# Origins in a frame-ancestors source list: https with an optional *. wildcard label, or local http.
+_EMBED_ORIGIN_PATTERN = re.compile(
+    r"^(?:https://(?:\*\.)?[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+"
+    r"|http://(?:localhost|127\.0\.0\.1|[a-z0-9-]+\.localhost))(?::\d{1,5})?$"
+)
+MAX_EMBED_ORIGINS = 20
 _OIDC_FIELDS = frozenset({"issuer", "client_id", "client_secret", "allowed_domains", "allowed_groups", "groups_claim", "scopes"})
 _CONNIC_FIELDS = frozenset({"groups"})
 
@@ -212,6 +224,31 @@ class AppBuild(BaseModel):
         ):
             raise ValueError("build.output must be a folder inside the app, such as dist")
         return path.as_posix()
+
+
+class AppEmbed(BaseModel):
+    """Sites that may show the app in an iframe."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    origins: List[str] = Field(
+        min_length=1,
+        max_length=MAX_EMBED_ORIGINS,
+        description="Origins such as https://app.example.com or https://*.example.com.",
+    )
+
+    @field_validator("origins")
+    @classmethod
+    def _check_origins(cls, origins: List[str]) -> List[str]:
+        normalized = []
+        for origin in origins:
+            value = origin.strip().lower().rstrip("/")
+            if not _EMBED_ORIGIN_PATTERN.fullmatch(value):
+                raise ValueError(f"embed.origins: '{origin}' must be an origin such as https://app.example.com")
+            if value in normalized:
+                raise ValueError(f"embed.origins: '{origin}' is listed twice")
+            normalized.append(value)
+        return normalized
 
 
 class AppAuth(BaseModel):
@@ -484,6 +521,7 @@ class AppOverride(BaseModel):
     connectors: Optional[List[str]] = None
     domain: Optional[str] = Field(default=None, min_length=1)
     content_security_policy: Optional[str] = Field(default=None, min_length=1, max_length=4000)
+    embed: Optional[AppEmbed] = None
     lookups: Optional[Dict[str, AppLookup]] = None
     access: Optional[AppAccess] = None
 
@@ -495,12 +533,19 @@ class AppFile(BaseModel):
 
     key: str = Field(description="Taken from the filename stem.")
     name: Optional[str] = Field(default=None, min_length=1, max_length=200, description="Defaults to the key.")
-    build: AppBuild
+    build: Optional[AppBuild] = Field(default=None, description="Required unless instances_only is set.")
+    instances_only: bool = Field(
+        default=False,
+        description="Serve only the instances agents publish; every other page answers 404.",
+    )
     auth: Optional[AppAuth] = Field(default=None, description="Omit to manage sign-in in the dashboard.")
     connectors: List[str] = Field(default_factory=list)
     domain: Optional[str] = Field(default=None, min_length=1)
     content_security_policy: Optional[str] = Field(
         default=None, min_length=1, max_length=4000, description="Replaces connic's default Content-Security-Policy.",
+    )
+    embed: Optional[AppEmbed] = Field(
+        default=None, description="Sites that may show the app in an iframe. Omit to manage them in the dashboard.",
     )
     lookups: Optional[Dict[str, AppLookup]] = Field(
         default=None, description="Documents resolved once per request, available to access rules by name.",
@@ -530,6 +575,8 @@ class AppFile(BaseModel):
 
     @model_validator(mode="after")
     def _validate_app(self) -> "AppFile":
+        if self.build is None and not self.instances_only:
+            raise ValueError("build is required unless instances_only is true")
         if self.environments is not None:
             if not self.environments:
                 raise ValueError("environments must list at least one environment; omit it to deploy everywhere")
@@ -598,10 +645,12 @@ class AppFile(BaseModel):
             "key": self.key,
             "name": override.name or self.name or self.key,
             "build": self.build,
+            "instances_only": self.instances_only,
             "auth": override.auth or self.auth,
             "connectors": override.connectors if override.connectors is not None else self.connectors,
             "domain": pick("domain"),
             "content_security_policy": pick("content_security_policy"),
+            "embed": pick("embed"),
             "lookups": pick("lookups"),
             "access": pick("access"),
         }

@@ -392,6 +392,41 @@ def test_mcp_server_config_oauth():
     ).oauth.connect_tool is False
 
 
+def test_agent_apps_entries():
+    cfg = AgentConfig(**_llm_agent(apps=[
+        {"app": "reports", "condition": "context.user.role != null", "max_age_days": 90, "user": "context.user"},
+        {"app": "charts"},
+    ]))
+
+    assert [entry.app for entry in cfg.apps] == ["reports", "charts"]
+    assert cfg.apps[0].user == "context.user"
+    assert cfg.apps[1].condition is None and cfg.apps[1].max_age_days is None
+    assert AgentConfig(**_llm_agent()).apps == []
+
+
+@pytest.mark.parametrize(
+    "apps, message",
+    [
+        ([{"app": "reports"}, {"app": "reports"}], "app 'reports' is listed twice"),
+        ([{"app": "reports", "user": "user.id"}], "apps\\[\\].user must be a context"),
+        ([{"app": "reports", "condition": "context.role =="}], "Invalid condition syntax"),
+        ([{"app": "reports", "max_age_days": 0}], "max_age_days"),
+        ([{"app": "../reports"}], "isn't an app key"),
+    ],
+)
+def test_agent_apps_entries_are_checked(apps, message):
+    with pytest.raises(ValueError, match=message):
+        AgentConfig(**_llm_agent(apps=apps))
+
+
+def test_agent_apps_need_an_llm_agent():
+    with pytest.raises(ValueError, match="apps is only supported for LLM agents"):
+        AgentConfig(
+            version="1.0", name="pipeline", description="Runs steps", type="sequential",
+            agents=["a"], apps=[{"app": "reports"}],
+        )
+
+
 @pytest.mark.parametrize("user", ["user_id", "input.user_id", "context.", "context._system", "context.user..id"])
 def test_mcp_server_config_oauth_rejects_invalid_user_path(user):
     with pytest.raises(ValueError, match="oauth.user must be a context"):
