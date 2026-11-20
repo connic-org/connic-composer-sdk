@@ -19,6 +19,7 @@ from . import __version__
 from .app_schema import (
     APP_BINARY_EXTENSIONS,
     APP_BUILD_FOLDERS,
+    APP_SKIPPED_FOLDERS,
     APP_TEXT_EXTENSIONS,
     MAX_APPS_SIZE,
     AppBuild,
@@ -1038,17 +1039,24 @@ def _merge_template_into_project(
     
     Returns the template README content if it exists, None otherwise.
     """
-    for subdir in PROJECT_DIRECTORIES:
+    for subdir in (*PROJECT_DIRECTORIES, APPS_DIRECTORY):
         src_dir = template_src / subdir
         dst_dir = project_destination(base_path / subdir, base_path)
         if src_dir.exists():
             contained_source(src_dir, template_src)
             dst_dir.mkdir(exist_ok=True)
             for f in src_dir.rglob("*"):
-                is_agent_defaults = subdir == "agents" and f.name == "_defaults.yaml"
-                if not f.is_file() or (f.name.startswith("_") and not is_agent_defaults):
-                    continue
                 relative_path = f.relative_to(src_dir)
+                if subdir == APPS_DIRECTORY:
+                    # Dependencies and build output stay behind; .npmrc and other dotfiles come along.
+                    parts = relative_path.parts
+                    skipped = any(part in APP_SKIPPED_FOLDERS for part in parts) or (
+                        len(parts) > 2 and parts[1] in APP_BUILD_FOLDERS
+                    )
+                else:
+                    skipped = f.name.startswith("_") and not (subdir == "agents" and f.name == "_defaults.yaml")
+                if not f.is_file() or skipped:
+                    continue
                 source = contained_source(f, template_src)
                 destination = project_destination(
                     dst_dir / template_id / relative_path if subdir == "agents" else dst_dir / relative_path,

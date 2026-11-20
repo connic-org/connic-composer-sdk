@@ -512,6 +512,25 @@ def test_merge_template_copies_agent_under_template_namespace_and_merges_require
     assert readme == "# Invoice Agent\n\nExtract invoices."
 
 
+def test_merge_template_copies_app_sources_without_dependencies_or_build_output(tmp_path):
+    template = tmp_path / "templates" / "chat-page-builder"
+    for folder in ("src", "node_modules/chart.js", "dist"):
+        (template / "apps" / "chat" / folder).mkdir(parents=True)
+    (template / "apps" / "chat.yaml").write_text("name: Chat\n")
+    (template / "apps" / "chat" / "package.json").write_text("{}\n")
+    (template / "apps" / "chat" / ".npmrc").write_text("ignore-scripts=true\n")
+    (template / "apps" / "chat" / "src" / "_layout.js").write_text("export {}\n")
+    (template / "apps" / "chat" / "node_modules" / "chart.js" / "index.js").write_text("module.exports = {}\n")
+    (template / "apps" / "chat" / "dist" / "index.html").write_text("<html></html>\n")
+    project = tmp_path / "project"
+    project.mkdir()
+
+    cli._merge_template_into_project(template, project, [], "chat-page-builder")
+
+    copied = sorted(path.relative_to(project).as_posix() for path in (project / "apps").rglob("*") if path.is_file())
+    assert copied == ["apps/chat.yaml", "apps/chat/.npmrc", "apps/chat/package.json", "apps/chat/src/_layout.js"]
+
+
 def test_write_merged_requirements_deduplicates_by_package_name(tmp_path):
     cli._write_merged_requirements(
         tmp_path,
