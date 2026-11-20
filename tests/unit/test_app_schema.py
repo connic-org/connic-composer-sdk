@@ -175,13 +175,17 @@ def test_instances_only_apps_need_no_build_and_embed_origins_are_normalized():
     parsed = AppFile.model_validate({
         "key": "reports",
         "instances_only": True,
-        "embed": {"origins": ["https://App.example.com/", "https://*.example.com", "http://localhost:5173"]},
+        "embed": {"origins": [
+            "https://App.example.com/", "https://*.example.com", "http://localhost:5173", "http://*.apps.localhost:8787",
+        ]},
     })
 
     spec = parsed.for_environment("Production")
     assert parsed.build is None
     assert spec["instances_only"] is True
-    assert spec["embed"].origins == ["https://app.example.com", "https://*.example.com", "http://localhost:5173"]
+    assert spec["embed"].origins == [
+        "https://app.example.com", "https://*.example.com", "http://localhost:5173", "http://*.apps.localhost:8787",
+    ]
 
 
 @pytest.mark.parametrize(

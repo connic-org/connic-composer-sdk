@@ -101,7 +101,7 @@ _OUTPUT_PATTERN = re.compile(r"^\.?/?[A-Za-z0-9_.-]+(/[A-Za-z0-9_.-]+)*/?$")
 # Origins in a frame-ancestors source list: https with an optional *. wildcard label, or local http.
 _EMBED_ORIGIN_PATTERN = re.compile(
     r"^(?:https://(?:\*\.)?[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+"
-    r"|http://(?:localhost|127\.0\.0\.1|[a-z0-9-]+\.localhost))(?::\d{1,5})?$"
+    r"|http://(?:127\.0\.0\.1|(?:\*\.)?(?:[a-z0-9-]+\.)*localhost))(?::\d{1,5})?$"
 )
 MAX_EMBED_ORIGINS = 20
 _OIDC_FIELDS = frozenset({"issuer", "client_id", "client_secret", "allowed_domains", "allowed_groups", "groups_claim", "scopes"})

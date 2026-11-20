@@ -1265,7 +1265,7 @@ class AgentConfig(BaseModel):
 
     apps: List[AgentAppConfig] = Field(
         default_factory=list,
-        description="Apps in apps/ the agent publishes instances of. Adds the app_publish tool when one applies to the run.",
+        description="Apps in apps/ the agent publishes instances of. Adds the app_publish and app_preview tools when one applies to the run.",
     )
 
     # Output schema for structured output (LLM agents only)
