@@ -921,37 +921,55 @@ class ApprovalConfig(BaseModel):
 OAUTH_APP_NAME_PATTERN = r"^[a-z0-9][a-z0-9_-]{0,63}$"
 
 
-class McpOAuthConfig(BaseModel):
-    """
-    Per-user OAuth for an MCP server.
+def _validate_context_user(value: str, key: str) -> str:
+    path = value.removeprefix("context.")
+    if path == value or any(not part or part.startswith("_") for part in path.split(".")):
+        raise ValueError(f"{key}.user must be a context.<path> expression such as context.user_id")
+    return value
 
-    connic sends the access token stored for the end user named by ``user`` as
-    ``Authorization: Bearer``. Without a stored token the server is skipped for
-    the run. With ``connect_tool`` the agent gets a ``connect_<server>`` tool
-    that returns a sign-in link for that user.
+
+class McpCredentialConfig(BaseModel):
+    """
+    Per-user credential for an MCP server.
+
+    connic sends the token stored for the end user named by ``user`` in the
+    environment's user credential ``name`` as ``Authorization: Bearer``. Without
+    a stored token the server is skipped for the run. With ``connect_tool`` the
+    agent gets a ``connect_<server>`` tool that returns a connect link for that user.
 
     Example YAML:
-        oauth:
-          app: sisense
+        credential:
+          name: sisense
           user: context.user_id
           connect_tool: true
     """
     model_config = ConfigDict(extra="forbid")
 
-    app: str = Field(..., pattern=OAUTH_APP_NAME_PATTERN, description="Name of the environment's OAuth app")
+    name: str = Field(..., pattern=OAUTH_APP_NAME_PATTERN, description="Name of the environment's user credential")
     user: str = Field(..., description="context.<path> holding the end user's ID, set by middleware")
     connect_tool: bool = Field(
         default=False,
-        description="Add a connect_<server> tool that returns a sign-in link when the user has no token",
+        description="Add a connect_<server> tool that returns a connect link when the user has no token",
     )
 
     @field_validator("user")
     @classmethod
     def _validate_user(cls, value: str) -> str:
-        path = value.removeprefix("context.")
-        if path == value or any(not part or part.startswith("_") for part in path.split(".")):
-            raise ValueError("oauth.user must be a context.<path> expression such as context.user_id")
-        return value
+        return _validate_context_user(value, "credential")
+
+
+class McpOAuthConfig(BaseModel):
+    """Deprecated: the former name of ``credential``, with ``app`` for ``name``."""
+    model_config = ConfigDict(extra="forbid")
+
+    app: str = Field(..., pattern=OAUTH_APP_NAME_PATTERN, description="Name of the environment's user credential")
+    user: str = Field(..., description="context.<path> holding the end user's ID, set by middleware")
+    connect_tool: bool = Field(default=False, description="Add a connect_<server> tool")
+
+    @field_validator("user")
+    @classmethod
+    def _validate_user(cls, value: str) -> str:
+        return _validate_context_user(value, "oauth")
 
 
 class McpServerConfig(BaseModel):
@@ -985,11 +1003,11 @@ class McpServerConfig(BaseModel):
             condition: context.analytics_token != null
             optional: true
 
-        # Per-user OAuth through an environment OAuth app:
+        # Per-user OAuth sign-in or API token through an environment user credential:
           - name: sisense
             url: https://sisense.example.com/mcp
-            oauth:
-              app: sisense
+            credential:
+              name: sisense
               user: context.user_id
     """
     name: str = Field(..., description="Unique identifier for this MCP server connection")
@@ -1031,9 +1049,13 @@ class McpServerConfig(BaseModel):
             "instead of failing the run. The failure is recorded in context['mcp_errors']."
         ),
     )
+    credential: Optional[McpCredentialConfig] = Field(
+        default=None,
+        description="Per-user credential: send the end user's stored token from an environment user credential.",
+    )
     oauth: Optional[McpOAuthConfig] = Field(
         default=None,
-        description="Per-user OAuth: send the end user's stored access token from an environment OAuth app.",
+        description="Deprecated: use credential, with name instead of app.",
     )
 
     @field_validator("condition")
@@ -1047,9 +1069,14 @@ class McpServerConfig(BaseModel):
         return condition
 
     @model_validator(mode="after")
-    def _validate_oauth_headers(self):
-        if self.oauth and any(key.lower() == "authorization" for key in self.headers or {}):
-            raise ValueError(f"MCP server '{self.name}' cannot set an Authorization header together with oauth")
+    def _validate_credential(self):
+        if self.oauth:
+            translated = McpCredentialConfig(name=self.oauth.app, user=self.oauth.user, connect_tool=self.oauth.connect_tool)
+            if self.credential and self.credential != translated:
+                raise ValueError(f"MCP server '{self.name}' sets both credential and the deprecated oauth; keep credential")
+            self.credential = translated
+        if self.credential and any(key.lower() == "authorization" for key in self.headers or {}):
+            raise ValueError(f"MCP server '{self.name}' cannot set an Authorization header together with credential")
         return self
 
 
@@ -1122,7 +1149,7 @@ class BrowserConfig(BaseModel):
     """
     Browser tool configuration.
 
-    Passkeys are created under Settings → OAuth & Passkeys. Each page of the
+    Passkeys are created under Settings → User Credentials & Passkeys. Each page of the
     run's browser signs in with them on their domain.
 
     Example YAML:

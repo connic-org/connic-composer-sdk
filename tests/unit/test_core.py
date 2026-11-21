@@ -376,20 +376,33 @@ def test_mcp_server_config_condition_and_optional():
         McpServerConfig(name="bad", url="https://mcp.example.com/mcp", condition="context.token !=")
 
 
-def test_mcp_server_config_oauth():
+def test_mcp_server_config_credential():
     cfg = McpServerConfig(
         name="sisense",
         url="https://sisense.example.com/mcp",
         headers={"X-Tenant": "${TENANT}"},
+        credential={"name": "sisense", "user": "context.user.id", "connect_tool": True},
+    )
+    assert (cfg.credential.name, cfg.credential.user, cfg.credential.connect_tool) == ("sisense", "context.user.id", True)
+    assert McpServerConfig(name="srv", url="https://mcp.example.com/mcp").credential is None
+    assert McpServerConfig(
+        name="srv", url="https://mcp.example.com/mcp", credential={"name": "srv", "user": "context.user_id"},
+    ).credential.connect_tool is False
+
+
+def test_mcp_server_config_deprecated_oauth_becomes_credential():
+    cfg = McpServerConfig(
+        name="sisense", url="https://sisense.example.com/mcp",
         oauth={"app": "sisense", "user": "context.user.id", "connect_tool": True},
     )
-    assert cfg.oauth.app == "sisense"
-    assert cfg.oauth.user == "context.user.id"
-    assert cfg.oauth.connect_tool is True
-    assert McpServerConfig(name="srv", url="https://mcp.example.com/mcp").oauth is None
-    assert McpServerConfig(
-        name="srv", url="https://mcp.example.com/mcp", oauth={"app": "srv", "user": "context.user_id"},
-    ).oauth.connect_tool is False
+
+    assert (cfg.credential.name, cfg.credential.user, cfg.credential.connect_tool) == ("sisense", "context.user.id", True)
+    assert McpServerConfig.model_validate(cfg.model_dump()).credential == cfg.credential
+    with pytest.raises(ValueError, match="sets both credential and the deprecated oauth"):
+        McpServerConfig(
+            name="srv", url="https://mcp.example.com/mcp",
+            oauth={"app": "srv", "user": "context.user_id"}, credential={"name": "other", "user": "context.user_id"},
+        )
 
 
 def test_agent_apps_entries():
@@ -428,27 +441,27 @@ def test_agent_apps_need_an_llm_agent():
 
 
 @pytest.mark.parametrize("user", ["user_id", "input.user_id", "context.", "context._system", "context.user..id"])
-def test_mcp_server_config_oauth_rejects_invalid_user_path(user):
-    with pytest.raises(ValueError, match="oauth.user must be a context"):
-        McpServerConfig(name="srv", url="https://mcp.example.com/mcp", oauth={"app": "srv", "user": user})
+def test_mcp_server_config_credential_rejects_invalid_user_path(user):
+    with pytest.raises(ValueError, match="credential.user must be a context"):
+        McpServerConfig(name="srv", url="https://mcp.example.com/mcp", credential={"name": "srv", "user": user})
 
 
-@pytest.mark.parametrize("oauth", [
-    {"app": "Sisense", "user": "context.user_id"},
-    {"app": "sisense", "user": "context.user_id", "scopes": "read"},
+@pytest.mark.parametrize("credential", [
+    {"name": "Sisense", "user": "context.user_id"},
+    {"name": "sisense", "user": "context.user_id", "scopes": "read"},
 ])
-def test_mcp_server_config_oauth_rejects_invalid_fields(oauth):
+def test_mcp_server_config_credential_rejects_invalid_fields(credential):
     with pytest.raises(ValueError):
-        McpServerConfig(name="srv", url="https://mcp.example.com/mcp", oauth=oauth)
+        McpServerConfig(name="srv", url="https://mcp.example.com/mcp", credential=credential)
 
 
-def test_mcp_server_config_oauth_rejects_authorization_header():
-    with pytest.raises(ValueError, match="cannot set an Authorization header together with oauth"):
+def test_mcp_server_config_credential_rejects_authorization_header():
+    with pytest.raises(ValueError, match="cannot set an Authorization header together with credential"):
         McpServerConfig(
             name="srv",
             url="https://mcp.example.com/mcp",
             headers={"authorization": "Bearer ${TOKEN}"},
-            oauth={"app": "srv", "user": "context.user_id"},
+            credential={"name": "srv", "user": "context.user_id"},
         )
 
 

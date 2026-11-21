@@ -1435,6 +1435,14 @@ def _run_lint(verbose: bool = False, quiet: bool = False, project_root: str = ".
             deprecation_warnings.append(
                 f"{location}: database, retrieval and files are deprecated; replace them with:\n{replacement}"
             )
+        for server in config.mcp_servers:
+            if server.oauth:
+                location = config.source_path or config.name
+                deprecation_warnings.append(
+                    f"{location}: mcp_servers '{server.name}': oauth is deprecated; replace it with:\n"
+                    f"credential:\n  name: {server.oauth.app}\n  user: {server.oauth.user}"
+                    + ("\n  connect_tool: true" if server.oauth.connect_tool else "")
+                )
 
         if agent_type == "sequential":
             for ref in config.agents:
@@ -1561,12 +1569,13 @@ def _run_lint(verbose: bool = False, quiet: bool = False, project_root: str = ".
                     bridge_suffix = f" via bridge {mcp_server.bridge}" if mcp_server.bridge else ""
                     condition_suffix = f" [if: {mcp_server.condition}]" if mcp_server.condition else ""
                     optional_suffix = " (optional)" if mcp_server.optional else ""
-                    oauth_suffix = (
-                        f" [oauth: {mcp_server.oauth.app} for {mcp_server.oauth.user}]" if mcp_server.oauth else ""
+                    credential_suffix = (
+                        f" [credential: {mcp_server.credential.name} for {mcp_server.credential.user}]"
+                        if mcp_server.credential else ""
                     )
                     click.echo(escape_terminal_text(
                         f"  │  MCP Server: {mcp_server.name} ({mcp_server.url})"
-                        f"{bridge_suffix}{condition_suffix}{optional_suffix}{oauth_suffix}"
+                        f"{bridge_suffix}{condition_suffix}{optional_suffix}{credential_suffix}"
                     ))
 
         if agent_type == "sequential":

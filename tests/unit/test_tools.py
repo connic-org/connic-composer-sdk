@@ -29,6 +29,7 @@ async def _expect_stub(coro):
             {"delay": {"h": 1}},
         ),
         (tools.send_connector, ("ops_slack", {"message": "hello"}), {}),
+        (tools.record_cost, ("translation", "0.0140", "USD"), {}),
         (tools.retrieval_query, ("refund policy",), {}),
         (tools.retrieval_store, ("some content",), {}),
         (tools.retrieval_delete, ("entry-1",), {}),

@@ -15,6 +15,7 @@ Usage in custom tools:
         )
         return {"summary": result["response"]}
 """
+from decimal import Decimal
 from typing import Any, Dict, List, Literal, Optional, Union
 
 
@@ -106,6 +107,43 @@ async def send_connector(
     """
     raise RuntimeError(
         "send_connector will be auto-injected when testing using the connic CLI or deploying. "
+        "Run 'connic test' to test your agents with predefined tools."
+    )
+
+
+async def record_cost(
+    source: str,
+    amount: Union[Decimal, int, float, str],
+    currency: str,
+    description: Optional[str] = None,
+    quantity: Union[Decimal, int, float, str, None] = None,
+    unit: Optional[str] = None,
+    external_id: Optional[str] = None,
+) -> dict:
+    """
+    Record a cost from outside connic on the current run, such as a translation or OCR service.
+
+    The cost shows on the run and counts in its cost, in Budgets, spend alerts and limits, and
+    dashboards. connic never bills it. Call it from tools or middleware.
+
+    Args:
+        source: Where the cost comes from, for example "translation" or "ocr".
+        amount: The amount, at most 12 decimal places. Pass a string or Decimal for exact values.
+        currency: "EUR" or "USD".
+        description: Short note on what the cost is for, at most 200 characters.
+        quantity: How much was used, for example translated characters.
+        unit: Unit of quantity, for example "characters" or "pages".
+        external_id: Your identifier for the cost, such as the provider's ID. Recording the same
+            external_id on the run again replaces the item instead of adding another one.
+
+    Returns:
+        The recorded cost item.
+
+    Example:
+        await record_cost("ocr", "0.0015", "USD", description="Invoice scan", quantity=1, unit="pages")
+    """
+    raise RuntimeError(
+        "record_cost will be auto-injected when testing using the connic CLI or deploying. "
         "Run 'connic test' to test your agents with predefined tools."
     )
 
@@ -1251,11 +1289,39 @@ async def app_embed_link(
     )
 
 
+async def user_credential(name: str, user: str, rejected: Optional[str] = None) -> Optional[str]:
+    """
+    Get an end user's current token from one of the environment's user credentials.
+
+    Works for OAuth sign-in and API token credentials alike; OAuth tokens that expire soon are
+    refreshed first. Traces mask the returned token.
+
+    Args:
+        name: Name of the user credential, as set under Settings > User Credentials & Passkeys.
+        user: The end user's ID, the same ID their token was stored under.
+        rejected: The token the service just rejected (for example with HTTP 401). connic then
+            refreshes an OAuth token, or deletes a pasted one so the user connects again.
+
+    Returns:
+        The token, or None when the user has not connected or the token has expired.
+
+    Example:
+        token = await user_credential("sisense", context["user_id"])
+        if token is None:
+            return {"error": "Connect your Sisense account first."}
+    """
+    raise RuntimeError(
+        "user_credential will be auto-injected when testing using the connic CLI or deploying. "
+        "Run 'connic test' to test your agents with predefined tools."
+    )
+
+
 # All available predefined tools
 __all__ = [
     "trigger_agent",
     "trigger_agent_at",
     "send_connector",
+    "record_cost",
     "retrieval_query",
     "retrieval_store",
     "retrieval_delete",
@@ -1295,4 +1361,6 @@ __all__ = [
     # App tools
     "app_publish",
     "app_embed_link",
+    # Credential tools
+    "user_credential",
 ]

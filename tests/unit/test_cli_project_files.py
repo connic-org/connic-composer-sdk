@@ -1842,6 +1842,28 @@ def test_lint_command_prints_access_rules_for_deprecated_access_settings(tmp_pat
     assert lines[start:start + 7] == ["access:", "database:", "'*':", "read: true", "delete: true", "files:", "'*':"]
 
 
+def test_lint_command_prints_credential_for_deprecated_mcp_oauth(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(cli, "print_update_hint", lambda: None)
+    _write_minimal_support_agent(tmp_path)
+    agent_path = tmp_path / "agents" / "support.yaml"
+    agent_path.write_text(agent_path.read_text() + (
+        "mcp_servers:\n"
+        "  - name: bi\n"
+        "    url: https://bi.example.com/mcp\n"
+        "    oauth:\n"
+        "      app: sisense\n"
+        "      user: context.user_id\n"
+    ))
+
+    result = CliRunner().invoke(cli.main, ["lint"])
+
+    assert result.exit_code == 0, result.output
+    lines = [line.strip() for line in result.output.splitlines()]
+    start = lines.index("credential:")
+    assert lines[start:start + 3] == ["credential:", "name: sisense", "user: context.user_id"]
+
+
 def test_lint_command_reports_unknown_sequential_agent_reference(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(cli, "print_update_hint", lambda: None)
