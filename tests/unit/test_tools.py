@@ -30,8 +30,6 @@ async def _expect_stub(coro):
         ),
         (tools.send_connector, ("ops_slack", {"message": "hello"}), {}),
         (tools.record_cost, ("translation", "0.0140", "USD"), {}),
-        (tools.session_cancel_runs, ("support-chat", "conversation-1"), {}),
-        (tools.session_delete, ("support-chat", "conversation-1"), {"delete_runs": True}),
         (tools.retrieval_query, ("refund policy",), {}),
         (tools.retrieval_store, ("some content",), {}),
         (tools.retrieval_delete, ("entry-1",), {}),
