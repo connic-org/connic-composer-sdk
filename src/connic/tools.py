@@ -148,6 +148,58 @@ async def record_cost(
     )
 
 
+async def session_cancel_runs(agent_name: str, key: str) -> dict:
+    """
+    Cancel the started runs of an agent's session, such as a turn still running in a conversation
+    the user deleted. Call it from tools, hooks or middleware.
+
+    The session is the one the agent's session key resolved to `key`; pass "default" for an agent
+    without a key. A run that is still queued names its session only when it starts, so it isn't
+    cancelled. The calling run is never cancelled.
+
+    Args:
+        agent_name: The agent whose session it is.
+        key: The value the agent's session key resolved to.
+
+    Returns:
+        {"cancelled_count": int}
+
+    Example:
+        await session_cancel_runs("support-chat", conversation_id)
+    """
+    raise RuntimeError(
+        "session_cancel_runs will be auto-injected when testing using the connic CLI or deploying. "
+        "Run 'connic test' to test your agents with predefined tools."
+    )
+
+
+async def session_delete(agent_name: str, key: str, delete_runs: bool = False) -> dict:
+    """
+    Delete an agent's session with its conversation history. Call it from tools, hooks or middleware.
+
+    With delete_runs, also delete the content of the session's finished runs: input, output, run
+    context and execution trace, as deleting a run in the dashboard does. A run that hasn't finished
+    yet counts in runs_pending; call again once it has. Cancel running runs first with
+    session_cancel_runs.
+
+    Args:
+        agent_name: The agent whose session it is.
+        key: The value the agent's session key resolved to; "default" for an agent without a key.
+        delete_runs: Also delete the content of the session's finished runs.
+
+    Returns:
+        {"session_deleted": bool, "runs_deleted": int, "runs_pending": int}
+
+    Example:
+        await session_cancel_runs("support-chat", conversation_id)
+        await session_delete("support-chat", conversation_id, delete_runs=True)
+    """
+    raise RuntimeError(
+        "session_delete will be auto-injected when testing using the connic CLI or deploying. "
+        "Run 'connic test' to test your agents with predefined tools."
+    )
+
+
 async def retrieval_query(
     query: str,
     namespace: Optional[str] = None,
@@ -1322,6 +1374,8 @@ __all__ = [
     "trigger_agent_at",
     "send_connector",
     "record_cost",
+    "session_cancel_runs",
+    "session_delete",
     "retrieval_query",
     "retrieval_store",
     "retrieval_delete",

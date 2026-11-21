@@ -12,6 +12,8 @@ from threading import RLock
 from typing import Any, Dict, List, Literal, Optional, Union, get_args, get_origin, get_type_hints
 
 import yaml
+from pydantic import TypeAdapter
+from pydantic.errors import PydanticUndefinedAnnotation, PydanticUserError
 
 from .app_schema import APP_CONNECTOR_TYPES, LOCKFILES, AppFile
 from .connector_schema import CALL_TYPES, DEV, ConnectorFile
@@ -101,6 +103,27 @@ _PROJECT_PACKAGES = ("tools", "middleware", "hooks", "guardrails")
 
 def is_predefined_tool_name(name: str) -> bool:
     return name in PREDEFINED_TOOL_NAMES or name in PREDEFINED_TOOL_ALIASES
+
+
+def _inline_schema_refs(schema: Dict[str, Any]) -> Dict[str, Any]:
+    """Replace Pydantic's $defs references with the definitions; a recursive one becomes a plain object."""
+    definitions = schema.pop("$defs", {})
+
+    def resolve(node: Any, expanding: frozenset) -> Any:
+        if isinstance(node, list):
+            return [resolve(item, expanding) for item in node]
+        if not isinstance(node, dict):
+            return node
+        siblings = {key: resolve(value, expanding) for key, value in node.items() if key != "$ref"}
+        ref = node.get("$ref")
+        if not isinstance(ref, str):
+            return siblings
+        name = ref.removeprefix("#/$defs/")
+        if name in expanding or name not in definitions:
+            return {"type": "object", **siblings}
+        return {**resolve(definitions[name], expanding | {name}), **siblings}
+
+    return resolve(schema, frozenset())
 
 
 def _tool_agent_signature_error(func) -> Optional[str]:
@@ -1370,9 +1393,8 @@ class ProjectLoader:
             if len(non_none_args) == 1:
                 # This is Optional[X]
                 return self._type_to_schema(non_none_args[0])
-            # General Union - just use first type for simplicity
             if non_none_args:
-                return self._type_to_schema(non_none_args[0])
+                return {"anyOf": [self._type_to_schema(arg) for arg in non_none_args]}
             return {"type": "string"}
         
         if origin is list:
@@ -1386,9 +1408,12 @@ class ProjectLoader:
             if len(args) >= 2:
                 schema["additionalProperties"] = self._type_to_schema(args[1])
             return schema
-        
-        # Default to string for unknown types
-        return {"type": "string"}
+
+        # Pydantic models, TypedDicts, dataclasses, Enums, Any; string for types it can't describe
+        try:
+            return _inline_schema_refs(TypeAdapter(annotation).json_schema())
+        except (PydanticUserError, PydanticUndefinedAnnotation):
+            return {"type": "string"}
     
     def _parse_docstring_params(self, docstring: str) -> Dict[str, str]:
         """

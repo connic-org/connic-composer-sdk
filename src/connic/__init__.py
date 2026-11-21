@@ -43,6 +43,7 @@ from .core import (
     ContextCompressionConfig,
     GuardrailResult,
     Middleware,
+    ReplaceParams,
     RetryOptions,
     SessionHistoryCompactionConfig,
     StopProcessing,
@@ -56,7 +57,7 @@ from .core import (
 )
 from .loader import ProjectLoader
 
-__version__ = "0.1.66"
+__version__ = "0.1.67"
 
 __all__ = [
     "AbortTool",
@@ -75,6 +76,7 @@ __all__ = [
     "VoiceTurnDetectionConfig",
     "RetryOptions",
     "Middleware",
+    "ReplaceParams",
     "StopProcessing",
     "GuardrailResult",
     "ProjectLoader",

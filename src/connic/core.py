@@ -113,6 +113,24 @@ class AbortTool(Exception):
         super().__init__(str(result))
 
 
+class ReplaceParams:
+    """
+    Return this from a tool hook's before() to replace the tool's parameters
+    entirely. A plain dict is merged into the original parameters, so it can
+    add or change keys but never remove one.
+
+    Hook example:
+        from connic import ReplaceParams
+
+        async def before(tool_name: str, params: dict, context: dict) -> ReplaceParams:
+            if "orderId" in params:
+                params["order_id"] = params.pop("orderId")
+            return ReplaceParams(params)
+    """
+    def __init__(self, params: dict):
+        self.params = params
+
+
 class TransferCall(Exception):
     """
     Raise this in a voice agent's tool or tool hook to transfer the caller to
@@ -359,7 +377,7 @@ class SessionConfig(BaseModel):
     ttl: Optional[int] = Field(
         default=None, ge=60,
         description="Session time-to-live in seconds. Sessions not updated within "
-                    "this period are considered expired. "
+                    "this period expire and are deleted. "
                     "When not set, sessions never expire."
     )
     history: bool = Field(

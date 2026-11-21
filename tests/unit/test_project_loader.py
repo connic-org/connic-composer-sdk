@@ -1,10 +1,13 @@
 import asyncio
+import dataclasses
+import enum
 import inspect
 import sys
 from textwrap import dedent
 from typing import Any, Dict, List, Optional, Union
 
 import pytest
+from pydantic import BaseModel, Field
 
 from connic import tools as connic_tools
 from connic.core import ApprovalInput
@@ -2963,15 +2966,96 @@ def test_type_to_schema_none_type():
 
 def test_type_to_schema_union_non_optional():
     loader = ProjectLoader("/tmp")
-    schema = loader._type_to_schema(Union[str, int])
-    # Falls through to first non-None arg
-    assert schema["type"] == "string"
+    schema = loader._type_to_schema(Union[str, int, None])
+    assert schema == {"anyOf": [{"type": "string"}, {"type": "integer"}]}
 
 
 def test_type_to_schema_unknown_type():
+    class Connection:
+        pass
+
     loader = ProjectLoader("/tmp")
-    schema = loader._type_to_schema(object)
+    schema = loader._type_to_schema(Connection)
     assert schema["type"] == "string"
+
+
+class _PartnerOrigin(BaseModel):
+    address: str = Field(description="Street address")
+    latitude: Optional[float] = None
+
+
+class _PartnerFilters(BaseModel):
+    origin: _PartnerOrigin
+    max_results: int = 5
+
+
+class _Category(enum.Enum):
+    WORKSHOP = "workshop"
+    DEALER = "dealer"
+
+
+@dataclasses.dataclass
+class _Window:
+    days: int
+
+
+class _TreeNode(BaseModel):
+    name: str
+    children: List["_TreeNode"] = []
+
+
+_ORIGIN_SCHEMA = {
+    "type": "object",
+    "title": "_PartnerOrigin",
+    "properties": {
+        "address": {"type": "string", "title": "Address", "description": "Street address"},
+        "latitude": {"anyOf": [{"type": "number"}, {"type": "null"}], "default": None, "title": "Latitude"},
+    },
+    "required": ["address"],
+}
+
+
+@pytest.mark.parametrize(
+    ("annotation", "expected"),
+    [
+        (_PartnerOrigin, _ORIGIN_SCHEMA),
+        (
+            _PartnerFilters,
+            {
+                "type": "object",
+                "title": "_PartnerFilters",
+                "properties": {
+                    "origin": _ORIGIN_SCHEMA,
+                    "max_results": {"type": "integer", "default": 5, "title": "Max Results"},
+                },
+                "required": ["origin"],
+            },
+        ),
+        (List[_PartnerOrigin], {"type": "array", "items": _ORIGIN_SCHEMA}),
+        (_Category, {"enum": ["workshop", "dealer"], "title": "_Category", "type": "string"}),
+        (
+            _Window,
+            {"type": "object", "title": "_Window", "properties": {"days": {"type": "integer", "title": "Days"}}, "required": ["days"]},
+        ),
+        (
+            _TreeNode,
+            {
+                "type": "object",
+                "title": "_TreeNode",
+                "properties": {
+                    "name": {"type": "string", "title": "Name"},
+                    "children": {"type": "array", "items": {"type": "object"}, "default": [], "title": "Children"},
+                },
+                "required": ["name"],
+            },
+        ),
+        (Any, {}),
+        (Dict[str, Any], {"type": "object", "additionalProperties": {}}),
+    ],
+    ids=["model", "nested-model", "list-of-models", "enum", "dataclass", "recursive-model", "any", "dict-of-any"],
+)
+def test_type_to_schema_describes_structured_types(annotation, expected):
+    assert ProjectLoader("/tmp")._type_to_schema(annotation) == expected
 
 
 def test_type_to_schema_no_annotation():
