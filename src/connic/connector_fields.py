@@ -56,6 +56,7 @@ CONFIG_FIELDS: Dict[str, Dict[str, Dict[str, Any]]] = {
     "http": {
         "outbound_url": {"type": "url", "required": True, "show_when": _OUTBOUND},
         "require_auth": {"type": "boolean", "default": True, "show_when": _RECEIVING},
+        "http_status_field": {"type": "text", "show_when": _SYNC},
         **_rate_limits(_RECEIVING),
     },
     "cron": {
@@ -81,6 +82,7 @@ CONFIG_FIELDS: Dict[str, Dict[str, Dict[str, Any]]] = {
     },
     "mcp": {
         "require_auth": {"type": "boolean", "default": True},
+        "error_status_field": {"type": "text", "show_when": _SYNC},
         **_rate_limits(),
     },
     "sqs": {
