@@ -973,13 +973,15 @@ async def db_update(
 
 async def db_upsert(
     collection: str,
-    filter: Dict[str, Any],
-    update: Dict[str, Any],
+    filter: Optional[Dict[str, Any]] = None,
+    update: Optional[Dict[str, Any]] = None,
     insert_only: Optional[Dict[str, Any]] = None,
+    items: Optional[List[Dict[str, Any]]] = None,
 ) -> Dict[str, Any]:
     """
     Update the first document matching ``filter``, or insert a new one if no
-    document matches.
+    document matches. Pass ``items`` instead to upsert up to 500 documents in
+    one call.
 
     The inserted document is built from (later wins): top-level equality keys
     of ``filter``, then ``update``, then ``insert_only``. Operator constructs
@@ -994,9 +996,14 @@ async def db_upsert(
                 a field on the update path). Cannot be empty.
         insert_only: Optional fields written ONLY when a new document is
                      inserted; ignored on the update path.
+        items: Optional list of up to 500 ``{"filter", "update", "insert_only"}``
+               objects, used instead of the three arguments above. All items
+               are written together: if one is invalid, none is written.
 
     Returns:
         {"upserted_id": "<uuid>", "operation": "inserted" | "updated"}
+        With ``items``: {"results": [...], "inserted_count": N, "updated_count": N},
+        results in the order of ``items``.
 
     Example:
         # Natural-key upsert
@@ -1006,6 +1013,12 @@ async def db_upsert(
             update={"status": "shipped"},
             insert_only={"source": "etl"},
         )
+
+        # Many documents in one call
+        await db_upsert("orders", items=[
+            {"filter": {"order_id": "ORD-001"}, "update": {"status": "shipped"}},
+            {"filter": {"order_id": "ORD-002"}, "update": {"status": "pending"}},
+        ])
     """
     raise RuntimeError(
         "db_upsert will be auto-injected when testing using the connic CLI or deploying. "
