@@ -86,7 +86,10 @@ def dev_project(tmp_path, monkeypatch):
     return tmp_path
 
 
-def run_dev(monkeypatch, changes=(), observer=None, app_uploads=None, output=None, app_failures=None):
+def run_dev(
+    monkeypatch, changes=(), observer=None, app_uploads=None, output=None, app_failures=None,
+    upload_fields=None, status_fields=None,
+):
     uploads = []
     observer = observer or ScheduledObserver()
 
@@ -125,11 +128,11 @@ def run_dev(monkeypatch, changes=(), observer=None, app_uploads=None, output=Non
                 return Response({"url": f"https://{key}-1a2b3c4d.connic.app"})
             assert path == "/test-sessions/sess_123/files"
             uploads.append(members)
-            return Response({"files_hash": f"hash_{len(uploads)}", "size_bytes": len(content)})
+            return Response({"files_hash": f"hash_{len(uploads)}", "size_bytes": len(content), **(upload_fields or {})})
 
         def get(self, path):
             assert path in {"/test-sessions/sess_123", "/test-sessions/sess_123/status"}
-            return Response({"container_status": "running", "status": "active"})
+            return Response({"container_status": "running", "status": "active", **(status_fields or {})})
 
         def delete(self, path):
             assert path == "/test-sessions/sess_123"
@@ -181,6 +184,25 @@ def test_dev_starts_with_one_agent_and_no_optional_directories(dev_project, monk
 
     assert len(uploads) == 1
     assert set(uploads[0]) == {"agents/support.yaml"}
+
+
+@pytest.mark.parametrize(("runner_error", "expected"), [
+    (None, ["✓ Runner loaded the changes"]),
+    ("Failed to load agents: unknown tool lookup", ["! The runner could not load these files:", "Failed to load agents: unknown tool lookup"]),
+], ids=["loaded", "failed"])
+def test_dev_shows_upload_warnings_and_whether_the_runner_loaded_the_upload(dev_project, monkeypatch, runner_error, expected):
+    output = []
+    run_dev(
+        monkeypatch,
+        changes=(lambda observer: None,),
+        output=output,
+        upload_fields={"warnings": ["Access rule 'files' is deprecated"]},
+        status_fields={"runner_files_hash": "hash_1", "runner_error": runner_error},
+    )
+
+    assert "Access rule 'files' is deprecated" in output[0]
+    for line in expected:
+        assert line in output[0]
 
 
 @pytest.mark.parametrize(

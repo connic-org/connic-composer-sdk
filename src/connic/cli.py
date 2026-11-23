@@ -60,6 +60,7 @@ class _DevUploadResult(NamedTuple):
     files_hash: str | None = None
     size_bytes: int = 0
     error: str | None = None
+    warnings: tuple[str, ...] = ()
 
 
 PLUGIN_INSTALLS = (
@@ -2484,6 +2485,7 @@ def dev(name: str | None, quick: bool, api_url: str, api_key: str, project_id: s
                     "ok",
                     files_hash=result.get("files_hash"),
                     size_bytes=result.get("size_bytes") or 0,
+                    warnings=tuple(result.get("warnings") or ()),
                 )
             detail = _response_error_text(upload_resp)
             if upload_resp.status_code == 409 and detail.startswith("requirements.txt changed."):
@@ -2497,7 +2499,26 @@ def dev(name: str | None, quick: bool, api_url: str, api_key: str, project_id: s
             if upload_resp.status_code == 404:
                 return _DevUploadResult("session_ended")
             return _DevUploadResult("failed", error=f"Upload failed: {detail}")
-        
+
+        def report_runner_load(files_hash: str) -> bool:
+            """Print whether the runner loaded ``files_hash``; False while it hasn't finished loading it."""
+            try:
+                status_resp = client.get(f"/test-sessions/{session_id}/status")
+            except httpx.RequestError:
+                return False
+            if status_resp.status_code != 200 or status_resp.json().get("runner_files_hash") != files_hash:
+                return False
+            error = status_resp.json().get("runner_error")
+            stamp = time.strftime('%H:%M:%S')
+            if error:
+                click.secho(f"  [{stamp}]     ! The runner could not load these files:", fg="yellow", err=True)
+                for line in error.splitlines():
+                    click.echo(f"  [{stamp}]       {line}", err=True)
+                click.echo(f"  [{stamp}]     Fix the issue and save to retry...")
+            else:
+                click.secho(f"  [{stamp}]     ✓ Runner loaded the changes", fg="green")
+            return True
+
         # Initial upload
         _step("Uploading initial files...")
         current_hash = None
@@ -2516,6 +2537,11 @@ def dev(name: str | None, quick: bool, api_url: str, api_key: str, project_id: s
         elif uploaded.files_hash:
             current_hash = uploaded.files_hash
             _ok(f"Uploaded {uploaded.size_bytes} bytes (hash: {current_hash[:16]}...)")
+        for warning in uploaded.warnings:
+            _warn(warning)
+        # The runner reports each upload it loads; watch until it has, then show the outcome.
+        awaiting_runner_hash = current_hash
+        awaiting_runner_since = time.time()
 
         app_urls: dict[str, str] = {}
         app_fingerprints: dict[str, str] = {}
@@ -2769,7 +2795,10 @@ def dev(name: str | None, quick: bool, api_url: str, api_key: str, project_id: s
         # Track last status check time
         last_status_check = time.time()
         STATUS_CHECK_INTERVAL = 30  # Check session status every 30 seconds
-        
+        last_runner_check = 0.0
+        RUNNER_CHECK_INTERVAL = 2
+        RUNNER_WATCH_SECONDS = 900  # The first load installs requirements.txt, which may take up to 10 minutes
+
         try:
             while True:
                 time.sleep(0.5)
@@ -2847,8 +2876,17 @@ def dev(name: str | None, quick: bool, api_url: str, api_key: str, project_id: s
                     elif uploaded.files_hash and uploaded.files_hash != current_hash:
                         current_hash = uploaded.files_hash
                         click.secho(f"  [{time.strftime('%H:%M:%S')}]     ✓ Uploaded {uploaded.size_bytes} bytes", fg="green")
+                        awaiting_runner_hash, awaiting_runner_since = current_hash, time.time()
                     elif uploaded.files_hash == current_hash:
                         click.echo(f"  [{time.strftime('%H:%M:%S')}]     No content changes detected")
+                    for warning in uploaded.warnings:
+                        click.secho(f"  [{time.strftime('%H:%M:%S')}]     ! {warning}", fg="yellow", err=True)
+
+                # A runner that scaled to zero loads the files on its next run, so stop watching eventually.
+                if awaiting_runner_hash and (time.time() - last_runner_check) >= RUNNER_CHECK_INTERVAL:
+                    last_runner_check = time.time()
+                    if report_runner_load(awaiting_runner_hash) or time.time() - awaiting_runner_since > RUNNER_WATCH_SECONDS:
+                        awaiting_runner_hash = None
 
                 # Build apps after the upload so new apps/<key>.yaml files are applied first.
                 if (pending_apps or apps_changed) and (time.time() - last_upload_time) >= DEBOUNCE_SECONDS:
