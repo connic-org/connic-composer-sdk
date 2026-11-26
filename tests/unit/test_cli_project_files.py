@@ -4165,6 +4165,8 @@ def test_dev_interactive_keys_refresh_run_tests_and_quit_with_cleanup(tmp_path, 
             requests.append(("GET", path))
             if path == "/test-sessions/sess_123":
                 return Response(200, {"container_status": "running"})
+            if path == "/test-sessions/sess_123/status":
+                return Response(200, {"runner_files_hash": f"hash_{len(uploaded_files)}", "runner_error": None})
             if path == "/projects/proj_123/test-runs/run_dev_123":
                 FakeClient.test_poll_count += 1
                 if FakeClient.test_poll_count == 1:

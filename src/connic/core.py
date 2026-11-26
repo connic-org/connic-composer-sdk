@@ -355,6 +355,13 @@ def resolve_voice_model(model: str) -> tuple[Literal["connic", "openai", "azure"
     )
 
 
+def model_choices(model: Union[str, List[Union[str, Dict[str, str]]], None]) -> List[tuple[str, Optional[str]]]:
+    """An agent's model setting as (model, condition) pairs in the order they are checked; the last has no condition."""
+    if isinstance(model, list):
+        return [next(iter(entry.items())) if isinstance(entry, dict) else (entry, None) for entry in model]
+    return [(model, None)] if model else []
+
+
 class SessionConfig(BaseModel):
     """
     Persistent conversation history and browser profile configuration.
@@ -1253,7 +1260,12 @@ class AgentConfig(BaseModel):
     type: AgentType = Field(default=AgentType.LLM, description="Agent execution type")
     
     # LLM agent fields (required when type=llm)
-    model: Optional[str] = Field(default=None, description="The AI model to use (required for LLM agents)")
+    model: Optional[Union[str, List[Union[str, Dict[str, str]]]]] = Field(
+        default=None,
+        description="The AI model to use (required for LLM agents). A list is checked before every model call: "
+                    "the first {model: condition} entry whose condition is true is used, else the last entry, "
+                    "a model name without a condition.",
+    )
     voice_config: Optional[VoiceConfig] = Field(
         default=None,
         description="Native realtime voice settings. Uses the agent's model, prompt, and tools.",
@@ -1425,7 +1437,24 @@ class AgentConfig(BaseModel):
                 "Must start and end with a letter or number."
             )
         return v
-    
+
+    @field_validator('model')
+    @classmethod
+    def validate_model_list(cls, v):
+        if not isinstance(v, list):
+            return v
+        if not v or not isinstance(v[-1], str):
+            raise ValueError("A model list ends with the default model, a model name without a condition")
+        for entry in v[:-1]:
+            if not isinstance(entry, dict) or len(entry) != 1:
+                raise ValueError("Every model in a list but the last needs a condition: {model: condition}")
+            model, condition = next(iter(entry.items()))
+            try:
+                ast.parse(condition, mode="eval")
+            except SyntaxError as e:
+                raise ValueError(f"Invalid condition syntax '{condition}' for model '{model}': {e}") from e
+        return v
+
     @field_validator('mcp_servers')
     @classmethod
     def validate_mcp_servers_limit(cls, v: List[McpServerConfig]) -> List[McpServerConfig]:
@@ -1526,6 +1555,8 @@ class AgentConfig(BaseModel):
             if not self.system_prompt:
                 raise ValueError("LLM agents require 'system_prompt' to be specified")
             if self.voice_config is not None:
+                if isinstance(self.model, list):
+                    raise ValueError("Voice agents take one model, not a list")
                 resolve_voice_model(self.model)
                 if self.guardrails and self.guardrails.input:
                     raise ValueError("Input guardrails are not supported for voice agents because audio is streamed immediately")

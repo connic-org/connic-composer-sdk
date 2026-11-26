@@ -28,6 +28,7 @@ from connic.core import (
     Agent,
     ToolHook,
     BUILTIN_GUARDRAIL_TYPES,
+    model_choices,
 )
 
 
@@ -249,6 +250,34 @@ def test_agent_config_allows_single_char_name():
 def test_agent_config_llm_requires_model():
     with pytest.raises(ValueError, match="LLM agents require 'model'"):
         AgentConfig(**_llm_agent(model=None))
+
+
+def test_agent_config_model_list_keeps_order_and_default():
+    cfg = AgentConfig(**_llm_agent(model=[
+        {"connic/claude-opus-5.5": "context.is_premium"},
+        {"connic/gemini-3.8-flash": "input.fast"},
+        "connic/claude-sonnet-5.5",
+    ]))
+    assert model_choices(cfg.model) == [
+        ("connic/claude-opus-5.5", "context.is_premium"),
+        ("connic/gemini-3.8-flash", "input.fast"),
+        ("connic/claude-sonnet-5.5", None),
+    ]
+    assert model_choices("connic/claude-sonnet-5.5") == [("connic/claude-sonnet-5.5", None)]
+
+
+@pytest.mark.parametrize(
+    ("model", "message"),
+    [
+        ([], "ends with the default model"),
+        ([{"connic/claude-opus-5.5": "context.is_premium"}], "ends with the default model"),
+        (["connic/claude-opus-5.5", "connic/claude-sonnet-5.5"], "needs a condition"),
+        ([{"connic/claude-opus-5.5": "context.is_premium ?"}, "connic/claude-sonnet-5.5"], "Invalid condition syntax"),
+    ],
+)
+def test_agent_config_rejects_invalid_model_list(model, message):
+    with pytest.raises(ValueError, match=message):
+        AgentConfig(**_llm_agent(model=model))
 
 
 def test_agent_config_llm_requires_system_prompt():

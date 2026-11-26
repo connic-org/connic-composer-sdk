@@ -25,7 +25,7 @@ from .app_schema import (
     AppBuild,
     is_app_source,
 )
-from .core import RetryOptions
+from .core import RetryOptions, model_choices
 from .loader import ProjectLoader
 from .migrate import register_migrate_command
 from .project_paths import AUDIO_EXTENSIONS, PROJECT_DIRECTORIES, contained_source, project_destination
@@ -1532,7 +1532,9 @@ def _run_lint(verbose: bool = False, quiet: bool = False, project_root: str = ".
         click.echo(escape_terminal_text(f"  │  Description: {config.description}"))
 
         if agent_type == "llm":
-            click.echo(escape_terminal_text(f"  │  Model: {config.model}"))
+            for model, condition in model_choices(config.model):
+                condition_suffix = f" [if: {condition}]" if condition else ""
+                click.echo(escape_terminal_text(f"  │  Model: {model}{condition_suffix}"))
             if config.fallback_model:
                 click.echo(escape_terminal_text(f"  │  Fallback Model: {config.fallback_model}"))
             if verbose:

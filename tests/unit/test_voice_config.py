@@ -64,6 +64,11 @@ def test_voice_rejects_unsupported_model_routes(model):
         voice_agent(model=model)
 
 
+def test_voice_rejects_model_list():
+    with pytest.raises(ValidationError, match="Voice agents take one model"):
+        voice_agent(model=[{"openai/gpt-realtime": "context.is_premium"}, "openai/gpt-realtime-mini"])
+
+
 def test_empty_voice_config_preserves_provider_defaults():
     assert voice_agent().voice_config.model_dump(exclude_none=True) == {
         "thinking_sound": True, "hang_up_allowed": True, "press_keys_allowed": True, "wait_on_hold_allowed": False,
