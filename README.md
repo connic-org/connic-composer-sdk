@@ -324,7 +324,7 @@ Run `connic <command> --help` for flags and examples.
 - unresolved tool references
 - duplicate agent names
 - schema and middleware loading problems
-- test suites in `tests/` that fail the suite schema or target an agent that doesn't exist
+- test suites in `tests/` with schema errors or references to missing agents or apps
 
 ### Hot-Reload Testing
 
