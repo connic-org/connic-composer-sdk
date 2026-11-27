@@ -28,7 +28,14 @@ from .app_schema import (
 from .core import RetryOptions, model_choices
 from .loader import ProjectLoader
 from .migrate import register_migrate_command
-from .project_paths import AUDIO_EXTENSIONS, PROJECT_DIRECTORIES, contained_source, project_destination
+from .project_paths import (
+    AUDIO_EXTENSIONS,
+    PROJECT_DIRECTORIES,
+    RETRIEVAL_DIRECTORY,
+    contained_source,
+    project_destination,
+    retrieval_path_error,
+)
 from .terminal import escape_terminal_text
 from .update_check import (
     CONNIC_PLUGIN_ID,
@@ -481,7 +488,7 @@ def _validate_project_files(
     valid_files = []
     total_size = 0
 
-    for dirname in PROJECT_DIRECTORIES:
+    for dirname in (*PROJECT_DIRECTORIES, RETRIEVAL_DIRECTORY):
         dirpath = Path(dirname)
         if file_states is not None:
             file_states[dirpath] = _project_file_state(dirpath)
@@ -514,6 +521,12 @@ def _validate_project_files(
 
             # tests/files/<...>: opaque test fixture, any extension/binary.
             if _is_under(filepath, TEST_FILES_PREFIX):
+                valid_files.append(filepath)
+                continue
+
+            if _is_under(filepath, RETRIEVAL_DIRECTORY):
+                if error := retrieval_path_error(filepath.relative_to(RETRIEVAL_DIRECTORY)):
+                    return False, f"{filepath}: {error}", []
                 valid_files.append(filepath)
                 continue
 
@@ -1040,7 +1053,7 @@ def _merge_template_into_project(
     
     Returns the template README content if it exists, None otherwise.
     """
-    for subdir in (*PROJECT_DIRECTORIES, APPS_DIRECTORY):
+    for subdir in (*PROJECT_DIRECTORIES, RETRIEVAL_DIRECTORY, APPS_DIRECTORY):
         src_dir = template_src / subdir
         dst_dir = project_destination(base_path / subdir, base_path)
         if src_dir.exists():
@@ -2756,7 +2769,9 @@ def dev(name: str | None, quick: bool, api_url: str, api_key: str, project_id: s
                         continue
                     if "__pycache__" in str(path) or path.suffix == ".pyc":
                         continue
-                    if path.parts[0] in PROJECT_DIRECTORIES or (not event.is_directory and path == Path("requirements.txt")):
+                    if path.parts[0] in (*PROJECT_DIRECTORIES, RETRIEVAL_DIRECTORY) or (
+                        not event.is_directory and path == Path("requirements.txt")
+                    ):
                         changed_paths.append(path)
                     elif path.parts[0] == APPS_DIRECTORY:
                         # apps/<key>.yaml goes into the upload; apps/<key>/ sources trigger a local build.
@@ -2789,7 +2804,7 @@ def dev(name: str | None, quick: bool, api_url: str, api_key: str, project_id: s
         observer = Observer()
         handler = FileChangeHandler()
 
-        for dirname in (*PROJECT_DIRECTORIES, APPS_DIRECTORY):
+        for dirname in (*PROJECT_DIRECTORIES, RETRIEVAL_DIRECTORY, APPS_DIRECTORY):
             watch_directory(dirname)
 
         # Watch requirements.txt and supported directories added after startup.

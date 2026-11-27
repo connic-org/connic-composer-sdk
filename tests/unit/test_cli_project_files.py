@@ -460,6 +460,24 @@ def test_validate_project_files_allows_binary_fixtures_under_tests_files(tmp_pat
     assert [path.as_posix() for path in files] == ["tests/files/invoice.pdf"]
 
 
+@pytest.mark.parametrize(
+    ("path", "valid"),
+    [("retrieval/policies/hr/leave.pdf", True), ("retrieval/policies.hr/leave.pdf", False), ("retrieval/run.sh", False)],
+    ids=["document", "dotted-folder", "unsupported-type"],
+)
+def test_validate_project_files_uploads_retrieval_documents_that_can_become_entries(tmp_path, monkeypatch, path, valid):
+    monkeypatch.chdir(tmp_path)
+    document = tmp_path / path
+    document.parent.mkdir(parents=True)
+    document.write_bytes(b"%PDF-1.7\n" + b"\x00\xff" * 1024)
+
+    is_valid, error, files = cli._validate_project_files()
+
+    assert is_valid is valid
+    assert error.startswith("" if valid else path)
+    assert [file.as_posix() for file in files] == ([path] if valid else [])
+
+
 def test_validate_project_files_rejects_non_python_builders(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     builder = tmp_path / "tests" / "builders" / "invoice.json"
