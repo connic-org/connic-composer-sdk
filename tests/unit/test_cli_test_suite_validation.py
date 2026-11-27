@@ -71,6 +71,25 @@ def test_lint_reports_suite_whose_agent_field_matches_no_agent(tmp_path, capsys)
     assert "from the file name" not in err
 
 
+def test_lint_reports_case_that_runs_as_visitor_of_unknown_app(tmp_path, capsys):
+    _write_agent(tmp_path, "order-agent")
+    _write(
+        tmp_path / "tests" / "order-agent.yaml",
+        """
+        version: "1.0"
+        tests:
+          - name: answers_customer
+            payload: "hello"
+            app: portal
+            end_user:
+              id: customer-42
+        """,
+    )
+
+    assert cli._run_lint(quiet=True, project_root=str(tmp_path)) is False
+    assert "tests/order-agent.yaml: test 'answers_customer' runs as a visitor of unknown app 'portal'" in capsys.readouterr().err
+
+
 def test_lint_reports_suite_schema_errors(tmp_path, capsys):
     _write_agent(tmp_path, "order-agent")
     _write(

@@ -131,6 +131,17 @@ Example::
           telemetry:
             expected_triggered: 1
 
+      # Run as a visitor of one of the project's apps (apps/portal.yaml), like
+      # a request the app sent: ``context["app"]`` and ``context["end_user"]``
+      # are set, and access rules see the visitor as ``user``.
+      - name: answers_a_signed_in_customer
+        payload: "Where is my order?"
+        app: portal
+        end_user:
+          id: customer-42
+          email: ada@example.com
+          groups: [customers]
+
 The ``expected_result`` and ``expected_tool_calls`` mapping expressions are
 evaluated server-side with bindings ``output``, ``error``, ``status``,
 ``context`` (in ``expected_result``) and ``params``, ``result``, ``invocations``,
@@ -415,6 +426,18 @@ def _dump_child_agents(
     return {name: child.model_dump(exclude_none=False) for name, child in spec.items()}
 
 
+class TestEndUser(BaseModel):
+    """The app visitor a test case runs as: ``context["end_user"]`` and ``user`` in access rules."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    id: str = Field(..., min_length=1, max_length=255)
+    email: Optional[str] = Field(default=None, max_length=320)
+    name: Optional[str] = Field(default=None, max_length=200)
+    groups: List[str] = Field(default_factory=list, max_length=100)
+    signed_in: bool = Field(default=True, description="False for visitors of public apps.")
+
+
 class TestCase(BaseModel):
     """A single test case."""
 
@@ -451,6 +474,18 @@ class TestCase(BaseModel):
     builder_args: Optional[Dict[str, Any]] = Field(
         default=None,
         description="Arbitrary kwargs forwarded to the builder via ``test_details['builder_args']``.",
+    )
+    app: Optional[str] = Field(
+        default=None,
+        description=(
+            "Key of an ``apps/<key>.yaml``. The case runs like a request from "
+            "that app, as the visitor in ``end_user``: ``context['app']`` and "
+            "``context['end_user']`` are set. Requires ``end_user``."
+        ),
+    )
+    end_user: Optional[TestEndUser] = Field(
+        default=None,
+        description="The app visitor the case runs as. Requires ``app``.",
     )
     mocks: Optional[str] = Field(
         default=None,
@@ -628,6 +663,8 @@ class TestCase(BaseModel):
             raise ValueError(
                 f"test '{self.name}': must specify either `payload` or `builder`."
             )
+        if (self.app is None) != (self.end_user is None):
+            raise ValueError(f"test '{self.name}': `app` and `end_user` must be set together.")
         return self
 
 
@@ -659,6 +696,8 @@ class TestFile(BaseModel):
             "files": list(case.files),
             "builder": case.builder,
             "builder_args": dict(case.builder_args) if case.builder_args else None,
+            # Only when set, so cases without a visitor keep their fingerprints.
+            **({"app": case.app, "end_user": case.end_user.model_dump()} if case.app else {}),
             "mocks": case.mocks if case.mocks is not None else self.defaults.mocks,
             "strict_mocks": (
                 case.strict_mocks if case.strict_mocks is not None else self.defaults.strict_mocks

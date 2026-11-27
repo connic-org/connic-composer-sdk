@@ -1874,6 +1874,9 @@ def _test_suite_errors(project_root: Path, agent_names: set[str]) -> tuple[int, 
         if error is not None:
             errors.append(error)
             continue
+        for case in parsed.tests:
+            if case.app is not None and not (project_root / "apps" / f"{case.app}.yaml").is_file():
+                errors.append(f"{path}: test '{case.name}' runs as a visitor of unknown app '{case.app}'")
         if agent_name in agent_names:
             continue
         message = f"{path}: unknown agent '{agent_name}'"

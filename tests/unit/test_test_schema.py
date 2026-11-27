@@ -529,6 +529,31 @@ def test_test_case_requires_payload_or_builder():
         ConnicTestFile.model_validate({"tests": [{"name": "empty"}]})
 
 
+def test_test_case_resolves_app_visitor():
+    test_file = ConnicTestFile.model_validate({"tests": [{
+        "name": "answers_customer",
+        "payload": "Where is my order?",
+        "app": "portal",
+        "end_user": {"id": "customer-42", "email": "ada@example.com", "groups": ["customers"]},
+    }]})
+
+    resolved = test_file.resolved(test_file.tests[0])
+
+    assert (resolved["app"], resolved["end_user"]) == ("portal", {
+        "id": "customer-42", "email": "ada@example.com", "name": None, "groups": ["customers"], "signed_in": True,
+    })
+
+
+@pytest.mark.parametrize(
+    "visitor",
+    [{"app": "portal"}, {"end_user": {"id": "customer-42"}}],
+    ids=["app-without-end-user", "end-user-without-app"],
+)
+def test_test_case_requires_app_and_end_user_together(visitor):
+    with pytest.raises(ValidationError, match="`app` and `end_user` must be set together"):
+        ConnicTestFile.model_validate({"tests": [{"name": "t", "payload": "hi", **visitor}]})
+
+
 @pytest.mark.parametrize(
     "bad_filename",
     [
